@@ -12,6 +12,7 @@ from canx.capture.subscriber import (
     SubscriberFailure,
 )
 from canx.devices.base import CanAdapter
+from canx.domain.frame import Frame
 
 
 class CapturePipeline:
@@ -26,7 +27,7 @@ class CapturePipeline:
         self._normalizer = TimestampNormalizer()
         self._subscribers: dict[str, FrameSubscriber] = {}
         self._task: asyncio.Task[None] | None = None
-        self._stopping = False
+        self._stop_requested = asyncio.Event()
         self._captured_frames = 0
         self._subscriber_failure_handler = subscriber_failure_handler
 
@@ -59,7 +60,7 @@ class CapturePipeline:
         if self._task is not None:
             raise RuntimeError("capture is already running")
         await self._adapter.open()
-        self._stopping = False
+        self._stop_requested.clear()
         self._task = asyncio.create_task(self._capture_loop(), name="canx-capture")
 
     async def stop(self) -> None:
@@ -67,54 +68,92 @@ class CapturePipeline:
         task = self._task
         if task is None:
             return
-        self._stopping = True
-        await self._adapter.close()
-        # Let already scheduled fan-out tasks accept the last received frame.
-        # Blocked publications are still cancelled below, so stop stays bounded.
-        await asyncio.sleep(0)
-        task.cancel()
-        with suppress(asyncio.CancelledError):
+        self._stop_requested.set()
+        try:
             await task
-        self._task = None
+        finally:
+            await self._adapter.close()
+            self._task = None
 
     async def _capture_loop(self) -> None:
-        while not self._stopping:
-            frame = self._normalizer.normalize(await self._adapter.recv())
-            subscribers = tuple(self._subscribers.values())
-            deliveries = [
-                asyncio.create_task(subscriber.publish(frame)) for subscriber in subscribers
-            ]
-            cancellation: asyncio.CancelledError | None = None
-            try:
-                results = await asyncio.gather(*deliveries, return_exceptions=True)
-            except asyncio.CancelledError as error:
-                # A queue can accept a frame before gather resumes. Preserve settled
-                # delivery outcomes on stop without counting cancelled publications.
-                cancellation = error
-                results = [
-                    asyncio.CancelledError() if task.cancelled() else task.exception()
-                    for task in deliveries
-                ]
-            for subscriber, result in zip(subscribers, results, strict=True):
-                if isinstance(result, SubscriberBackpressureError):
-                    if self._subscribers.get(subscriber.name) is subscriber:
-                        self.unsubscribe(subscriber.name)
-                    if self._subscriber_failure_handler is not None:
-                        self._subscriber_failure_handler(result.failure)
-                elif isinstance(result, SubscriberDisabledError) and (
-                    self._subscribers.get(subscriber.name) is not subscriber
-                ):
-                    # Explicit detach/disable may race an already captured snapshot.
-                    continue
-                elif isinstance(result, asyncio.CancelledError) and cancellation is not None:
-                    continue
-                elif isinstance(result, BaseException):
-                    raise result
-            if any(task.cancelled() for task in deliveries):
-                raise asyncio.CancelledError
-            self._captured_frames += 1
-            if cancellation is not None:
-                raise cancellation
+        stopped = asyncio.create_task(self._stop_requested.wait())
+        try:
+            while not self._stop_requested.is_set():
+                frame = await self._receive_frame(stopped)
+                if frame is None:
+                    break
+                if await self._publish_frame(self._normalizer.normalize(frame), stopped):
+                    self._captured_frames += 1
+        finally:
+            stopped.cancel()
+            with suppress(asyncio.CancelledError):
+                await stopped
+
+    async def _receive_frame(self, stopped: asyncio.Task[bool]) -> Frame | None:
+        receive = asyncio.create_task(self._adapter.recv())
+        try:
+            await asyncio.wait((receive, stopped), return_when=asyncio.FIRST_COMPLETED)
+            # Receive may settle alongside stop. Its returned frame still belongs
+            # to capture and must enter fan-out before shutdown can finish.
+            if receive.done():
+                return receive.result()
+            return None
+        finally:
+            if not receive.done():
+                receive.cancel()
+                with suppress(asyncio.CancelledError):
+                    await receive
+
+    async def _publish_frame(self, frame: Frame, stopped: asyncio.Task[bool]) -> bool:
+        subscribers = tuple(self._subscribers.values())
+        if not subscribers:
+            return True
+        all_started = asyncio.Event()
+        started_count = 0
+
+        async def publish(subscriber: FrameSubscriber) -> None:
+            nonlocal started_count
+            started_count += 1
+            if started_count == len(subscribers):
+                all_started.set()
+            # No yield between the handshake and publish: each subscriber gets
+            # its first delivery attempt before stop can cancel blocked work.
+            await subscriber.publish(frame)
+
+        deliveries = [asyncio.create_task(publish(subscriber)) for subscriber in subscribers]
+        fanout = asyncio.gather(*deliveries, return_exceptions=True)
+        try:
+            await all_started.wait()
+            await asyncio.wait((fanout, stopped), return_when=asyncio.FIRST_COMPLETED)
+            if not fanout.done():
+                for delivery in deliveries:
+                    if not delivery.done():
+                        delivery.cancel()
+            results = await fanout
+        finally:
+            if not fanout.done():
+                for delivery in deliveries:
+                    if not delivery.done():
+                        delivery.cancel()
+                # Also join children if cancellation interrupts phase coordination.
+                await fanout
+        settled = True
+        for subscriber, result in zip(subscribers, results, strict=True):
+            if isinstance(result, SubscriberBackpressureError):
+                if self._subscribers.get(subscriber.name) is subscriber:
+                    self.unsubscribe(subscriber.name)
+                if self._subscriber_failure_handler is not None:
+                    self._subscriber_failure_handler(result.failure)
+            elif isinstance(result, SubscriberDisabledError) and (
+                self._subscribers.get(subscriber.name) is not subscriber
+            ):
+                # Explicit detach/disable may race an already captured snapshot.
+                continue
+            elif isinstance(result, asyncio.CancelledError) and self._stop_requested.is_set():
+                settled = False
+            elif isinstance(result, BaseException):
+                raise result
+        return settled
 
     @property
     def captured_frames(self) -> int:

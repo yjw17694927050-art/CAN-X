@@ -310,3 +310,50 @@ async def test_stop_delivers_received_frame_when_fanout_tasks_have_not_started()
         assert (await archive.get()).sequence == 0
     finally:
         await pipeline.stop()
+
+
+async def test_stop_delivers_frame_returned_by_receive_during_shutdown() -> None:
+    class YieldingAdapter(VirtualAdapter):
+        async def recv(self) -> Frame:
+            received = await super().recv()
+            await asyncio.sleep(0)
+            return received
+
+    pipeline = CapturePipeline(YieldingAdapter(VirtualAdapterConfig(rate_hz=1)))
+    archive = pipeline.subscribe("archive", capacity=1, lossy=False)
+    await pipeline.start()
+    try:
+        await asyncio.sleep(0)
+        await asyncio.wait_for(pipeline.stop(), timeout=0.1)
+        assert pipeline.generated_frames == 1
+        assert pipeline.captured_frames == 1
+        assert archive.queue_depth == 1
+        assert (await archive.get()).sequence == 0
+    finally:
+        await pipeline.stop()
+
+
+async def test_stop_cancels_pending_receive_and_awaits_its_cleanup() -> None:
+    receiving = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    class WaitingAdapter(VirtualAdapter):
+        async def recv(self) -> Frame:
+            receiving.set()
+            try:
+                await asyncio.Event().wait()
+                return await super().recv()
+            finally:
+                cleaned_up.set()
+
+    pipeline = CapturePipeline(WaitingAdapter(VirtualAdapterConfig(rate_hz=1)))
+    await pipeline.start()
+    try:
+        await asyncio.wait_for(receiving.wait(), timeout=0.1)
+        await asyncio.wait_for(pipeline.stop(), timeout=0.1)
+        assert cleaned_up.is_set()
+        assert not pipeline.is_running
+        assert pipeline.generated_frames == 0
+        assert pipeline.captured_frames == 0
+    finally:
+        await pipeline.stop()
