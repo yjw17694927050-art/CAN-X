@@ -10,7 +10,7 @@
 > 本文档定义 CAN-X 的技术架构和强制技术边界。
 >
 > 产品需求见 `PRD.md`。  
-> Codex / AI 开发规则见 `AGENT.md`。
+> Codex / AI 开发规则见 `AGENTS.md`。
 
 ---
 
@@ -156,7 +156,7 @@ Data Storage
 CAN-X/
 ├─ PRD.md
 ├─ SPEC.md
-├─ AGENT.md
+├─ AGENTS.md
 ├─ README.md
 │
 ├─ apps/

@@ -1,6 +1,6 @@
 # CAN-X — Agent Development Guide
 
-> **Document**: `AGENT.md`  
+> **Document**: `AGENTS.md`  
 > **Applies To**: Codex, coding agents, AI assistants and automated contributors  
 > **Version**: 0.1  
 > **Date**: 2026-09-15
@@ -46,7 +46,7 @@ CAN-Space 已冻结。
 开始任何开发任务前，按顺序阅读：
 
 ```text
-1. AGENT.md
+1. AGENTS.md
 2. PRD.md
 3. SPEC.md
 ```
@@ -73,7 +73,7 @@ PRD.md
 SPEC.md
 = technical architecture
 
-AGENT.md
+AGENTS.md
 = development execution rules
 ```
 
