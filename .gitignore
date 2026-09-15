@@ -14,3 +14,4 @@ coverage/
 benchmark-results/
 *.tsbuildinfo
 apps/desktop/src-tauri/gen/schemas/
+.worktrees/
