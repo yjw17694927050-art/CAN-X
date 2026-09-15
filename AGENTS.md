@@ -1,6 +1,6 @@
 # CAN-X — Agent Development Guide
 
-> **Document**: `AGENTS.md`  
+> **Document**: `AGENTS.md`
 > **Applies To**: Codex, coding agents, AI assistants and automated contributors  
 > **Version**: 0.1  
 > **Date**: 2026-09-15
