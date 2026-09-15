@@ -1,0 +1,45 @@
+{
+  "name": "@canx/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "typecheck": "tsc -b --pretty false",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "3.1.3",
+    "@tanstack/react-query": "5.102.8",
+    "@tanstack/react-virtual": "3.14.13",
+    "@tauri-apps/api": "2.11.1",
+    "dockview": "8.3.1",
+    "echarts": "6.1.0",
+    "i18next": "26.4.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-i18next": "17.0.14",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@tauri-apps/cli": "2.11.4",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@types/node": "26.5.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "eslint": "10.10.0",
+    "globals": "17.12.0",
+    "jsdom": "30.0.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0",
+    "vite": "8.3.0",
+    "vitest": "5.0.0"
+  }
+}
+

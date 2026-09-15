@@ -1,0 +1,1 @@
+"""Headless capture pipeline."""

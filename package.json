@@ -1,0 +1,14 @@
+{
+  "name": "can-x",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "build": "pnpm --filter @canx/desktop build",
+    "lint": "pnpm --filter @canx/desktop lint",
+    "test": "pnpm --filter @canx/desktop test",
+    "typecheck": "pnpm --filter @canx/desktop typecheck",
+    "tauri": "pnpm --filter @canx/desktop tauri"
+  }
+}
+

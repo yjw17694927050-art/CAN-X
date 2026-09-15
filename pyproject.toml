@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling==1.29.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "canx-runtime"
+version = "0.1.0"
+description = "Headless CAN runtime for CAN-X"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi==0.141.1",
+  "msgpack==1.2.2",
+  "psutil==7.2.2",
+  "pydantic==2.13.5",
+  "python-can==4.6.1",
+  "uvicorn[standard]==0.53.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx==0.28.1",
+  "mypy==2.3.1",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "ruff==0.16.7",
+]
+
+[project.scripts]
+canx-runtime = "canx.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["runtime/canx"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+asyncio_mode = "auto"
+pythonpath = ["runtime"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = "runtime"
+

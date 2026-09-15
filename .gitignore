@@ -1,0 +1,16 @@
+node_modules/
+.pnpm-store/
+dist/
+target/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+*.egg-info/
+.coverage
+coverage/
+benchmark-results/
+*.tsbuildinfo
+apps/desktop/src-tauri/gen/schemas/

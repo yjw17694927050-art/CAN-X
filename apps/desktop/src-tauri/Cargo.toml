@@ -1,0 +1,16 @@
+[package]
+name = "can-x"
+version = "0.1.0"
+description = "CAN-X desktop shell"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "can_x_lib"
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.5", features = [] }
+uuid = { version = "=1.26.1", features = ["v4"] }
