@@ -26,6 +26,7 @@ from canx.dbc.asset import (
 from canx.dbc.errors import DbcAssetIntegrityError, DbcAssetValidationError
 
 ASSET_ID = "3b0f9a5c-1d2e-4f3a-8b4c-5d6e7f8091a2"
+OTHER_ID = "11111111-1111-4111-8111-111111111111"
 PROJECT_ID = "2f1c3d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
 DIGEST = "0123456789abcdef" * 4
 IMPORTED_AT = datetime(2026, 9, 16, 10, 15, tzinfo=UTC)
@@ -226,7 +227,7 @@ def test_a_registered_path_resolves_inside_the_project_dbc_directory(tmp_path: P
     asset_file = asset_directory / f"{ASSET_ID}.dbc"
     asset_file.write_bytes(b'VERSION "1.0"\n')
 
-    resolved = resolve_asset_path(tmp_path, f"dbc/{ASSET_ID}.dbc")
+    resolved = resolve_asset_path(tmp_path, make_asset())
 
     assert resolved == asset_file.resolve()
     assert resolved.is_file()
@@ -234,22 +235,27 @@ def test_a_registered_path_resolves_inside_the_project_dbc_directory(tmp_path: P
 
 @pytest.mark.parametrize(
     "relative_path",
-    ["../outside.dbc", "dbc/../../outside.dbc", "dbc/../secret/outside.dbc"],
+    [
+        "../outside.dbc",
+        "dbc/../../outside.dbc",
+        "dbc/../secret/outside.dbc",
+        f"dbc/{OTHER_ID}.dbc",
+        "dbc/planted.dbc",
+    ],
+    ids=["parent", "dotted-escape", "dotted-inside", "other-asset-id", "unnamed-file"],
 )
-def test_a_stored_path_that_escapes_the_dbc_directory_is_refused(
+def test_a_path_that_is_not_the_one_the_identity_owns_cannot_be_expressed(
     tmp_path: Path, relative_path: str
 ) -> None:
-    """The registry is editable by hand, so a tampered row must not read outside."""
-    (tmp_path / ASSET_DIRECTORY).mkdir()
-    (tmp_path / "outside.dbc").write_bytes(b'VERSION "1.0"\n')
-    (tmp_path / "secret").mkdir()
-    (tmp_path / "secret" / "outside.dbc").write_bytes(b'VERSION "1.0"\n')
+    """Escapes and swaps alike are refused when the asset record is built.
 
-    with pytest.raises(DbcAssetIntegrityError) as info:
-        resolve_asset_path(tmp_path, relative_path)
+    A hand-edited registry row that names this shape is refused by the repository
+    as an integrity failure; this test is the model half of the same invariant.
+    """
+    with pytest.raises(DbcAssetValidationError) as info:
+        make_asset(relative_path=relative_path)
 
-    assert info.value.code == "dbc.asset_integrity_failed"
-    assert info.value.recoverable is False
+    assert info.value.code == "dbc.invalid_asset"
     assert info.value.details["relative_path"] == relative_path
 
 
@@ -267,5 +273,7 @@ def test_a_dbc_directory_that_is_itself_a_link_out_of_the_project_is_refused(
     except (OSError, NotImplementedError) as error:  # pragma: no cover - host dependent
         pytest.skip(f"this environment cannot create a directory link: {error}")
 
-    with pytest.raises(DbcAssetIntegrityError):
-        resolve_asset_path(project, f"dbc/{ASSET_ID}.dbc")
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        resolve_asset_path(project, make_asset())
+
+    assert info.value.code == "dbc.asset_integrity_failed"

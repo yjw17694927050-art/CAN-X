@@ -9,7 +9,9 @@ same after the project is closed, reopened, or moved.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -278,28 +280,30 @@ def test_a_registry_path_pointing_outside_the_project_is_refused(tmp_path: Path)
         ProjectDbcService(root).load_asset(asset.asset_id)
 
 
-def test_a_registry_path_pointing_at_another_file_in_dbc_is_refused(tmp_path: Path) -> None:
-    """A swapped path must not silently load a different DBC.
+def test_a_registry_path_pointing_at_a_byte_identical_file_is_refused(tmp_path: Path) -> None:
+    """A swapped path is refused by identity, not saved by the digest.
 
-    ``relative_path`` is ``UNIQUE``, so a row cannot be pointed at another
-    *registered* asset's file — that attack is already refused by the schema. The
-    reachable variant is a file that exists under ``dbc/`` without being
-    registered, which the digest check still catches.
+    The planted file holds the *same bytes* as the registered asset, so its size
+    and SHA-256 both agree with the swap. Only the identity binding notices — which
+    is exactly why the binding cannot be left to the digest check.
     """
     root = created_project(tmp_path)
     first = import_fixture(root, BASIC_FIXTURE)
-    planted_bytes = bytearray(BASIC_FIXTURE.read_bytes())
-    planted_bytes[0] = planted_bytes[0] ^ 0x20
-    (root / "dbc" / "planted.dbc").write_bytes(bytes(planted_bytes))
+    planted = root / "dbc" / "planted.dbc"
+    planted.write_bytes((root / "dbc" / f"{first.asset_id}.dbc").read_bytes())
+
+    assert hashlib.sha256(planted.read_bytes()).hexdigest() == first.sha256
 
     rewrite_registry(root, relative_path="dbc/planted.dbc")
 
     with pytest.raises(DbcAssetIntegrityError) as info:
         ProjectDbcService(root).load_asset(first.asset_id)
 
+    assert info.value.code == "dbc.asset_integrity_failed"
     assert info.value.details["asset_id"] == first.asset_id
-    assert info.value.details["expected_sha256"] == first.sha256
-    assert info.value.details["actual_sha256"] != first.sha256
+    # The row is refused while the record is being rebuilt, i.e. by identity —
+    # not by the size or digest comparison that runs afterwards.
+    assert info.value.details["cause"] == "dbc.invalid_asset"
 
 
 def test_a_registry_digest_that_no_longer_matches_reads_as_a_broken_row(tmp_path: Path) -> None:
@@ -359,3 +363,72 @@ def test_an_unknown_asset_id_is_refused_across_a_reopen(tmp_path: Path) -> None:
         ProjectDbcService(handle.root).load_asset("11111111-1111-4111-8111-111111111111")
 
     assert info.value.code == "dbc.asset_not_found"
+
+
+# --- real directory links ---------------------------------------------------
+
+
+def make_directory_link(link: Path, target: Path) -> bool:
+    """Create a real directory link at ``link`` pointing at ``target``.
+
+    A Windows junction needs no elevation, which is what makes the
+    real-filesystem escape testable on an ordinary host; ``os.symlink`` requires a
+    privilege most sessions do not hold. Returns ``False`` when the host refuses
+    both, so the caller skips honestly instead of passing vacuously.
+    """
+    if os.name == "nt":
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+        )
+        return completed.returncode == 0 and link.is_dir()
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return False
+    return link.is_dir()
+
+
+def test_import_refuses_a_dbc_directory_linked_outside_the_project(tmp_path: Path) -> None:
+    """Real filesystem evidence: the boundary moved, and nothing was written outside."""
+    root = created_project(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "dbc").rmdir()
+    if not make_directory_link(root / "dbc", outside):
+        pytest.skip("this host cannot create a directory link")
+
+    source = tmp_path / "source.dbc"
+    source.write_bytes(BASIC_FIXTURE.read_bytes())
+
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        ProjectDbcService(root).import_asset(source)
+
+    assert info.value.code == "dbc.asset_integrity_failed"
+    assert info.value.details["dbc_directory"] == str(outside.resolve())
+    assert ProjectDbcService(root).list_assets() == ()
+    assert list(outside.iterdir()) == []
+    assert source.read_bytes() == BASIC_FIXTURE.read_bytes()
+
+
+def test_load_refuses_a_project_copy_reached_through_a_linked_dbc_directory(
+    tmp_path: Path,
+) -> None:
+    """The same boundary applies to reading, even when the outside file matches."""
+    root = created_project(tmp_path)
+    asset = import_fixture(root, BASIC_FIXTURE)
+    owned = root / "dbc" / f"{asset.asset_id}.dbc"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / owned.name).write_bytes(owned.read_bytes())
+    owned.unlink()
+    (root / "dbc").rmdir()
+    if not make_directory_link(root / "dbc", outside):
+        pytest.skip("this host cannot create a directory link")
+
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        ProjectDbcService(root).load_asset(asset.asset_id)
+
+    assert info.value.code == "dbc.asset_integrity_failed"
+    assert info.value.details["dbc_directory"] == str(outside.resolve())

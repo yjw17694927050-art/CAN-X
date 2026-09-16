@@ -32,7 +32,7 @@ import hashlib
 import os
 from contextlib import suppress
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from canx.dbc import repository
@@ -97,6 +97,9 @@ class ProjectDbcService:
             DbcModelError: If the document cannot satisfy a CAN-X invariant.
             DbcSourceChangedError: If the source changed between validation and
                 persistence; nothing is written or registered.
+            DbcAssetIntegrityError: If the project's ``dbc`` directory no longer
+                resolves inside the project, or is missing: there is then no safe
+                place to write the copy, and nothing is written or registered.
             DbcAssetStorageError: If the project-owned copy could not be written.
             DbcAssetRegistryError: If the registry row could not be committed; the
                 newly written file is removed on a best-effort basis.
@@ -105,19 +108,22 @@ class ProjectDbcService:
         document = self._importer.import_file(source, encoding=encoding)
         raw = _reread_verified(source, document.source)
         asset_id = str(uuid4())
-        relative_path = asset_relative_path(asset_id)
-        target = self._root / PurePosixPath(relative_path)
-        _stage_asset(target, raw)
         asset = DbcAsset(
             asset_id=asset_id,
             project_id=project_id,
             source_name=document.source.name,
-            relative_path=relative_path,
+            relative_path=asset_relative_path(asset_id),
             sha256=document.source.sha256,
             size_bytes=document.source.size_bytes,
             encoding=document.source.encoding,
             imported_at=datetime.now(UTC),
         )
+        # The write target comes out of the same gate a load uses. Reaching for
+        # ``project_root / relative_path`` here would bypass containment entirely,
+        # and ``<project>/dbc`` may already be a link pointing somewhere else —
+        # the escape would happen on write, before any registry row could exist.
+        target = resolve_asset_path(self._root, asset)
+        _stage_asset(target, raw)
         try:
             with repository.asset_connection(self._root) as connection:
                 repository.insert_asset(connection, asset)
@@ -196,7 +202,7 @@ class ProjectDbcService:
             DbcAssetRegistryError: If the registry could not be read.
         """
         asset = self.get_asset(asset_id)
-        raw = _read_asset_bytes(resolve_asset_path(self._root, asset.relative_path), asset)
+        raw = _read_asset_bytes(resolve_asset_path(self._root, asset), asset)
         try:
             return self._importer.load_bytes(
                 raw, source_name=asset.source_name, encoding=asset.encoding
@@ -269,12 +275,20 @@ def _stage_asset(target: Path, raw: bytes) -> None:
     A directory fsync is not available on Windows, so the file's own fsync plus
     the atomic rename is the strongest guarantee the platform offers here.
 
+    ``target`` has already been resolved by :func:`resolve_asset_path`, which
+    proves both its identity and that its directory is an existing, in-project
+    ``dbc`` directory. This function therefore never creates a directory: a
+    missing or redirected ``dbc`` is a tampered project layout, and recreating it
+    here would hide exactly the condition the caller just checked.
+
+    The staging file is derived from the verified ``target``, so it lands in the
+    same proven directory as the file it becomes.
+
     Raises:
         DbcAssetStorageError: If the copy could not be written or promoted.
     """
     staging = target.with_name(f"{STAGING_PREFIX}{target.name}")
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
         with staging.open("wb") as handle:
             handle.write(raw)
             handle.flush()

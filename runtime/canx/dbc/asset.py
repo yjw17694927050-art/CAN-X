@@ -9,7 +9,7 @@ The module is deliberately free of SQLite and of the DBC engine. It describes wh
 an asset *is*; :mod:`canx.dbc.repository` owns the rows and
 :mod:`canx.dbc.project_service` owns the orchestration.
 
-Two deliberate choices live here:
+Four deliberate choices live here:
 
 * the project-owned file is named after the **asset id**, never after the name the
   user imported. Two files called ``network.dbc`` from different directories must
@@ -17,7 +17,13 @@ Two deliberate choices live here:
   must never become a path segment;
 * ``source_name`` is a **base name only**. The external directory a DBC was
   imported from is never persisted, so a project never carries a customer path
-  such as ``D:\\Customer\\SecretProject`` out of the machine it was imported on.
+  such as ``D:\\Customer\\SecretProject`` out of the machine it was imported on;
+* the owned path is **bound to the asset identity**: ``asset_id = X`` means
+  ``relative_path == "dbc/<X>.dbc"`` and nothing else, so a registry row cannot
+  point one asset at a different file — not even a byte-identical one;
+* the project's ``dbc`` directory must **resolve inside the project**. Resolving
+  it is what exposes a junction or a symlink, so containment is decided by the
+  real filesystem location rather than by a name that merely looks right.
 """
 
 from __future__ import annotations
@@ -63,6 +69,10 @@ class DbcAsset:
         object.__setattr__(self, "project_id", _require_uuid(self.project_id, field="project_id"))
         _require_source_name(self.source_name)
         _require_asset_relative_path(self.relative_path)
+        # Checked *after* canonicalization, so the expected path is derived from
+        # the canonical identity rather than from the form the caller happened to
+        # pass in.
+        _require_bound_relative_path(self.asset_id, self.relative_path)
         _require_sha256(self.sha256)
         _require_size(self.size_bytes)
         _require_encoding(self.encoding)
@@ -79,32 +89,93 @@ def asset_relative_path(asset_id: str) -> str:
     return f"{ASSET_DIRECTORY}/{normalized}{ASSET_SUFFIX}"
 
 
-def resolve_asset_path(project_root: Path, relative_path: str) -> Path:
-    """Resolve a stored asset path inside ``<project>/dbc``, refusing any escape.
+def resolve_asset_directory(project_root: Path) -> Path:
+    """Resolve ``<project>/dbc`` and prove it is still inside the project.
 
-    A persisted path is never trusted just because the database held it: the
-    registry is a file a user can edit, and a row pointing at ``../outside.dbc``
-    must not turn a load into a read outside the project. The check is made
-    against the *resolved* DBC directory, so a ``dbc`` directory that is itself a
-    link out of the project is refused as well.
+    Resolving the directory is what makes a junction, a symlink or a reparse
+    point visible: ``<project>/dbc`` can *look* like a project directory while
+    actually naming somewhere else entirely. A boundary check that only compared
+    the candidate against this directory would happily agree — with a directory
+    that is no longer part of the project.
+
+    The directory must also exist. A missing or replaced ``dbc`` directory is a
+    tampered project layout, and CAN-X does not recreate it silently: that would
+    paper over exactly the condition this check exists to notice.
+
+    Args:
+        project_root: The project whose DBC directory is being resolved.
+
+    Returns:
+        The resolved, in-project DBC directory.
+
+    Raises:
+        DbcAssetIntegrityError: If the directory resolves outside the project
+            root, or does not exist as a directory.
+    """
+    root = Path(project_root).resolve()
+    directory = (root / ASSET_DIRECTORY).resolve()
+    if not directory.is_relative_to(root):
+        raise DbcAssetIntegrityError(
+            "The project DBC directory resolves outside the project root.",
+            details={"project_root": str(root), "dbc_directory": str(directory)},
+        )
+    if not directory.is_dir():
+        raise DbcAssetIntegrityError(
+            "The project DBC directory is missing or is not a directory.",
+            details={"project_root": str(root), "dbc_directory": str(directory)},
+        )
+    return directory
+
+
+def resolve_asset_path(project_root: Path, asset: DbcAsset) -> Path:
+    """Resolve one asset's owned file, proving identity and containment.
+
+    Three facts are established before a caller may read or write anything:
+
+    1. ``relative_path`` is exactly the path this ``asset_id`` owns. "Some
+       ``.dbc`` file under ``dbc/``" is not enough: without the binding, a
+       registry row could point asset A at ``dbc/B.dbc``, and when both files hold
+       identical bytes even the digest check would agree;
+    2. ``<project>/dbc`` still resolves inside the project root — see
+       :func:`resolve_asset_directory`;
+    3. the candidate resolves inside that resolved directory.
+
+    The same gate therefore guards reading and writing, so an import cannot reach
+    a location a load would have refused.
 
     Args:
         project_root: The project the asset belongs to.
-        relative_path: The project-relative path stored in the registry.
+        asset: The registered asset whose owned file is being resolved.
 
     Returns:
         The absolute path of the project-owned asset file.
 
     Raises:
-        DbcAssetIntegrityError: If the path escapes ``<project>/dbc``.
+        DbcAssetIntegrityError: If the path is not bound to the identity, escapes
+            the project, or escapes its DBC directory.
     """
-    root = Path(project_root).resolve()
-    asset_root = (root / ASSET_DIRECTORY).resolve()
-    candidate = (root / PurePosixPath(relative_path)).resolve()
-    if not candidate.is_relative_to(asset_root):
+    expected = asset_relative_path(asset.asset_id)
+    if asset.relative_path != expected:
         raise DbcAssetIntegrityError(
-            "A stored DBC asset path points outside the project DBC directory.",
-            details={"relative_path": relative_path, "project_root": str(root)},
+            "A DBC asset path is not bound to its asset identity.",
+            details={
+                "asset_id": asset.asset_id,
+                "relative_path": asset.relative_path,
+                "expected_relative_path": expected,
+            },
+        )
+    root = Path(project_root).resolve()
+    directory = resolve_asset_directory(root)
+    candidate = (root / PurePosixPath(asset.relative_path)).resolve()
+    if not candidate.is_relative_to(directory):
+        raise DbcAssetIntegrityError(
+            "A DBC asset path points outside the project DBC directory.",
+            details={
+                "asset_id": asset.asset_id,
+                "relative_path": asset.relative_path,
+                "project_root": str(root),
+                "dbc_directory": str(directory),
+            },
         )
     return candidate
 
@@ -175,6 +246,29 @@ def _require_asset_relative_path(value: object) -> str:
             details={"relative_path": value},
         )
     return value
+
+
+def _require_bound_relative_path(asset_id: str, relative_path: str) -> None:
+    """Require the owned path to be exactly the one this identity owns.
+
+    "Inside ``dbc/``" is a weaker property than identity. Without this binding a
+    registry row could point asset A at ``dbc/B.dbc``, and because both files can
+    hold the same bytes, the size and digest checks would agree with the swap. The
+    identity and the owned path have to be one-to-one.
+
+    Raises:
+        DbcAssetValidationError: If the path belongs to a different identity.
+    """
+    expected = f"{ASSET_DIRECTORY}/{asset_id}{ASSET_SUFFIX}"
+    if relative_path != expected:
+        raise DbcAssetValidationError(
+            "relative_path must be the path this asset identity owns.",
+            details={
+                "asset_id": asset_id,
+                "relative_path": relative_path,
+                "expected_relative_path": expected,
+            },
+        )
 
 
 def _require_sha256(value: object) -> str:

@@ -310,3 +310,63 @@ def test_a_row_with_a_naive_timestamp_is_an_integrity_failure(tmp_path: Path) ->
         fetch(root, FIRST_ID)
 
     assert info.value.details["field"] == "imported_at"
+
+
+def test_a_row_whose_path_is_not_bound_to_its_id_is_an_integrity_failure(
+    tmp_path: Path,
+) -> None:
+    """A hand-edited row cannot point one asset at another asset's file.
+
+    The row is refused while the record is being rebuilt, so the failure surfaces
+    as an integrity failure about the registry — not as a validation complaint
+    about a caller's argument.
+    """
+    root, project_id = make_project(tmp_path)
+    connection = raw(root / DATABASE_FILENAME)
+    try:
+        connection.execute(
+            "INSERT INTO dbc_assets (asset_id, project_id, source_name, relative_path,"
+            " sha256, size_bytes, encoding, imported_at)"
+            " VALUES (?, ?, 'vehicle.dbc', ?, ?, 10, 'utf-8-sig', ?)",
+            (
+                FIRST_ID,
+                project_id,
+                asset_relative_path(SECOND_ID),
+                DIGEST,
+                IMPORTED_AT.isoformat(),
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        fetch(root, FIRST_ID)
+
+    assert info.value.code == "dbc.asset_integrity_failed"
+    assert info.value.details["asset_id"] == FIRST_ID
+    assert info.value.details["cause"] == "dbc.invalid_asset"
+
+
+def test_a_row_whose_path_names_an_unrelated_file_is_an_integrity_failure(
+    tmp_path: Path,
+) -> None:
+    """A path that is not even the shape an asset owns is refused the same way."""
+    root, project_id = make_project(tmp_path)
+    connection = raw(root / DATABASE_FILENAME)
+    try:
+        connection.execute(
+            "INSERT INTO dbc_assets (asset_id, project_id, source_name, relative_path,"
+            " sha256, size_bytes, encoding, imported_at)"
+            " VALUES (?, ?, 'planted.dbc', 'dbc/planted.dbc', ?, 10, 'utf-8-sig', ?)",
+            (FIRST_ID, project_id, DIGEST, IMPORTED_AT.isoformat()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        fetch(root, FIRST_ID)
+
+    assert info.value.code == "dbc.asset_integrity_failed"
+    assert info.value.details["cause"] == "dbc.invalid_asset"

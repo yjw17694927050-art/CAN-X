@@ -497,3 +497,102 @@ def test_importing_the_same_bytes_twice_creates_two_assets(tmp_path: Path) -> No
     assert first.relative_path != second.relative_path
     assert len(service.list_assets()) == 2
     assert len(stored_files(root)) == 2
+
+
+# --- a dbc directory that left the project (deterministic) -------------------
+
+
+def redirect_dbc_tree(monkeypatch: pytest.MonkeyPatch, project: Path, outside: Path) -> None:
+    """Make everything under ``<project>/dbc`` resolve under ``outside``.
+
+    The deterministic stand-in for a junction: the directory *and* its contents are
+    seen somewhere else, which is the shape a real junction produces — and the
+    reason a check on the candidate alone cannot notice the move. Faking resolution
+    keeps this evidence available on hosts that cannot create links at all.
+    """
+    source = project / "dbc"
+    real_resolve = Path.resolve
+
+    def fake_resolve(self: Path, strict: bool = False) -> Path:
+        try:
+            relative = self.relative_to(source)
+        except ValueError:
+            return real_resolve(self, strict=strict)
+        return outside / relative
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+
+def test_import_refuses_a_dbc_directory_that_resolved_outside_the_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing may be written through a directory that is no longer the project's."""
+    root, _ = make_project(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = write_source(tmp_path / "inbox", "vehicle.dbc")
+    before = snapshot(outside)
+    redirect_dbc_tree(monkeypatch, root, outside)
+
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        ProjectDbcService(root).import_asset(source)
+
+    assert info.value.code == "dbc.asset_integrity_failed"
+    assert info.value.details["dbc_directory"] == str(outside)
+    assert snapshot(outside) == before
+    assert list((root / "dbc").iterdir()) == []
+
+    monkeypatch.undo()
+
+    assert ProjectDbcService(root).list_assets() == ()
+    assert stored_files(root) == []
+    assert source.read_bytes() == BASIC_DBC.encode("utf-8")
+
+
+def test_load_refuses_a_dbc_directory_that_resolved_outside_the_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading is gated by the same boundary, even when the outside file matches."""
+    root, _ = make_project(tmp_path)
+    service = ProjectDbcService(root)
+    asset = service.import_asset(write_source(tmp_path / "inbox", "vehicle.dbc"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / f"{asset.asset_id}.dbc").write_bytes(BASIC_DBC.encode("utf-8"))
+    (root / "dbc" / f"{asset.asset_id}.dbc").unlink()
+    redirect_dbc_tree(monkeypatch, root, outside)
+
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        service.load_asset(asset.asset_id)
+
+    assert info.value.code == "dbc.asset_integrity_failed"
+    assert Path(str(info.value.details["dbc_directory"])) == outside
+
+
+def test_import_refuses_a_project_whose_dbc_directory_is_missing(tmp_path: Path) -> None:
+    """A missing project directory is not silently recreated."""
+    root, _ = make_project(tmp_path)
+    (root / "dbc").rmdir()
+    source = write_source(tmp_path / "inbox", "vehicle.dbc")
+
+    with pytest.raises(DbcAssetIntegrityError) as info:
+        ProjectDbcService(root).import_asset(source)
+
+    assert info.value.code == "dbc.asset_integrity_failed"
+    assert not (root / "dbc").exists()
+    assert ProjectDbcService(root).list_assets() == ()
+    assert source.read_bytes() == BASIC_DBC.encode("utf-8")
+
+
+def test_import_does_not_recreate_a_dbc_path_that_is_a_file(tmp_path: Path) -> None:
+    """A ``dbc`` that is a file is a tampered layout, not something to overwrite."""
+    root, _ = make_project(tmp_path)
+    (root / "dbc").rmdir()
+    (root / "dbc").write_bytes(b"not a directory")
+    source = write_source(tmp_path / "inbox", "vehicle.dbc")
+
+    with pytest.raises(DbcAssetIntegrityError):
+        ProjectDbcService(root).import_asset(source)
+
+    assert (root / "dbc").read_bytes() == b"not a directory"
+    assert ProjectDbcService(root).list_assets() == ()
