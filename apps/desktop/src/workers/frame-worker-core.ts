@@ -5,6 +5,7 @@ export interface FrameViewportSnapshot {
   readonly frames: readonly RuntimeFrame[];
   readonly droppedViewFrames: number;
   readonly sequenceGaps: number;
+  readonly streamId: string | null;
 }
 
 export class FrameWorkerCore {
@@ -98,6 +99,7 @@ export class FrameWorkerCore {
       frames,
       droppedViewFrames: this.#droppedViewFrames,
       sequenceGaps: this.#sequenceGaps,
+      streamId: this.#streamId,
     };
   }
 }

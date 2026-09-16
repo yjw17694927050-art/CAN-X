@@ -1,42 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { RuntimeFrame } from "../../runtime/frame-schema";
-import type { FrameViewportSnapshot } from "../../workers/frame-worker-core";
+import { useRealtimeStream, type RealtimeStreamStore } from "../../runtime/realtime-stream";
 import { buildByteSeries } from "./series";
 
-interface WorkerViewportMessage {
-  readonly type: "viewport";
-  readonly snapshot: FrameViewportSnapshot;
+const NO_FRAMES: readonly RuntimeFrame[] = [];
+
+export interface LivePlotPanelProps {
+  readonly store?: RealtimeStreamStore;
 }
 
-export function LivePlotPanel() {
+/**
+ * Plot is a projection of the same shared realtime store as Trace. It never
+ * owns a socket or Worker and is unaffected by a Trace-only freeze.
+ */
+export function LivePlotPanel({ store }: LivePlotPanelProps = {}) {
   const { t } = useTranslation();
   const chartElement = useRef<HTMLDivElement>(null);
   const chartRef = useRef<import("echarts/core").ECharts | null>(null);
   const latestSeries = useRef<readonly (readonly [number, number])[]>([]);
-  const [frames, setFrames] = useState<readonly RuntimeFrame[]>([]);
+  const { snapshot } = useRealtimeStream(store);
+  const frames = snapshot?.frames ?? NO_FRAMES;
   const series = useMemo(() => buildByteSeries(frames, 0, 1_000), [frames]);
   latestSeries.current = series.map(({ time, value }) => [time, value] as const);
-
-  useEffect(() => {
-    if (typeof Worker === "undefined" || typeof WebSocket === "undefined") return;
-    const worker = new Worker(new URL("../../workers/frame-worker.ts", import.meta.url), {
-      type: "module",
-    });
-    const websocket = new WebSocket("ws://127.0.0.1:8765/stream/frames");
-    websocket.binaryType = "arraybuffer";
-    websocket.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-      worker.postMessage({ type: "batch", payload: event.data }, [event.data]);
-    };
-    worker.onmessage = (event: MessageEvent<WorkerViewportMessage>) => {
-      if (event.data.type === "viewport") setFrames(event.data.snapshot.frames);
-    };
-    return () => {
-      websocket.close();
-      worker.terminate();
-    };
-  }, []);
 
   useEffect(() => {
     const element = chartElement.current;
