@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { LiveTracePanel } from "../trace/LiveTracePanel";
 import { startVirtualCapture, stopCapture } from "../../runtime/capture-client";
+import { useRealtimeStream } from "../../runtime/realtime-stream";
 import { LivePlotPanel } from "../plot/LivePlotPanel";
 import "dockview/dist/styles/dockview.css";
 
@@ -35,6 +36,7 @@ function panelContent(name: string): ReactNode {
 export function DockWorkspace() {
   const containerRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
+  const { connection } = useRealtimeStream();
   const [runtimeState, setRuntimeState] = useState<"starting" | "capturing" | "failed">("starting");
 
   useEffect(() => {
@@ -81,6 +83,9 @@ export function DockWorkspace() {
     <main aria-label={t("workspace.label")} className="workspace-shell">
       <div className={`runtime-state runtime-state-${runtimeState}`} role="status">
         {t(`runtime.${runtimeState}`)}
+      </div>
+      <div className={`stream-state stream-state-${connection}`} role="status">
+        {t(`stream.${connection}`)}
       </div>
       <div className="dockview-theme-dark" ref={containerRef} />
     </main>

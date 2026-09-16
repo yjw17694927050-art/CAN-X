@@ -26,6 +26,11 @@ const resources = {
       "runtime.starting": "Starting Virtual CAN",
       "runtime.capturing": "Virtual CAN active",
       "runtime.failed": "Runtime unavailable",
+      "stream.idle": "Stream idle",
+      "stream.connecting": "Stream connecting",
+      "stream.open": "Stream live",
+      "stream.closed": "Stream disconnected",
+      "stream.unsupported": "Stream unavailable",
     },
   },
   "zh-CN": {
@@ -52,6 +57,11 @@ const resources = {
       "runtime.starting": "正在启动虚拟 CAN",
       "runtime.capturing": "虚拟 CAN 运行中",
       "runtime.failed": "运行时不可用",
+      "stream.idle": "数据流空闲",
+      "stream.connecting": "数据流连接中",
+      "stream.open": "数据流实时",
+      "stream.closed": "数据流已断开",
+      "stream.unsupported": "数据流不可用",
     },
   },
 } as const;
