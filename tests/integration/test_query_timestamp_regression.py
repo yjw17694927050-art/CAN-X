@@ -73,9 +73,15 @@ def test_a_non_monotonic_segment_still_yields_its_middle_frame(tmp_path: Path) -
     """The persisted segment records bounds 0..1, yet the frame at 100 must be found."""
     with _project(tmp_path) as handle:
         session_id = _session(handle, NON_MONOTONIC)
-        segment = DataSessionService(handle.root).list_segments(session_id)[0]
+        sessions = DataSessionService(handle.root)
+        segment = sessions.list_segments(session_id)[0]
+        stored = sessions.read_segment(session_id, 0)
 
-        assert (segment.first_timestamp, segment.last_timestamp) == (0.0, 1.0)
+        # The persisted bounds are first/last frame *in segment order*, not min/max:
+        # the segment really does hold a frame at 100, yet records 0.0 .. 1.0.
+        assert segment.first_timestamp == 0.0
+        assert segment.last_timestamp == 1.0
+        assert [item.normalized_timestamp for item in stored] == [0.0, 100.0, 1.0]
 
         service = QueryService(handle.root)
         frame_filter = FrameFilter(
