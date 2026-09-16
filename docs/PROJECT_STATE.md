@@ -736,7 +736,7 @@ Approved to enter V0.2
 
 ## V0.2 — Runtime & Data Foundation
 
-### Step V0.2-01 — Project Foundation (DONE)
+### Step V0.2-01 — Project Foundation
 
 建立了正式 Project Model、工程目录结构与 SQLite project metadata 生命周期基础：
 
@@ -750,8 +750,27 @@ Existing paths protected      ✅ create never overwrites user data
 Corruption detected           ✅ malformed / unsupported / identity mismatch rejected
 ```
 
-本机验证（2026-09-16）：`pytest` **150 passed**（其中 42 为本增量新增）、
+独立验收结论：**Conditional PASS**（两个 P1 待修）。定向修复（V0.2-01-FINAL）已完成：
+
+```text
+P1-A  create() 泄漏裸 ValueError，且放行纯空白 display_name
+      → ProjectValidationError，code = project.invalid_display_name（strip 后为空即拒绝）
+P1-B  close() 在 SQLite 确认关闭前就把 handle 置为 closed，失败时连接引用丢失
+      → 仅 close 成功才置 closed；失败抛 project.close_failed，handle 保持 open 且保留连接
+```
+
+本机验证（2026-09-16，修复后重新执行）：`pytest` **157 passed**、
 `ruff check runtime tests tools` exit 0、`mypy runtime` exit 0（35 source files）。
+
+当前状态：
+
+```text
+V0.2-01 Project Foundation
+Implementation complete
+Independent acceptance: Conditional PASS
+Final remediation completed
+Awaiting final acceptance
+```
 
 未实现（刻意留在 V0.2 后续增量）：Parquet、DuckDB、Query Service、Data Session、UI。
 
@@ -1282,8 +1301,8 @@ Result recorded
 
 V0.1.1 独立验收返回 **Conditional PASS**，已批准进入 V0.2。
 
-V0.2 的第一个增量 **V0.2-01 Project Foundation** 已完成并通过本机全量回归
-（见 §18 Step V0.2-01）。
+V0.2-01 Project Foundation 已完成实现、独立验收（Conditional PASS）与定向修复
+（见 §18 Step V0.2-01）。当前等待 **V0.2-01 Final Acceptance**。
 
 状态：
 
@@ -1294,7 +1313,10 @@ push GitHub                          ✅ done
 independent acceptance               ✅ Conditional PASS
 ↓
 V0.2 — Runtime & Data Foundation
-├── V0.2-01 Project Foundation       ✅ done
+├── V0.2-01 implementation           ✅ done
+├── V0.2-01 independent acceptance   ◑ Conditional PASS (2 P1)
+├── V0.2-01 final remediation        ✅ done
+├── V0.2-01 final acceptance         ⏳ awaiting
 └── V0.2-02 (next coherent increment) pending
 ```
 
