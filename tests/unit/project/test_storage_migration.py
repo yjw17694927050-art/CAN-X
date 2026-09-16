@@ -13,6 +13,7 @@ import canx.project.storage as storage_module
 import pytest
 from canx.project.errors import InvalidProjectError
 from canx.project.model import ProjectMetadata
+from canx.project.service import ProjectService
 from canx.project.storage import (
     DATABASE_FILENAME,
     DATABASE_SCHEMA_VERSION,
@@ -229,3 +230,105 @@ def test_migration_never_rewrites_a_stamped_database_without_the_metadata_table(
         assert "data_sessions" not in _table_names(raw)
     finally:
         raw.close()
+
+
+# ---------------------------------------------------------------------------
+# A version stamp alone is not a schema. V2 must be complete to open.
+# ---------------------------------------------------------------------------
+
+
+def _complete_v2_database(path: Path) -> None:
+    """Create a full V2 database at ``path`` and release the connection."""
+    create_database(path, _metadata()).close()
+
+
+def _drop_table(path: Path, name: str) -> None:
+    connection = sqlite3.connect(str(path))
+    try:
+        connection.execute(f"DROP TABLE {name}")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _drop_column(path: Path, table: str, column: str) -> None:
+    connection = sqlite3.connect(str(path))
+    try:
+        connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_a_complete_v2_database_opens(tmp_path: Path) -> None:
+    """The complete schema remains the happy path."""
+    path = tmp_path / DATABASE_FILENAME
+    _complete_v2_database(path)
+
+    connection = open_database(path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_VERSION
+        assert read_metadata(connection) == _metadata()
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("table", ["data_sessions", "data_segments"])
+def test_a_v2_database_missing_a_data_table_is_rejected(tmp_path: Path, table: str) -> None:
+    """A V2 stamp must not be accepted when a required table is absent."""
+    path = tmp_path / DATABASE_FILENAME
+    _complete_v2_database(path)
+    _drop_table(path, table)
+
+    with pytest.raises(InvalidProjectError) as info:
+        open_database(path)
+
+    assert info.value.code == "project.database_schema_invalid"
+    assert info.value.details["missing_tables"] == [table]
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [("data_sessions", "updated_at"), ("data_segments", "created_at")],
+)
+def test_a_v2_database_missing_a_required_column_is_rejected(
+    tmp_path: Path, table: str, column: str
+) -> None:
+    """A present table with the wrong columns is still not a usable V2 schema."""
+    path = tmp_path / DATABASE_FILENAME
+    _complete_v2_database(path)
+    _drop_column(path, table, column)
+
+    with pytest.raises(InvalidProjectError) as info:
+        open_database(path)
+
+    assert info.value.code == "project.database_schema_invalid"
+    assert info.value.details["table"] == table
+    assert info.value.details["missing_columns"] == [column]
+
+
+def test_project_open_rejects_a_v2_database_missing_a_data_table(tmp_path: Path) -> None:
+    """A corrupt V2 project is refused at open, not later by the data service."""
+    root = tmp_path / "vehicle.canx"
+    handle = ProjectService().create(root, display_name="Vehicle A")
+    handle.close()
+    _drop_table(root / DATABASE_FILENAME, "data_segments")
+
+    with pytest.raises(InvalidProjectError) as info:
+        ProjectService().open(root)
+
+    assert info.value.code == "project.database_schema_invalid"
+    assert info.value.details["missing_tables"] == ["data_segments"]
+
+
+def test_create_database_self_checks_the_schema_it_just_wrote(tmp_path: Path) -> None:
+    """Creation validates its own output rather than trusting the DDL."""
+    path = tmp_path / DATABASE_FILENAME
+
+    connection = create_database(path, _metadata())
+
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_VERSION
+        assert read_metadata(connection) == _metadata()
+    finally:
+        connection.close()

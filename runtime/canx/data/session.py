@@ -11,6 +11,7 @@ right before they are attached to the realtime capture path.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from contextlib import suppress
 from dataclasses import replace
@@ -399,40 +400,64 @@ class DataSessionService:
     def start(self, *, stream_id: str) -> DataSessionWriter:
         """Register a new ``ACTIVE`` session for one capture stream.
 
+        The session directory is created before the session row, so a caller can
+        never receive an ``ACTIVE`` session it is unable to write segments into.
+        Either both exist or neither does: a failure on either side removes only
+        the directory this call just created and raises a typed error.
+
         Raises:
             DataValidationError: If ``stream_id`` is blank.
-            DataStorageError: If the project database is unusable.
+            DataStorageError: If the session directory or the session row could
+                not be created, or if the project database is unusable.
         """
-        if not isinstance(stream_id, str) or not stream_id:
+        if not isinstance(stream_id, str) or not stream_id.strip():
             raise DataValidationError(
-                "stream_id must be a non-empty string.",
+                "stream_id must contain at least one non-whitespace character.",
                 code="data.session.invalid_stream_id",
                 details={"stream_id": repr(stream_id)},
             )
         started_at = _utc_now()
         session_id = str(uuid4())
-        with repository.data_connection(self._root) as connection:
-            project_id = repository.read_project_id(connection)
-            session = DataSession(
-                session_id=session_id,
-                project_id=project_id,
-                stream_id=stream_id,
-                state=DataSessionState.ACTIVE,
-                started_at=started_at,
-                ended_at=None,
-                frame_count=0,
-                segment_count=0,
-                first_sequence=None,
-                last_sequence=None,
-                first_timestamp=None,
-                last_timestamp=None,
-                created_at=started_at,
-                updated_at=started_at,
-            )
-            repository.insert_session(connection, session)
-        (self._root / session_relative_directory(session_id) / SEGMENTS_DIRECTORY).mkdir(
-            parents=True, exist_ok=True
-        )
+        try:
+            session_directory = _create_session_directory(self._root, session_id)
+        except OSError as error:
+            raise DataStorageError(
+                "The session directory could not be created.",
+                code="data.session.directory_create_failed",
+                details={"session_id": session_id, "project_root": str(self._root)},
+            ) from error
+        try:
+            with repository.data_connection(self._root) as connection:
+                project_id = repository.read_project_id(connection)
+                session = DataSession(
+                    session_id=session_id,
+                    project_id=project_id,
+                    stream_id=stream_id,
+                    state=DataSessionState.ACTIVE,
+                    started_at=started_at,
+                    ended_at=None,
+                    frame_count=0,
+                    segment_count=0,
+                    first_sequence=None,
+                    last_sequence=None,
+                    first_timestamp=None,
+                    last_timestamp=None,
+                    created_at=started_at,
+                    updated_at=started_at,
+                )
+                repository.insert_session(connection, session)
+        except (DataError, sqlite3.Error, OSError) as error:
+            # Only this session's own directory is removed. Existing user data is
+            # never touched, and the shared ``data/sessions`` parent is left in
+            # place so a failure cannot disturb anything else that uses it.
+            _remove_directory_quietly(session_directory)
+            if isinstance(error, DataError):
+                raise
+            raise DataStorageError(
+                "The data session could not be registered.",
+                code="data.session.start_failed",
+                details={"session_id": session_id, "project_root": str(self._root)},
+            ) from error
         return DataSessionWriter(
             project_root=self._root,
             session=session,
@@ -623,6 +648,26 @@ def _normalize_session_id(value: str) -> str:
             code="data.session.invalid_session_id",
             details={"session_id": repr(value)},
         ) from error
+
+
+def _create_session_directory(project_root: Path, session_id: str) -> Path:
+    """Create the directory tree that owns one session's segments.
+
+    Kept as a module-level seam so a directory-creation failure can be injected
+    deterministically instead of relying on real disk permissions.
+
+    Raises:
+        OSError: If the tree cannot be created.
+    """
+    session_directory = project_root / session_relative_directory(session_id)
+    (session_directory / SEGMENTS_DIRECTORY).mkdir(parents=True, exist_ok=False)
+    return session_directory
+
+
+def _remove_directory_quietly(path: Path) -> None:
+    """Best-effort removal of a directory this call just created."""
+    with suppress(OSError):
+        shutil.rmtree(path)
 
 
 def _remove_quietly(path: Path) -> None:

@@ -26,6 +26,46 @@ LEGACY_DATABASE_SCHEMA_VERSION = 1
 _METADATA_TABLE = "project_metadata"
 _METADATA_COLUMNS = ("project_id", "display_name", "created_at", "updated_at")
 
+_DATA_SESSIONS_TABLE = "data_sessions"
+_DATA_SEGMENTS_TABLE = "data_segments"
+
+_DATA_SESSIONS_COLUMNS = (
+    "session_id",
+    "project_id",
+    "stream_id",
+    "state",
+    "started_at",
+    "ended_at",
+    "frame_count",
+    "segment_count",
+    "first_sequence",
+    "last_sequence",
+    "first_timestamp",
+    "last_timestamp",
+    "created_at",
+    "updated_at",
+)
+
+_DATA_SEGMENTS_COLUMNS = (
+    "segment_id",
+    "session_id",
+    "segment_index",
+    "relative_path",
+    "frame_count",
+    "first_sequence",
+    "last_sequence",
+    "first_timestamp",
+    "last_timestamp",
+    "byte_size",
+    "created_at",
+)
+
+#: Every table the current schema version must provide, with its required columns.
+_DATA_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (_DATA_SESSIONS_TABLE, _DATA_SESSIONS_COLUMNS),
+    (_DATA_SEGMENTS_TABLE, _DATA_SEGMENTS_COLUMNS),
+)
+
 _CREATE_METADATA_TABLE = f"""
 CREATE TABLE {_METADATA_TABLE} (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -38,8 +78,8 @@ CREATE TABLE {_METADATA_TABLE} (
 
 # The V0.2-02 data tables. The project layer owns their schema and migration;
 # the ``canx.data`` repository owns writing and reading the rows.
-_CREATE_DATA_SESSIONS_TABLE = """
-CREATE TABLE data_sessions (
+_CREATE_DATA_SESSIONS_TABLE = f"""
+CREATE TABLE {_DATA_SESSIONS_TABLE} (
     session_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     stream_id TEXT NOT NULL,
@@ -57,10 +97,10 @@ CREATE TABLE data_sessions (
 )
 """
 
-_CREATE_DATA_SEGMENTS_TABLE = """
-CREATE TABLE data_segments (
+_CREATE_DATA_SEGMENTS_TABLE = f"""
+CREATE TABLE {_DATA_SEGMENTS_TABLE} (
     segment_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES data_sessions (session_id),
+    session_id TEXT NOT NULL REFERENCES {_DATA_SESSIONS_TABLE} (session_id),
     segment_index INTEGER NOT NULL CHECK (segment_index >= 0),
     relative_path TEXT NOT NULL,
     frame_count INTEGER NOT NULL CHECK (frame_count >= 0),
@@ -111,6 +151,9 @@ def create_database(path: Path, metadata: ProjectMetadata) -> sqlite3.Connection
         )
         connection.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
         connection.execute("COMMIT")
+        # Creation self-checks its own output instead of trusting the DDL.
+        _verify_metadata_columns(connection, path)
+        _verify_data_tables(connection, path)
     except sqlite3.Error as error:
         _rollback_quietly(connection)
         close_quietly(connection)
@@ -119,6 +162,9 @@ def create_database(path: Path, metadata: ProjectMetadata) -> sqlite3.Connection
             code="project.database_init_failed",
             details={"path": str(path)},
         ) from error
+    except BaseException:
+        close_quietly(connection)
+        raise
     return connection
 
 
@@ -161,6 +207,7 @@ def open_database(path: Path) -> sqlite3.Connection:
                 details={"path": str(path), "schema_version": version},
             )
         _verify_metadata_columns(connection, path)
+        _verify_data_tables(connection, path)
     except BaseException:
         close_quietly(connection)
         raise
@@ -315,6 +362,51 @@ def _verify_metadata_columns(connection: sqlite3.Connection, path: Path) -> None
             code="project.database_schema_invalid",
             details={"path": str(path), "missing_columns": missing},
         )
+
+
+def _verify_data_tables(connection: sqlite3.Connection, path: Path) -> None:
+    """Verify that the current version's data tables and columns exist.
+
+    A ``user_version`` stamp is a claim, not evidence: a database that says it is
+    V2 but lacks ``data_sessions`` or ``data_segments`` (or one of their columns)
+    must be refused at open, not midway through a later data operation.
+
+    Raises:
+        InvalidProjectError: If a required table or column is missing.
+    """
+    try:
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    except sqlite3.Error as error:
+        raise InvalidProjectError(
+            "The project database schema could not be inspected.",
+            code="project.database_unreadable",
+            details={"path": str(path)},
+        ) from error
+    present = {str(row[0]) for row in rows}
+    missing_tables = [name for name, _ in _DATA_TABLES if name not in present]
+    if missing_tables:
+        raise InvalidProjectError(
+            "The project database is missing data tables required by its schema version.",
+            code="project.database_schema_invalid",
+            details={"path": str(path), "missing_tables": missing_tables},
+        )
+    for table, required_columns in _DATA_TABLES:
+        try:
+            info = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        except sqlite3.Error as error:
+            raise InvalidProjectError(
+                "The project database schema could not be inspected.",
+                code="project.database_unreadable",
+                details={"path": str(path), "table": table},
+            ) from error
+        columns = {str(row[1]) for row in info}
+        missing = [name for name in required_columns if name not in columns]
+        if missing:
+            raise InvalidProjectError(
+                "The project database is missing columns required by its schema version.",
+                code="project.database_schema_invalid",
+                details={"path": str(path), "table": table, "missing_columns": missing},
+            )
 
 
 def _parse_timestamp(value: str, *, field: str) -> datetime:

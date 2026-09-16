@@ -373,14 +373,16 @@ def test_appending_something_that_is_not_a_batch_is_rejected(tmp_path: Path) -> 
         assert info.value.code == "data.session.invalid_batch"
 
 
-def test_a_blank_stream_id_is_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stream_id", ["", "   ", "\t\n"], ids=["empty", "spaces", "tabs"])
+def test_a_blank_stream_id_is_rejected(tmp_path: Path, stream_id: str) -> None:
     with project(tmp_path) as handle:
         service = DataSessionService(handle.root)
 
         with pytest.raises(DataValidationError) as info:
-            service.start(stream_id="")
+            service.start(stream_id=stream_id)
 
         assert info.value.code == "data.session.invalid_stream_id"
+        assert service.list_sessions() == ()
 
 
 def test_a_non_positive_segment_threshold_is_rejected(tmp_path: Path) -> None:
@@ -693,3 +695,106 @@ def test_the_manifest_is_untouched_by_data_sessions(tmp_path: Path) -> None:
         after = json.loads((handle.root / "project.json").read_text(encoding="utf-8"))
 
         assert after == before
+
+
+# ---------------------------------------------------------------------------
+# start() failure atomicity: either a usable session exists, or nothing does.
+# ---------------------------------------------------------------------------
+
+FIXED_SESSION_ID = "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+SESSIONS_RELATIVE = ("data", "sessions")
+
+
+def sessions_directory(root: Path) -> Path:
+    return root.joinpath(*SESSIONS_RELATIVE)
+
+
+def session_directory(root: Path, session_id: str) -> Path:
+    return sessions_directory(root) / session_id
+
+
+def test_start_is_atomic_when_the_session_directory_cannot_be_created(
+    tmp_path: Path,
+) -> None:
+    """A real filesystem failure must not leave an ACTIVE session behind."""
+    with project(tmp_path) as handle:
+        sessions_root = sessions_directory(handle.root)
+        sessions_root.write_bytes(b"not a directory")
+        service = DataSessionService(handle.root)
+
+        with pytest.raises(DataStorageError) as info:
+            service.start(stream_id=STREAM_ID)
+
+        assert info.value.code == "data.session.directory_create_failed"
+        assert not isinstance(info.value, OSError)
+        assert service.list_sessions() == ()
+        # The pre-existing file is user state and must survive the failure.
+        assert sessions_root.is_file()
+
+
+def test_start_is_atomic_when_directory_creation_is_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PermissionError surfaces as a typed data error, never as raw OSError."""
+
+    def deny(project_root: Path, session_id: str) -> Path:
+        raise PermissionError("simulated denial")
+
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root)
+        monkeypatch.setattr(session_module, "_create_session_directory", deny)
+
+        with pytest.raises(DataStorageError) as info:
+            service.start(stream_id=STREAM_ID)
+
+        assert info.value.code == "data.session.directory_create_failed"
+        assert not isinstance(info.value, PermissionError)
+        assert service.list_sessions() == ()
+        sessions_root = sessions_directory(handle.root)
+        assert not sessions_root.exists() or list(sessions_root.iterdir()) == []
+
+
+def test_a_failed_session_registration_removes_the_new_session_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directory created + SQLite insert failed ⇒ no session directory remains."""
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root)
+
+        def fail_insert(*args: object, **kwargs: object) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(session_module, "uuid4", lambda: UUID(FIXED_SESSION_ID))
+        monkeypatch.setattr(session_module.repository, "insert_session", fail_insert)
+
+        with pytest.raises(DataStorageError) as info:
+            service.start(stream_id=STREAM_ID)
+
+        assert info.value.code == "data.session.start_failed"
+        assert not isinstance(info.value, sqlite3.Error)
+        assert service.list_sessions() == ()
+        assert not session_directory(handle.root, FIXED_SESSION_ID).exists()
+
+        monkeypatch.undo()
+
+        restarted = service.start(stream_id=STREAM_ID)
+        assert restarted.project_id == handle.project_id
+        assert segments_directory(handle.root, restarted.session_id).is_dir()
+        assert service.get_session(restarted.session_id).state is DataSessionState.ACTIVE
+
+
+def test_a_database_that_cannot_be_reached_leaves_no_session_directory(
+    tmp_path: Path,
+) -> None:
+    """The directory is created first, so an unreachable database must clean it up."""
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root)
+        handle.close()
+        (handle.root / DATABASE_FILENAME).unlink()
+
+        with pytest.raises(DataStorageError) as info:
+            service.start(stream_id=STREAM_ID)
+
+        assert info.value.code == "data.project_database_missing"
+        sessions_root = sessions_directory(handle.root)
+        assert not sessions_root.exists() or list(sessions_root.iterdir()) == []

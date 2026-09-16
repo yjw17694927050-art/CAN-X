@@ -145,17 +145,11 @@ def test_open_releases_the_connection_when_validation_fails(tmp_path: Path) -> N
 
 
 def test_read_metadata_rejects_a_missing_row(tmp_path: Path) -> None:
-    """An empty-but-valid schema has no project identity to report."""
+    """A complete schema with no identity row has nothing to report."""
     path = tmp_path / DATABASE_FILENAME
-    raw = _raw_connection(path)
+    raw = create_database(path, _metadata())
     try:
-        raw.execute(
-            "CREATE TABLE project_metadata ("
-            "id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, display_name TEXT NOT NULL,"
-            " created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
-        )
-        raw.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
-        raw.commit()
+        raw.execute("DELETE FROM project_metadata")
     finally:
         raw.close()
 

@@ -759,7 +759,7 @@ P1-B  close() 在 SQLite 确认关闭前就把 handle 置为 closed，失败时�
       → 仅 close 成功才置 closed；失败抛 project.close_failed，handle 保持 open 且保留连接
 ```
 
-本机验证（2026-09-16，修复后重新执行）：`pytest` **157 passed**、
+本机验证（2026-09-16，V0.2-01 修复后当时重新执行）：`pytest` **157 passed**、
 `ruff check runtime tests tools` exit 0、`mypy runtime` exit 0（35 source files）。
 
 当前状态：
@@ -769,10 +769,10 @@ V0.2-01 Project Foundation
 Implementation complete
 Independent acceptance: Conditional PASS
 Final remediation completed
-Awaiting final acceptance
+V0.2-01 Final Acceptance: PASS
 ```
 
-未实现（刻意留在 V0.2 后续增量）：DuckDB、Query Service、Data Session、UI。
+未实现（刻意留在 V0.2 后续增量）：DuckDB、Query Service、UI。
 
 ---
 
@@ -816,7 +816,7 @@ pyarrow == 21.0.0
   · 打包 runtime 尚未引用数据模块 → Parquet 打包执行路径 NOT VERIFIED（见下）
 ```
 
-本机验证（2026-09-16，Windows）：
+本机验证（2026-09-16，V0.2-02 实现完成时）：
 
 ```text
 focused pytest (unit/project + unit/data + integration)   237 passed
@@ -832,12 +832,45 @@ Packaged Parquet execution path                           NOT VERIFIED
   (canx.data 不在打包 import graph 内；PYZ TOC 中 pyarrow 出现 0 次)
 ```
 
+独立验收结论：**Conditional PASS**（两项待修，见下）。定向修复（V0.2-02-FINAL）已完成：
+
+```text
+A  start() 失败原子性
+   session 目录先行创建，再登记 SQLite 行；任一步失败都只清理本次新建的
+   data/sessions/<session_id>，并抛 typed DataStorageError
+   （data.session.directory_create_failed / data.session.start_failed）。
+   OSError / PermissionError / sqlite3.Error 不再外泄，
+   失败后既不留 ACTIVE 会话，也不留半创建的会话目录。
+
+B  V2 schema 完整性
+   仅有 user_version = 2 不再足够：create_database / migrate / open 三处都校验
+   data_sessions 与 data_segments 存在且具备本版本所需列。损坏的 V2 在
+   ProjectService.open() 即被拒（project.database_schema_invalid，
+   details 含 missing_tables / table / missing_columns），
+   而不是等到 DataSessionService 被调用才暴露。
+```
+
+定向修复后本机验证（2026-09-16，重新执行）：
+
+```text
+focused pytest (unit/data + test_storage_migration + test_project_v1_to_v2)
+                                                          157 passed
+full pytest                                               335 passed
+ruff check runtime tests tools                            exit 0
+mypy runtime                                              exit 0 (42 source files)
+packaged-runtime smoke                                    PASS (1 passed，单独重跑)
+Packaged Parquet execution path                      仍为 NOT VERIFIED
+  本次未扩大 packaged import graph；canx.project 与 canx.data 都不在其中
+```
+
 状态：
 
 ```text
 V0.2-02 Data Session & Parquet Segment Persistence
 Implementation complete
-Awaiting independent acceptance
+Independent acceptance: Conditional PASS
+Final remediation completed
+Awaiting final acceptance
 ```
 
 本阶段刻意未进入：DuckDB、Query Service、SQL query API、Trace/Plot historical
@@ -1371,12 +1404,12 @@ Result recorded
 
 V0.1.1 独立验收返回 **Conditional PASS**，已批准进入 V0.2。
 
-V0.2-01 Project Foundation 已完成实现、独立验收（Conditional PASS）与定向修复
-（见 §18 Step V0.2-01），当前等待 **V0.2-01 Final Acceptance**。
+V0.2-01 Project Foundation 已完成实现、独立验收（Conditional PASS）、定向修复与
+最终验收（见 §18 Step V0.2-01）：**V0.2-01 Final Acceptance: PASS**。
 
-V0.2-02 Data Session & Parquet Segment Persistence 已完成实现与本机验证
-（见 §18 Step V0.2-02），提交并推送 GitHub，当前等待 **V0.2-02 Independent Acceptance**。
-尚未开始 V0.2-03。
+V0.2-02 Data Session & Parquet Segment Persistence 已完成实现、本机验证与提交推送，
+独立验收返回 **Conditional PASS**（见 §18 Step V0.2-02）。定向修复 V0.2-02-FINAL
+已完成，当前等待 **V0.2-02 Final Acceptance**。尚未开始 V0.2-03。
 
 状态：
 
@@ -1388,12 +1421,14 @@ independent acceptance               ✅ Conditional PASS
 ↓
 V0.2 — Runtime & Data Foundation
 ├── V0.2-01 implementation           ✅ done
-├── V0.2-01 independent acceptance   ◑ Conditional PASS (2 P1)
+├── V0.2-01 independent acceptance   ✅ Conditional PASS (2 P1)
 ├── V0.2-01 final remediation        ✅ done
-├── V0.2-01 final acceptance         ⏳ awaiting
+├── V0.2-01 final acceptance         ✅ PASS
 ├── V0.2-02 implementation           ✅ done
 ├── V0.2-02 local verification       ✅ done
-├── V0.2-02 independent acceptance   ⏳ awaiting
+├── V0.2-02 independent acceptance   ✅ Conditional PASS
+├── V0.2-02 final remediation        ✅ done
+├── V0.2-02 final acceptance         ⏳ awaiting
 └── V0.2-03 (next coherent increment) not started
 ```
 
