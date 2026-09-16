@@ -96,6 +96,8 @@ class RuntimeService:
         self._recorder: MsgpackRecorder | ProjectRecorder = self._msgpack_recorder
         self._project_max_frames_per_segment = project_max_frames_per_segment
         self._project_recorder_factory = project_recorder_factory
+        self._last_project_recorder: ProjectRecorder | None = None
+        self._last_project_session_id: str | None = None
         self._active_channels = 0
         self._generated_total = 0
         self._captured_total = 0
@@ -132,6 +134,27 @@ class RuntimeService:
         if isinstance(recorder, ProjectRecorder):
             return recorder.data_session_id
         return None
+
+    @property
+    def _pending_finalization(self) -> ProjectRecorder | None:
+        """Return the recorder whose abandoned persistence worker is still running."""
+        recorder = self._last_project_recorder
+        if recorder is not None and recorder.finalization_pending:
+            return recorder
+        return None
+
+    def wait_for_finalization(self, timeout: float | None = None) -> bool:
+        """Block until an outstanding project persistence worker has exited.
+
+        A cleanup deadline deliberately does not wait for the thread it
+        abandoned — that is what keeps stop bounded — so a caller that has to
+        reuse the project has to prove the old worker is gone. ``False`` means it
+        is still running.
+        """
+        recorder = self._last_project_recorder
+        if recorder is None:
+            return True
+        return recorder.wait_for_finalization(timeout)
 
     @property
     def _consumer_tasks(self) -> tuple[asyncio.Task[None], ...]:
@@ -203,6 +226,14 @@ class RuntimeService:
         # Validated before anything is created: a rejected target must not leave a
         # pipeline, a session row or a directory behind.
         project_root = None if project_path is None else self._require_project(project_path)
+        if project_root is not None and self._pending_finalization is not None:
+            raise CaptureConfigurationError(
+                "The previous capture's persistence worker has not finished yet;"
+                " the project cannot be recorded again until it exits.",
+                code="capture.finalization_pending",
+                details={"data_session_id": self._last_project_session_id},
+                recoverable=True,
+            )
         self._stream_id = str(uuid4())
         self._history.clear()
         self._batch_size = batch_size
@@ -343,6 +374,8 @@ class RuntimeService:
                     },
                     recoverable=True,
                 ) from error
+            self._last_project_recorder = recorder
+            self._last_project_session_id = recorder.data_session_id
             return
         self._recorder = self._msgpack_recorder
         if recording_path is not None:
@@ -467,22 +500,46 @@ class RuntimeService:
         if archive_task is not None:
             await asyncio.gather(archive_task, return_exceptions=True)
         self._archive_pending_frames = 0
+        recorder = self._recorder
+        deadline = self._recorder_cleanup_timeout_seconds
+        if isinstance(recorder, ProjectRecorder):
+            # The recorder decides for itself whether a terminal transition still
+            # fits in this budget, so a worker this deadline abandons can never
+            # complete a session the deadline has already condemned.
+            recorder.arm_stop_deadline(deadline)
         try:
-            await asyncio.wait_for(
-                self._recorder.stop(), timeout=self._recorder_cleanup_timeout_seconds
-            )
+            await asyncio.wait_for(recorder.stop(), timeout=deadline)
         except TimeoutError:
-            self._handle_recorder_failure(
-                code="recorder.cleanup_timeout",
-                message="Recorder close exceeded its cleanup deadline",
-                context={"stream_id": self._stream_id, "operation": "close"},
-            )
+            self._handle_recorder_timeout(recorder)
         except Exception as error:
             self._handle_recorder_failure(
                 code="recorder.flush_failed",
                 message=str(error),
                 context={"stream_id": self._stream_id},
             )
+
+    def _handle_recorder_timeout(self, recorder: MsgpackRecorder | ProjectRecorder) -> None:
+        """Record a missed recorder deadline, unless the recorder beat it.
+
+        A project-backed recorder settles the outcome itself — the session is
+        either durably ``FAILED``, or it completed inside the budget and only its
+        reporting was late. In the latter case there is no failure to declare: a
+        completed recording must not be reported as a failed one.
+        """
+        if isinstance(recorder, ProjectRecorder):
+            committed = recorder.close_finalization_gate(
+                code="recorder.cleanup_timeout",
+                message="Recorder close exceeded its cleanup deadline",
+                recoverable=False,
+                context={"stream_id": self._stream_id, "operation": "close"},
+            )
+            if committed:
+                return
+        self._handle_recorder_failure(
+            code="recorder.cleanup_timeout",
+            message="Recorder close exceeded its cleanup deadline",
+            context={"stream_id": self._stream_id, "operation": "close"},
+        )
 
     async def _run_consumer(
         self,

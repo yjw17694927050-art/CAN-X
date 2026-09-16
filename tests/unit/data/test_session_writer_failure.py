@@ -14,7 +14,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from canx.data.errors import DataSessionStateError, DataStorageError
+from canx.data.errors import DataSessionStateError, DataStorageError, DataValidationError
 from canx.data.model import DataSessionState
 from canx.data.session import DataSessionService
 from canx.domain.batch import FrameBatch
@@ -197,7 +197,7 @@ def test_fail_survives_an_unwritable_database_without_leaking_sqlite(
         def fail_update(*args: object, **kwargs: object) -> None:
             raise sqlite3.OperationalError("database is locked")
 
-        monkeypatch.setattr(session_module.repository, "update_session", fail_update)
+        monkeypatch.setattr(session_module.repository, "advance_session_state", fail_update)
 
         assert writer.fail() is True
         assert writer.state is DataSessionState.FAILED
@@ -243,3 +243,117 @@ def test_fail_is_never_a_bare_storage_error(tmp_path: Path) -> None:
 
         assert not isinstance(result, DataStorageError)
         assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# Split finalization: the flush is cancellable, the completion is decided.
+# ---------------------------------------------------------------------------
+
+
+def test_flush_pending_commits_the_tail_but_leaves_the_session_active(tmp_path: Path) -> None:
+    """The long half of finalization must not decide the terminal state."""
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root, max_frames_per_segment=10)
+        writer = service.start(stream_id=STREAM_ID)
+        writer.append(batch(0, 4))
+
+        writer.flush_pending()
+
+        stored = service.get_session(writer.session_id)
+        assert stored.state is DataSessionState.ACTIVE
+        assert stored.frame_count == 4
+        assert stored.segment_count == 1
+        assert [segment.frame_count for segment in service.list_segments(writer.session_id)] == [4]
+
+        # The session is still usable, so the caller can still refuse to complete it.
+        assert writer.fail() is True
+        assert service.get_session(writer.session_id).state is DataSessionState.FAILED
+
+
+def test_commit_completed_finishes_a_flushed_session(tmp_path: Path) -> None:
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root, max_frames_per_segment=10)
+        writer = service.start(stream_id=STREAM_ID)
+        writer.append(batch(0, 4))
+        writer.flush_pending()
+
+        completed = writer.commit_completed()
+
+        assert completed.state is DataSessionState.COMPLETED
+        assert completed.ended_at is not None
+        assert completed.frame_count == 4
+        assert service.get_session(writer.session_id) == completed
+
+
+def test_commit_completed_is_refused_when_another_writer_terminated_the_session(
+    tmp_path: Path,
+) -> None:
+    """The decisive write is conditional, so a concurrent failure wins durably."""
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root, max_frames_per_segment=10)
+        writer = service.start(stream_id=STREAM_ID)
+        writer.append(batch(0, 4))
+        writer.flush_pending()
+
+        assert service.fail_active_session(writer.session_id) is True
+
+        with pytest.raises(DataSessionStateError) as info:
+            writer.commit_completed()
+
+        assert info.value.code == "data.session.completion_refused"
+        stored = service.get_session(writer.session_id)
+        assert stored.state is DataSessionState.FAILED
+        assert stored.frame_count == 4
+        assert len(service.list_segments(writer.session_id)) == 1
+
+
+def test_flush_and_commit_require_an_active_session(tmp_path: Path) -> None:
+    with project(tmp_path) as handle:
+        writer = DataSessionService(handle.root).start(stream_id=STREAM_ID)
+        writer.fail()
+
+        with pytest.raises(DataSessionStateError):
+            writer.flush_pending()
+        with pytest.raises(DataSessionStateError):
+            writer.commit_completed()
+
+
+def test_finalize_is_still_flush_then_complete(tmp_path: Path) -> None:
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root, max_frames_per_segment=4)
+        writer = service.start(stream_id=STREAM_ID)
+        writer.append(batch(0, 6))
+
+        completed = writer.finalize()
+
+        assert completed.state is DataSessionState.COMPLETED
+        assert completed.frame_count == 6
+        assert completed.segment_count == 2
+
+
+def test_fail_active_session_never_touches_a_completed_session(tmp_path: Path) -> None:
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root)
+        writer = service.start(stream_id=STREAM_ID)
+        completed = writer.finalize()
+
+        assert service.fail_active_session(writer.session_id) is False
+        assert service.get_session(writer.session_id) == completed
+
+
+def test_fail_active_session_is_durable_and_idempotent(tmp_path: Path) -> None:
+    with project(tmp_path) as handle:
+        service = DataSessionService(handle.root)
+        writer = service.start(stream_id=STREAM_ID)
+
+        assert service.fail_active_session(writer.session_id) is True
+        assert service.fail_active_session(writer.session_id) is False
+        assert service.get_session(writer.session_id).state is DataSessionState.FAILED
+
+
+def test_fail_active_session_rejects_a_non_uuid(tmp_path: Path) -> None:
+    with project(tmp_path) as handle:
+        with pytest.raises(DataValidationError) as info:
+            DataSessionService(handle.root).fail_active_session("not-a-uuid")
+
+        assert info.value.code == "data.session.invalid_session_id"

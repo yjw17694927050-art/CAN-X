@@ -181,18 +181,40 @@ class DataSessionWriter:
         self._last_appended_timestamp = batch.frames[-1].normalized_timestamp
         self._flush_full_segments()
 
-    def finalize(self) -> DataSession:
-        """Flush the partial segment and mark the session ``COMPLETED``.
+    def flush_pending(self) -> None:
+        """Commit the buffered frames as one final Parquet segment; stay ``ACTIVE``.
+
+        This is the long, cancellable half of finalization and it only ever adds
+        committed data. The session deliberately remains ``ACTIVE`` afterwards so
+        a caller that loses its deadline during this step can still refuse to
+        complete the session and terminate it ``FAILED`` instead.
 
         Raises:
             DataSessionStateError: If the session is not ``ACTIVE``.
             ParquetWriteError: If the partial segment could not be committed.
-            DataStorageError: If the new state could not be persisted.
+            DataStorageError: If a committed segment could not be registered.
         """
         self._require_active()
         if self._buffer:
             self._commit_segment(tuple(self._buffer))
             self._buffer.clear()
+
+    def commit_completed(self) -> DataSession:
+        """Take the one ``ACTIVE`` → ``COMPLETED`` transition.
+
+        This is the short, decisive half of finalization and the only place a
+        session is ever finalized as complete. The durable write advances a row
+        only while it is still ``ACTIVE``, so when another writer terminated the
+        session first, this call loses and raises instead of overwriting that
+        decision — a session the runtime has already declared failed can never be
+        rewritten into a completed recording.
+
+        Raises:
+            DataSessionStateError: If the session is not ``ACTIVE``, including
+                when a concurrent writer terminated it first.
+            DataStorageError: If the new state could not be persisted.
+        """
+        self._require_active()
         ended_at = _utc_now()
         completed = replace(
             self._session,
@@ -202,7 +224,7 @@ class DataSessionWriter:
         )
         try:
             with repository.data_connection(self._root) as connection:
-                repository.update_session(connection, completed)
+                advanced = repository.advance_session_state(connection, completed)
         except (DataError, sqlite3.Error, OSError) as error:
             self._mark_failed()
             raise DataStorageError(
@@ -210,8 +232,26 @@ class DataSessionWriter:
                 code="data.session.finalize_failed",
                 details={"session_id": self._session.session_id},
             ) from error
+        if not advanced:
+            self._mark_failed()
+            raise DataSessionStateError(
+                "Another writer terminated the data session before it could complete.",
+                code="data.session.completion_refused",
+                details={"session_id": self._session.session_id},
+            )
         self._session = completed
         return completed
+
+    def finalize(self) -> DataSession:
+        """Flush the partial segment and mark the session ``COMPLETED``.
+
+        Raises:
+            DataSessionStateError: If the session is not ``ACTIVE``.
+            ParquetWriteError: If the partial segment could not be committed.
+            DataStorageError: If the new state could not be persisted.
+        """
+        self.flush_pending()
+        return self.commit_completed()
 
     def close(self) -> None:
         """Finalize the session when it is still ``ACTIVE``; otherwise do nothing."""
@@ -384,13 +424,17 @@ class DataSessionWriter:
         self._session = updated
 
     def _mark_failed(self) -> None:
-        """Record the failure in memory, and best-effort in the database."""
+        """Record the failure in memory, and best-effort in the database.
+
+        The durable write is conditional on the row still being ``ACTIVE``, so a
+        failure can never overwrite a session another writer already completed.
+        """
         failed = replace(self._session, state=DataSessionState.FAILED, updated_at=_utc_now())
         self._session = failed
         with suppress(
             DataError, sqlite3.Error, OSError
         ), repository.data_connection(self._root) as connection:
-            repository.update_session(connection, failed)
+            repository.advance_session_state(connection, failed)
 
 
 class DataSessionService:
@@ -615,6 +659,30 @@ class DataSessionService:
                     connection, session_id=session.session_id, at=recovered_at
                 )
         return tuple(session.session_id for session in active)
+
+    def fail_active_session(self, session_id: str) -> bool:
+        """Terminate one ``ACTIVE`` session that its writer can no longer complete.
+
+        The durable arbiter for a recorder whose finalization worker was abandoned
+        by a cleanup deadline: the row is advanced only while it is still
+        ``ACTIVE``, so this call either wins — and the abandoned writer's later
+        completion attempt is refused by the same condition — or the session was
+        already completed and is left exactly as it is. No committed segment is
+        ever deleted or rewritten.
+
+        Returns:
+            ``True`` when this call moved the session to ``FAILED``, ``False``
+            when it was no longer ``ACTIVE``.
+
+        Raises:
+            DataValidationError: If ``session_id`` is not a UUID.
+            DataStorageError: If the update could not be persisted.
+        """
+        normalized = _normalize_session_id(session_id)
+        with repository.data_connection(self._root) as connection:
+            return repository.fail_active_session(
+                connection, session_id=normalized, at=_utc_now()
+            )
 
     def inspect_integrity(self) -> DataIntegrityReport:
         """Compare the persisted metadata against the segment files on disk.

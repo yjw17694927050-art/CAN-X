@@ -52,6 +52,10 @@ _SESSION_UPDATE = (
     " first_timestamp = ?, last_timestamp = ?, created_at = ?, updated_at = ?"
     " WHERE session_id = ?"
 )
+_SESSION_ADVANCE = (
+    f"UPDATE {SESSIONS_TABLE} SET state = ?, ended_at = ?, updated_at = ?"
+    " WHERE session_id = ? AND state = ?"
+)
 
 
 @contextmanager
@@ -150,6 +154,39 @@ def update_session(connection: sqlite3.Connection, session: DataSession) -> None
         connection.execute(_SESSION_UPDATE, (*_session_values(session)[1:], session.session_id))
 
 
+def advance_session_state(connection: sqlite3.Connection, session: DataSession) -> bool:
+    """Advance an ``ACTIVE`` session row to ``session.state``; report who won.
+
+    Only a row still in ``ACTIVE`` is touched. The database therefore decides
+    between two concurrent terminal writers — a session another writer already
+    completed or failed is never overwritten, and the loser learns it lost
+    instead of silently rewriting the winner's decision. This is what makes the
+    terminal transition single-shot while the recorder and the runtime can reach
+    it from different threads.
+
+    Returns:
+        ``True`` when this call advanced the row, ``False`` when the row was no
+        longer ``ACTIVE`` (another writer got there first).
+
+    Raises:
+        DataStorageError: If the row could not be committed.
+    """
+    with _storage_errors(
+        code="data.session.update_failed", session_id=session.session_id
+    ), transaction(connection):
+        cursor = connection.execute(
+            _SESSION_ADVANCE,
+            (
+                session.state.value,
+                None if session.ended_at is None else session.ended_at.isoformat(),
+                session.updated_at.isoformat(),
+                session.session_id,
+                DataSessionState.ACTIVE.value,
+            ),
+        )
+        return cursor.rowcount == 1
+
+
 def register_segment(
     connection: sqlite3.Connection, *, segment: DataSegment, session: DataSession
 ) -> None:
@@ -170,6 +207,39 @@ def register_segment(
             _segment_values(segment),
         )
         connection.execute(_SESSION_UPDATE, (*_session_values(session)[1:], session.session_id))
+
+
+def fail_active_session(
+    connection: sqlite3.Connection, *, session_id: str, at: datetime
+) -> bool:
+    """Move one ``ACTIVE`` session to ``FAILED``; report whether this call won.
+
+    The durable sibling of :func:`advance_session_state`, for a writer that no
+    longer holds the session object — typically after its own worker was
+    abandoned mid-write. Only an ``ACTIVE`` row is touched, so a session another
+    writer already completed is never overwritten.
+
+    Returns:
+        ``True`` when this call advanced the row, ``False`` when the row was no
+        longer ``ACTIVE``.
+
+    Raises:
+        DataStorageError: If the update could not be committed.
+    """
+    with _storage_errors(
+        code="data.session.update_failed", session_id=session_id
+    ), transaction(connection):
+        cursor = connection.execute(
+            _SESSION_ADVANCE,
+            (
+                DataSessionState.FAILED.value,
+                None,
+                at.isoformat(),
+                session_id,
+                DataSessionState.ACTIVE.value,
+            ),
+        )
+        return cursor.rowcount == 1
 
 
 def mark_session_interrupted(

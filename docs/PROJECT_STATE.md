@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04 Project-Backed Capture Persistence Integration
+> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04-FINAL Recorder Cleanup Timeout Lifecycle Consistency
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -1202,10 +1202,9 @@ source 侧读回（由 .exe 进程产出的文件；帧数随运行时序而异�
 ```text
 1  archive path 是无损的，因此 sequence gap 只可能出现在已经可观测的失败之后；
    recorder 仍显式拒绝 gap（recorder.sequence_gap），不会把不完整录制呈现为完整。
-2  recorder cleanup deadline 过期时不会杀死磁盘线程：若该线程正在正常 finalize，
-   finalize 会完成，DataSession 可能仍以 COMPLETED 落库，而 runtime 报
-   recorder.cleanup_timeout。两种结果都不丢帧、不伪造帧；capture session（runtime
-   生命周期）与 data session（持久化生命周期）本就是两个对象。
+2  cleanup timeout 是一次 recorder failure：一旦声明，该 DataSession 就再也不可能
+   变成 COMPLETED。已经 committed 的 Parquet segment 仍然有效可查，而 session 以
+   FAILED 终止。（V0.2-04 独立验收曾在此发现 P1；见 V0.2-04-FINAL。）
 3  DataSessionWriter.fail() 的落库是 best-effort：内存状态在该 writer 生命周期内是
    权威；未落库的 FAILED 只能被显式 recovery 变成 INTERRUPTED。
 4  data_session_id 只在 recorder 仍持有活动 session 时非空（即 start 之后、stop 之前）。
@@ -1231,10 +1230,119 @@ windowed desktop launch                NOT VERIFIED（沿用 V0.1.1 结论）
 V0.2-04 Project-Backed Capture Persistence Integration
 Implementation complete
 Local verification complete
-Awaiting independent acceptance
+Independent acceptance: Conditional PASS（一项 P1）
+Final remediation completed（V0.2-04-FINAL，见下）
 ```
 
-本轮只做了 implementation + self verification。**不自行宣布 Independent Acceptance: PASS**；
+### Step V0.2-04-FINAL — Recorder Cleanup Timeout Lifecycle Consistency
+
+独立验收给出 **Conditional PASS**，唯一阻塞项：
+
+```text
+P1 — recorder cleanup timeout lifecycle race
+```
+
+根因（已在修复前确定性复现）：
+
+```text
+ProjectRecorder.stop()
+  → asyncio.to_thread(DataSessionWriter.finalize)
+  → Runtime cleanup deadline 到期
+  → asyncio 取消的是 coroutine，不是线程
+  → 被放弃的 worker 继续跑完 finalize()
+  → DataSession 落成 COMPLETED
+  同时 Runtime 已记录 recorder.cleanup_timeout
+
+结果：Runtime 说失败，数据库说完成 —— 违反 “recorder failure ⇒ 不得呈现为 COMPLETED”。
+```
+
+复现方式（确定性，不是 sleep 碰运气）：把 `DataSessionWriter.finalize` 用一个
+`threading.Event` 卡住 → 等 cleanup deadline 到期 → 释放 worker → 重开 project
+读状态。修复前读到 `COMPLETED`（探针与 RED 测试均已验证）。
+
+修复架构（commit gate + 持久化仲裁）：
+
+```text
+DataSessionWriter
+  finalize()          = flush_pending() + commit_completed()      （行为不变）
+  flush_pending()     → 写出尾部 Parquet segment；session 保持 ACTIVE
+  commit_completed()  → 唯一的 ACTIVE → COMPLETED 转换；
+                        持久写入条件为「行仍为 ACTIVE」，被抢先则抛
+                        data.session.completion_refused
+  fail()              → 条件式 ACTIVE → FAILED
+  repository.advance_session_state / fail_active_session
+                      → 由数据库裁决两个并发终态写入者
+
+ProjectRecorder
+  arm_stop_deadline(seconds)   owner 在 await stop() 前武装预算
+  stop()                      一个 worker：flush（长，可取消）→ 终态决策（短）
+  终态决策                     gate = failure flag + armed deadline + 剩余预算；
+                               只在 gate 打开且预算足够时提交 COMPLETED
+  终态锁                       声明 deadline 与决策互斥，不会交错
+  close_finalization_gate()    有序裁定：已 COMPLETED 则返回 True（不报失败）；
+                               否则关闭 gate 并做一次条件式 ACTIVE → FAILED 仲裁
+  finalization_pending / wait_for_finalization  证明被放弃的 worker 是否真的退出
+
+RuntimeService
+  _cleanup_recorder           stop() 前 arm_stop_deadline
+  _handle_recorder_timeout    由 recorder 裁定；只有确实未完成才上报
+                              recorder.cleanup_timeout
+  start_capture               旧 persistence worker 未退出时拒绝新 project capture
+                              （capture.finalization_pending，recoverable）
+```
+
+固定语义（修复后）：
+
+```text
+healthy stop        flush → 预算内提交 → COMPLETED，runtime failure = None
+recorder failure    backpressure / 写盘失败 / sequence gap → FAILED
+cleanup timeout     → FAILED（无论被放弃的 worker 之后是否恢复）
+                    已经 committed 的 segment 全部保留且可查
+worker 在超时后恢复  仍不能提交 COMPLETED：内存 gate 拒绝，数据库终态仲裁兜底
+repeated stop       幂等、有界，不会把 FAILED 改回 COMPLETED
+timeout 的意义      未改变（仍是 bounded stop 的 observability/safety 机制）
+```
+
+本机验证（2026-09-16，V0.2-04-FINAL）：
+
+```text
+full pytest                                 641 passed
+  （本增量前 618；新增 23 例）
+  tests/integration/test_recorder_cleanup_timeout.py      6 passed
+    · timeout 不可 COMPLETED（Test A/D）
+    · timeout 后已 committed segment 保留 + integrity clean（Test B）
+    · 慢但预算内的 finalize 仍 COMPLETED、failure None（Test C）
+    · 重复 stop 安全（Test E）
+    · 旧 worker 未退出时拒绝新 capture，settle 后可正常新建
+    · worker 卡在 commit_completed 内部仍必须输（持久化仲裁）
+  tests/unit/data/test_session_writer_failure.py         20 passed（新增 8 例拆分/仲裁）
+  tests/unit/recorder/test_project_recorder_gate.py      10 passed（新增）
+ruff check runtime tests tools              exit 0
+mypy runtime                                exit 0 (50 source files)
+scripts\package-windows.cmd                 exit 0（packaged project-backed smoke PASS）
+in-suite project soak                       generated 15,998 / persisted 15,998 /
+                                            0 gaps / 0 failures / state completed
+                                            （无回退）
+```
+
+已知边界（诚实记录）：
+
+```text
+抢在 deadline 之前就已提交的 COMPLETED 是真实结果，不会被事后改写成 FAILED；
+此时 runtime 不报 cleanup_timeout（由 close_finalization_gate 的裁定保证，
+不存在 “Runtime FAILED + DataSession COMPLETED” 的矛盾态）。
+被放弃的 worker 若永久挂死在磁盘 IO 上，session 可能保持 ACTIVE 而无法及时落成
+FAILED；但它同样永远不可能变成 COMPLETED，且可被显式 recovery 变成 INTERRUPTED。
+```
+
+状态：
+
+```text
+V0.2-04-FINAL remediation complete
+Awaiting final independent acceptance
+```
+
+本轮只做了实现 + 自验证。**不自行宣布 Final Acceptance: PASS**；
 最终独立验收由 ChatGPT / 项目负责人执行。
 
 ---
@@ -1744,12 +1852,15 @@ V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service 已完成实�
 独立验收（Conditional PASS，一项 P1 查询正确性）与定向修复 V0.2-03-FINAL
 （见 §18 Step V0.2-03）：**V0.2-03 Final Acceptance: PASS**。
 
-V0.2-04 Project-Backed Capture Persistence Integration 已完成实现与本机验证
-（见 §18 Step V0.2-04）：**Implementation complete / Local verification complete /
-Awaiting independent acceptance**。本阶段把实时 Capture 正式接入
-Project → DataSession → Parquet 持久化链路，并让 packaged
-`canx-runtime.exe` 真正执行 Parquet 写入路径（**Packaged Parquet execution path:
-VERIFIED**，Packaged DuckDB query path 仍为 NOT VERIFIED）。
+V0.2-04 Project-Backed Capture Persistence Integration 已完成实现与本机验证，
+独立验收结论 **Conditional PASS**（唯一阻塞项：P1 recorder cleanup timeout
+lifecycle race）。定向修复 V0.2-04-FINAL 已完成（见 §18 Step V0.2-04-FINAL）：
+**V0.2-04-FINAL remediation complete / Awaiting final independent acceptance**。
+本阶段把实时 Capture 正式接入 Project → DataSession → Parquet 持久化链路，并让
+runtime 一旦声明 recorder cleanup timeout，该 DataSession 就再也不可能变成
+COMPLETED；packaged `canx-runtime.exe` 真正执行了 Parquet 写入路径
+（**Packaged Parquet execution path: VERIFIED**，Packaged DuckDB query path 仍为
+NOT VERIFIED）。
 
 状态：
 
@@ -1776,7 +1887,9 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-03 final acceptance         ✅ PASS
 ├── V0.2-04 implementation           ✅ done
 ├── V0.2-04 local verification       ✅ done
-└── V0.2-04 independent acceptance   ⏳ awaiting
+├── V0.2-04 independent acceptance   ✅ Conditional PASS (1 P1)
+├── V0.2-04-FINAL remediation        ✅ done
+└── V0.2-04 final acceptance         ⏳ awaiting
 ```
 
 ---
