@@ -2671,6 +2671,287 @@ Awaiting independent acceptance
 最终验收由项目负责人独立执行。若通过，下一推荐 coherent increment 是
 **V0.3-04 — DBC Decode Foundation**（本轮不得开始）。
 
+**独立验收结果（项目负责人，已执行）**：
+
+```text
+V0.3-03 — DBC Project Registry & Persistence Foundation
+Final Acceptance: NOT PASS
+
+Blocking:
+P1 — DBC asset path identity / project containment is not fully enforced.
+```
+
+---
+
+### Step V0.3-03-FINAL — DBC Asset Path Identity & Containment Closure
+
+Objective：
+
+只修复上面两个 P1 blocker，建立两条硬不变式：
+
+```text
+Invariant A  Asset Identity Binding
+             asset_id = X  ⟺  relative_path == "dbc/<canonical-X>.dbc"
+
+Invariant B  Project Containment
+             resolved dbc directory  ∈ resolved project root
+             AND
+             resolved asset          ∈ resolved dbc directory
+```
+
+import 与 load 必须共享同一套 Project-owned path security invariant。本阶段不是
+新功能阶段：不进入 V0.3-04、不实现 decode / API / 前端 / Agent tool、不做
+delete / rename / replace / revision / orphan repair、SQLite schema 保持 V3、
+不新增依赖。
+
+#### Root cause
+
+```text
+P1-A  containment 只做了第二步。原实现：
+
+         root       = project_root.resolve()
+         asset_root = (root / "dbc").resolve()      ← 自身从未被验证
+         candidate  = (root / relative_path).resolve()
+         if not candidate.is_relative_to(asset_root): reject
+
+      当 <project>/dbc 是指向项目外的 junction / symlink / reparse point 时，
+      asset_root 本身就是项目外目录，candidate 也随之落在项目外 —— 但
+      candidate.is_relative_to(asset_root) 仍然成立，检查放行。
+
+      更严重的是 import：写入目标由
+
+         target = self._root / PurePosixPath(relative_path)
+
+      直接拼接，完全绕过 containment；而 _stage_asset() 里的
+      target.parent.mkdir(parents=True, exist_ok=True) 还会在目录缺失或被替换时
+      静默重建。
+
+      实测（本机 junction，无需管理员权限；输出原样记录）：
+
+         P1-B RED: accepted asset_id=3b0f9a5c-… path=dbc/11111111-….dbc
+         load-side RED: resolve_asset_path allowed …\outside\3b0f9a5c-….dbc
+         import-side RED: wrote …\outside\3a11516d-….dbc exists=True
+
+      即：import 真的把 project-owned asset 写到了 Project 之外。
+
+P1-B  DbcAsset.relative_path 只校验形状（"dbc/<name>.dbc"），不校验 <name> 是否
+      等于 asset_id。registry 因此可以把 asset A 指向 dbc/B.dbc；当两个文件
+      bytes 相同时，size 与 SHA-256 校验也会一致通过 —— identity ↔ owned path
+      的一一对应被破坏，而现有每一道防线都无法察觉。
+```
+
+#### Fix
+
+```text
+A. asset_id ↔ relative_path 绑定（Invariant A）
+
+   DbcAsset.__post_init__() 在 asset_id 归一化之后调用
+   _require_bound_relative_path(asset_id, relative_path)：
+
+       expected = f"dbc/{asset_id}.dbc"
+       relative_path != expected  →  dbc.invalid_asset
+
+   检查发生在归一化之后，因此大写 UUID 输入仍然合法（归一化成小写后比对），而
+   "dbc/planted.dbc"、"dbc/<另一个-UUID>.dbc" 以及大写形式的路径一律拒绝。
+
+   repository 的 _asset_from_row() 重建记录时碰到非法行，继续翻译为
+   dbc.asset_integrity_failed（details.cause = dbc.invalid_asset）。语义分层保持：
+
+       caller 构造非法资产   →  dbc.invalid_asset
+       registry 行被篡改     →  dbc.asset_integrity_failed
+
+B. containment 提升为两步（Invariant B）
+
+   新增 resolve_asset_directory(project_root) -> Path：
+
+       root      = project_root.resolve()
+       directory = (root / "dbc").resolve()
+       ① directory 必须 ∈ root        → 否则 dbc.asset_integrity_failed
+       ② directory 必须是现存目录      → 否则 dbc.asset_integrity_failed
+       return directory
+
+   resolve_asset_path(project_root, asset) 改为接收资产对象，依次证明：
+
+       ① relative_path == asset_relative_path(asset.asset_id)
+          （纵深防御：即使传入被篡改的记录对象，也会被再次拒绝）
+       ② resolve_asset_directory(project_root) 通过
+       ③ candidate（已 resolve）∈ directory
+
+C. import 与 load 共用同一 gate
+
+       asset  = DbcAsset(...)                    ← identity 在此强制
+       target = resolve_asset_path(root, asset)   ← containment 在此强制
+       _stage_asset(target, raw)                  ← staging 由已验证 target 派生
+       INSERT dbc_assets                          ← 顺序不变
+
+   写入目标不再由 project_root / relative_path 拼接，"load 很安全、import 直接拼
+   路径" 的缺口被消除。commit 顺序（validate → safe target → staging → fsync →
+   atomic promote → registry INSERT）与 TOCTOU 重读比对逻辑均未改动。
+
+D. fail-closed 目录处理
+
+   _stage_asset() 不再 mkdir。"dbc 缺失 / dbc 是文件 / dbc 解析到项目外" 一律在
+   resolve_asset_directory() 阶段以 dbc.asset_integrity_failed 拒绝：不静默重建、
+   不自动改 SQLite、不自动复制文件、不自动更新 hash。
+
+E. typed error 复用
+
+   全部沿用 dbc.asset_integrity_failed，未新增 error code，未扩展 error taxonomy。
+```
+
+#### Tests added
+
+```text
+asset / path binding
+  tests/unit/dbc/test_dbc_asset.py
+    test_a_path_that_is_not_the_one_the_identity_owns_cannot_be_expressed
+      [parent | dotted-escape | dotted-inside | other-asset-id | unnamed-file]
+  tests/unit/dbc/test_dbc_asset_containment.py
+    test_an_upper_case_identity_resolves_to_the_canonical_path
+
+same-bytes swapped path
+  tests/integration/test_dbc_project_assets.py
+    test_a_registry_path_pointing_at_a_byte_identical_file_is_refused
+      planted 文件与注册资产 bytes 完全相同（size 与 SHA-256 都与调换一致），
+      失败发生在记录重建阶段，details.cause = dbc.invalid_asset ——
+      即由 identity 拦截，而不是靠 digest。
+  tests/unit/dbc/test_dbc_asset_registry.py
+    test_a_row_whose_path_is_not_bound_to_its_id_is_an_integrity_failure
+    test_a_row_whose_path_names_an_unrelated_file_is_an_integrity_failure
+
+deterministic escaped dbc root（伪造 resolve，不依赖 symlink 权限，不 skip）
+  tests/unit/dbc/test_dbc_asset_containment.py
+    test_a_dbc_directory_that_resolves_outside_the_project_is_refused
+    test_an_asset_cannot_resolve_through_a_dbc_directory_that_left_the_project
+    test_a_missing_dbc_directory_is_never_recreated
+    test_a_dbc_directory_replaced_by_a_file_is_refused
+    test_resolving_rechecks_identity_even_for_a_mutated_record
+    test_a_project_reached_through_a_link_is_not_mistaken_for_an_escape
+
+import escaped-root
+  tests/unit/dbc/test_dbc_project_service.py
+    test_import_refuses_a_dbc_directory_that_resolved_outside_the_project
+    test_import_refuses_a_project_whose_dbc_directory_is_missing
+    test_import_does_not_recreate_a_dbc_path_that_is_a_file
+
+load escaped-root
+  tests/unit/dbc/test_dbc_project_service.py
+    test_load_refuses_a_dbc_directory_that_resolved_outside_the_project
+
+real link integration
+  tests/integration/test_dbc_project_assets.py
+    test_import_refuses_a_dbc_directory_linked_outside_the_project
+    test_load_refuses_a_project_copy_reached_through_a_linked_dbc_directory
+  tests/unit/dbc/test_dbc_asset.py
+    test_a_dbc_directory_that_is_itself_a_link_out_of_the_project_is_refused
+      （symlink 版本：本机无 SeCreateSymbolicLinkPrivilege → SKIPPED）
+```
+
+真实链接的实际情况（诚实记录）：本机 `os.symlink` 需要权限，会以
+`WinError 1314` SKIP；但 **NTFS junction（`mklink /J`）不需要权限**，因此上面两个
+集成用例创建了真实 junction 并**没有 skip**，它们直接证明"边界真的移动了、而
+CAN-X 拒绝"。确定性用例（伪造 `Path.resolve`）覆盖同一代码路径，所以本机
+symlink 权限缺失不影响 containment 证据的完整性。
+
+#### Fix effectiveness（回滚验证）
+
+新测试是否真的能捕获这两个缺陷，用"临时移除修复"反向验证：
+
+```text
+移除 resolve_asset_directory 里的 directory ∈ root 检查
+  → 6 failed（4 个确定性 + 2 个真实 junction）      ← 捕获 P1-A
+移除 __post_init__ 里的 _require_bound_relative_path 调用
+  → 5 failed（含 byte-identical swap 用例）         ← 捕获 P1-B
+恢复修复
+  → 384 passed, 1 skipped
+```
+
+#### 本机验证（2026-09-16，V0.3-03-FINAL 实现完成时，全部为实际执行结果）
+
+```text
+python -m pytest -q
+  1172 passed, 1 skipped in 102.18s
+  （V0.3-03 基线：1153 passed, 1 skipped；本轮净增 19 个用例）
+
+focused
+  tests/unit/dbc + tests/integration/test_dbc_project_assets.py
+    303 passed, 1 skipped
+  tests/unit/dbc + test_dbc_project_assets + tests/unit/project +
+  test_project_schema_upgrade + test_data_session_persistence
+    384 passed, 1 skipped
+
+Project migration regression
+  tests/unit/project/test_storage_v3.py              13 passed
+  tests/integration/test_project_schema_upgrade.py    8 passed
+
+ruff check runtime tests     exit 0（All checks passed!）
+mypy runtime                 exit 0（60 source files, strict）
+```
+
+packaging（`scripts\package-windows.cmd`，真实执行）：
+
+```text
+[1/6] runtime build + staged sidecar        PASS
+[2/6] staged sidecar verified               ok: canx-runtime-x86_64-pc-windows-msvc.exe
+[3/6] packaged-runtime smoke test           PASS
+[4/6] Tauri MSI build                       Finished 1 bundle
+[5/6] MSI artifact check                    ok: CAN-X_0.1.0_x64_en-US.msi
+[6/6] packaging complete                    exit 0
+
+独立复核（对新构建的 exe 重跑 smoke）
+  CANX_TEST_RUNTIME_EXE=<repo>\build\runtime-dist\canx-runtime.exe \
+    python -m pytest tests\integration\test_packaged_runtime_smoke.py -q
+  → 3 passed in 13.86s
+
+build\runtime-dist\canx-runtime.exe          59,553,459 bytes（V0.3-03: 59,554,835）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi  62,373,888 bytes（V0.3-03: 62,377,984）
+```
+
+packaged runtime scope 说明：本轮只改 domain 层的路径校验与模型校验，`canx.dbc`
+仍未接入 runtime 入口的 import graph（无 HTTP API、无组合根接线，均为既有 scope）。
+打包回归因此证明的是"未破坏既有 runtime build / packaged smoke / Tauri package"，
+不主张 packaged runtime 提供 DBC 资产能力。exe 与 MSI 的字节数与 V0.3-03 有约 1 KB /
+4 KB 的差异（PyInstaller 归档的构建期差异），本轮不对此做因果解释。
+
+#### SQLite schema / 依赖
+
+```text
+SQLite project schema  未改（仍为 V3；本轮未触碰 migration 代码）
+project.json           未改
+Parquet / Frame        未改
+HTTP / WebSocket       未改
+DBC canonical schema   未改（V0.3-02 契约原样）
+新增依赖               none
+```
+
+#### Known limitations
+
+```text
+1  resolve → check → write 之间仍存在文件系统 namespace race：另一个进程理论上可以
+   在检查之后把 dbc 目录替换成 junction。本轮不做 handle-relative 的 OS-specific
+   文件系统层来彻底消除它（成本远高于收益）。本轮目标被明确定义为"正常运行 +
+   持久化篡改 + 已存在的链接逃逸"三者 fail-closed，不声称"所有 race 不可能"。
+2  symlink 版本的用例在本机 SKIPPED（WinError 1314）。真实链接证据由 junction
+   用例提供，确定性用例覆盖同一代码路径。
+3  dbc 目录缺失一律拒绝且不重建：用户若手工删除 dbc/，需自行恢复目录后再导入。
+   这是刻意的 fail-closed 选择，repair / audit 属于未来独立功能。
+4  其余限制与 V0.3-03 相同（不实现 delete / replace / active DBC / decode / API /
+   前端 / Agent tool；unregistered orphan file 不被信任也不被自动清理）。
+```
+
+状态：
+
+```text
+V0.3-03-FINAL DBC Asset Path Identity & Containment Closure
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做修复 + 本机自验证。**不自行宣布 V0.3-03 Acceptance PASS**；等待项目负责人
+重新独立验收 V0.3-03。只有在 V0.3-03 获得 `Final Acceptance: PASS` 之后，才允许
+进入 **V0.3-04 — DBC Decode Foundation**。
+
 ---
 
 ## V0.3 — Professional Trace & DBC Foundation
