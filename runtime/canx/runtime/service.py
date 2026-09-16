@@ -123,8 +123,16 @@ class RuntimeService:
 
     @property
     def capture_state(self) -> CaptureSessionState:
-        if self.has_session and not self.capture_active:
-            return CaptureSessionState.FAILED
+        """Return the lifecycle state the owner last declared.
+
+        ``_capture_state`` is authoritative: the state machine is written
+        explicitly by its owner at each transition. It is deliberately *not*
+        inferred from ``has_session`` / ``capture_active`` — that pair is true for
+        the whole span of a stop, between ingress ending and the session being
+        released, so reading it as a failure published ``capture_state=failed``
+        with no failure behind it. ``FAILED`` is a verdict, and the runtime only
+        ever writes it where a real failure exists.
+        """
         return self._capture_state
 
     @property
@@ -458,6 +466,14 @@ class RuntimeService:
         pipeline = self._pipeline
         if pipeline is None:
             return
+        if self._failure is None:
+            # Ingress is about to stop while the runtime still owns the session,
+            # so the honest lifecycle state for that whole window is FINALIZING —
+            # never FAILED. Declaring it here, before the pipeline goes inactive,
+            # keeps a concurrent status read from ever seeing a failure that does
+            # not exist. A pre-existing failure is left alone: it already owns the
+            # eventual FAILED this stop settles to.
+            self._capture_state = CaptureSessionState.FINALIZING
         await pipeline.stop()
         self._sync_capture_counters(pipeline)
         self._sync_subscriber_drops()
