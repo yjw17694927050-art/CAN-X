@@ -2,7 +2,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use can_x_lib::runtime_sidecar::{LifecycleState, RuntimeLifecycle, RuntimeSidecar};
+use can_x_lib::runtime_sidecar::{LifecycleState, RuntimeLaunch, RuntimeLifecycle, RuntimeSidecar};
 
 #[test]
 fn lifecycle_marks_an_unexpected_child_exit_as_failed() {
@@ -39,7 +39,13 @@ fn sidecar_starts_health_checks_and_gracefully_stops_the_python_runtime() {
     let address = listener.local_addr().expect("read loopback test address");
     drop(listener);
 
-    let mut sidecar = RuntimeSidecar::spawn(&python, address).expect("spawn Python runtime");
+    let mut sidecar = RuntimeSidecar::spawn(
+        &RuntimeLaunch::PythonModule {
+            interpreter: python,
+        },
+        address,
+    )
+    .expect("spawn Python runtime");
 
     sidecar
         .wait_until_ready(Duration::from_secs(10))

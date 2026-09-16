@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use runtime_sidecar::{LifecycleState, RuntimeSidecar};
+use runtime_sidecar::{LifecycleState, RuntimeLaunch, RuntimeSidecar};
 use tauri::{Manager, RunEvent};
 
 struct ManagedRuntime {
-    python: Option<PathBuf>,
+    launch: Option<RuntimeLaunch>,
     address: SocketAddr,
     inner: Mutex<ManagedRuntimeInner>,
 }
@@ -22,11 +22,8 @@ struct ManagedRuntimeInner {
 
 impl ManagedRuntime {
     fn discover() -> Self {
-        let python = env::var_os("CANX_RUNTIME_PYTHON")
-            .map(PathBuf::from)
-            .or_else(find_workspace_python);
         Self {
-            python,
+            launch: resolve_launch(),
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8765),
             inner: Mutex::new(ManagedRuntimeInner {
                 sidecar: None,
@@ -36,15 +33,14 @@ impl ManagedRuntime {
     }
 
     fn start(&self) -> Result<String, String> {
-        let python = self
-            .python
-            .as_deref()
-            .ok_or_else(|| "runtime.python_unavailable: set CANX_RUNTIME_PYTHON".to_owned())?;
+        let launch = self.launch.as_ref().ok_or_else(|| {
+            "runtime.command_unavailable: no packaged runtime or development interpreter".to_owned()
+        })?;
         let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
         if inner.sidecar.is_some() {
             return Ok("ready".to_owned());
         }
-        let mut sidecar = RuntimeSidecar::spawn(python, self.address).map_err(|error| {
+        let mut sidecar = RuntimeSidecar::spawn(launch, self.address).map_err(|error| {
             inner.last_error = Some(error.to_string());
             error.to_string()
         })?;
@@ -98,6 +94,39 @@ impl ManagedRuntime {
     }
 }
 
+/// Development resolution: an explicit interpreter, then the repository virtualenv.
+#[cfg(debug_assertions)]
+fn resolve_launch() -> Option<RuntimeLaunch> {
+    env::var_os("CANX_RUNTIME_PYTHON")
+        .map(PathBuf::from)
+        .or_else(find_workspace_python)
+        .map(|interpreter| RuntimeLaunch::PythonModule { interpreter })
+}
+
+/// Distribution resolution: only the bundled executable, never a system Python.
+#[cfg(not(debug_assertions))]
+fn resolve_launch() -> Option<RuntimeLaunch> {
+    if let Some(path) = env::var_os("CANX_RUNTIME_EXECUTABLE") {
+        let executable = PathBuf::from(path);
+        if executable.is_file() {
+            return Some(RuntimeLaunch::BundledExecutable { executable });
+        }
+    }
+    find_bundled_executable().map(|executable| RuntimeLaunch::BundledExecutable { executable })
+}
+
+#[cfg(not(debug_assertions))]
+fn find_bundled_executable() -> Option<PathBuf> {
+    let directory = env::current_exe().ok()?.parent()?.to_path_buf();
+    [
+        directory.join("canx-runtime.exe"),
+        directory.join("resources").join("canx-runtime.exe"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+#[cfg(debug_assertions)]
 fn find_workspace_python() -> Option<PathBuf> {
     let mut directory = env::current_dir().ok()?;
     loop {

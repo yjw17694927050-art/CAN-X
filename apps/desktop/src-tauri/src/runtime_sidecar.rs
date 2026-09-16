@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -77,6 +77,15 @@ impl Default for RuntimeLifecycle {
     }
 }
 
+/// How the desktop resolves and owns the runtime process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeLaunch {
+    /// Development: a Python interpreter running the `canx` module.
+    PythonModule { interpreter: PathBuf },
+    /// Distribution: the packaged `canx-runtime` executable.
+    BundledExecutable { executable: PathBuf },
+}
+
 #[derive(Debug)]
 pub struct SidecarError {
     pub code: &'static str,
@@ -100,12 +109,18 @@ pub struct RuntimeSidecar {
 }
 
 impl RuntimeSidecar {
-    pub fn spawn(python: &Path, address: SocketAddr) -> Result<Self, SidecarError> {
+    pub fn spawn(launch: &RuntimeLaunch, address: SocketAddr) -> Result<Self, SidecarError> {
         let session_token = Uuid::new_v4().simple().to_string();
-        let child = Command::new(python)
+        let mut command = match launch {
+            RuntimeLaunch::PythonModule { interpreter } => {
+                let mut command = Command::new(interpreter);
+                command.args(["-m", "canx"]);
+                command
+            }
+            RuntimeLaunch::BundledExecutable { executable } => Command::new(executable),
+        };
+        let child = command
             .args([
-                "-m",
-                "canx",
                 "--host",
                 &address.ip().to_string(),
                 "--port",
