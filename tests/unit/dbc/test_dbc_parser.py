@@ -430,6 +430,7 @@ def _walk(value: object, path: str) -> int:
         "metadata.dbc",
         "can_fd.dbc",
         "non_ascii.dbc",
+        "float_signal.dbc",
     ],
 )
 def test_the_canonical_graph_contains_only_can_x_types(name: str) -> None:

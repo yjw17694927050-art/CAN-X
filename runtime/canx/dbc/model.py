@@ -77,6 +77,13 @@ class DbcSignal:
 
     ``factor`` and ``offset`` express ``physical = raw * factor + offset``. This
     model stores that definition; it does not apply it.
+
+    ``is_float`` records that the payload of this signal is IEEE-754 rather than
+    an integer field — the DBC file's ``SIG_VALTYPE_`` declaration. It is carried
+    so the fact survives the import boundary: the raw bits of a float signal are
+    not an integer, and a decoder that cannot tell the two apart would return a
+    plausible-looking but wrong number. This model records the kind; it does not
+    decode either kind.
     """
 
     name: str
@@ -84,6 +91,7 @@ class DbcSignal:
     length: int
     byte_order: DbcByteOrder
     is_signed: bool
+    is_float: bool
     factor: float
     offset: float
     minimum: float | None
@@ -104,6 +112,7 @@ class DbcSignal:
         if not isinstance(self.byte_order, DbcByteOrder):
             raise ValueError("byte_order must be a DbcByteOrder")
         _require_bool(self.is_signed, field="is_signed")
+        _require_bool(self.is_float, field="is_float")
         object.__setattr__(self, "factor", _require_finite(self.factor, field="factor"))
         object.__setattr__(self, "offset", _require_finite(self.offset, field="offset"))
         minimum = _require_optional_finite(self.minimum, field="minimum")

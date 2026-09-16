@@ -188,6 +188,7 @@ def _to_signal(signal: Any) -> DbcSignal:
             length=int(signal.length),
             byte_order=byte_order,
             is_signed=bool(signal.is_signed),
+            is_float=bool(signal.is_float),
             factor=signal.scale,
             offset=signal.offset,
             minimum=signal.minimum,

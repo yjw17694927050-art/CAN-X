@@ -30,6 +30,7 @@ def make_signal(**changes: object) -> DbcSignal:
         "length": 16,
         "byte_order": DbcByteOrder.LITTLE_ENDIAN,
         "is_signed": False,
+        "is_float": False,
         "factor": 0.25,
         "offset": -10.0,
         "minimum": 0.0,
