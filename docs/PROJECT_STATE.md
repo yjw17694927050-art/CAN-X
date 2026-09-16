@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-15  
-> **Current Phase**: V0.1.1 Acceptance Hardening implemented → independent acceptance pending  
+> **Current Phase**: V0.1.1 Final Cleanup complete → independent acceptance
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -1046,9 +1046,12 @@ V0.1.1 status (evidence in `docs/V0.1.1_ACCEPTANCE_REPORT.md`):
 
 ```text
 RESOLVED      AGENTS.md naming consistency
+RESOLVED      root source-of-truth layout (root guides restored, docs/ duplicates removed)
 RESOLVED      shared frontend realtime stream (single store; Trace + Plot)
+RESOLVED      shared-stream partial-init resource leak (atomic Worker/WebSocket init)
 RESOLVED      packaged Python runtime proof (canx-runtime.exe)
 RESOLVED      Tauri distribution proof (MSI bundle includes the sidecar)
+RESOLVED      single Windows packaging entry (scripts/package-windows.cmd)
 PARTIAL       desktop smoke test — runtime half verified, window NOT VERIFIED
 PARTIAL       realtime/UI latency — worker decode measured, UI/runtime latency NOT VERIFIED
 DEFERRED      UI pressure performance
@@ -1259,9 +1262,9 @@ V0.1.1 实现已完成（见 `docs/V0.1.1_ACCEPTANCE_REPORT.md`）。当前禁�
 状态：
 
 ```text
-Harness implementation              ✅ done
-↓
-push GitHub
+V0.1.1 implementation                ✅ done
+V0.1.1 final cleanup                 ✅ done
+push GitHub                          ✅ done
 ↓
 independent ChatGPT acceptance
 ↓
