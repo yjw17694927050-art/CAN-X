@@ -27,6 +27,23 @@ class ProjectError(Exception):
         self.source = source
 
 
+class ProjectValidationError(ProjectError):
+    """Raised when a public project argument cannot produce a valid project.
+
+    The default ``code`` is deliberately generic so a caller can raise this for
+    any argument, while the concrete ``code`` names the offending field.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "project.validation_failed",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
 class ProjectAlreadyExistsError(ProjectError):
     """Raised when a create target already exists and must not be replaced."""
 

@@ -13,6 +13,7 @@ from canx.project.errors import (
     ProjectClosedError,
     ProjectError,
     ProjectIdentityMismatchError,
+    ProjectValidationError,
 )
 from canx.project.manifest import MANIFEST_FILENAME, read_manifest, write_manifest
 from canx.project.model import (
@@ -108,13 +109,16 @@ class ProjectHandle:
     def close(self) -> None:
         """Release the owned database connection; safe to call repeatedly.
 
+        The handle reports ``closed`` only after SQLite confirms the close. When
+        closing fails, the handle stays open and keeps the connection, so a later
+        cleanup attempt can still reach it.
+
         Raises:
             ProjectError: If the connection cannot be closed cleanly.
         """
         connection = self._connection
         if connection is None:
             return
-        self._connection = None
         try:
             connection.close()
         except sqlite3.Error as error:
@@ -123,6 +127,7 @@ class ProjectHandle:
                 code="project.close_failed",
                 details={"path": str(self._root), "error": str(error)},
             ) from error
+        self._connection = None
 
     def __enter__(self) -> Self:
         if self._connection is None:
@@ -166,12 +171,16 @@ class ProjectService:
             display_name: Human-readable project name.
 
         Raises:
-            ValueError: If ``display_name`` is empty.
+            ProjectValidationError: If ``display_name`` is blank.
             ProjectAlreadyExistsError: If ``root`` already exists.
             ProjectError: If the directory layout cannot be created.
         """
-        if not display_name:
-            raise ValueError("display_name must be a non-empty string")
+        if not display_name.strip():
+            raise ProjectValidationError(
+                "display_name must contain at least one non-whitespace character.",
+                code="project.invalid_display_name",
+                details={"display_name": display_name},
+            )
         try:
             root.mkdir(parents=True, exist_ok=False)
         except FileExistsError as error:
