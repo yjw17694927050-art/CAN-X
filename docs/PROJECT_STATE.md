@@ -1178,21 +1178,23 @@ in-suite bounded soak（rate 20 kHz / 2.0 s / max_frames_per_segment 4096）
 Packaged Parquet 执行路径（本阶段由 NOT VERIFIED 变为 VERIFIED）：
 
 ```text
-build\runtime-dist\canx-runtime.exe                 46,487,265 bytes
+build\runtime-dist\canx-runtime.exe                 46,491,142 bytes
   · PyInstaller hook-pyarrow.py 命中，pyarrow.libs DLL 已收集
   · PYZ 中 duckdb 出现 0 次（query domain 不在打包 import graph 内）
 packaged project-backed smoke                       PASS
-source 侧读回（由 .exe 进程产出的文件）
+source 侧读回（由 .exe 进程产出的文件；帧数随运行时序而异，以下为一次实测快照）
   project                        临时 CAN-X project（source 进程创建）
-  segment                        data/sessions/7624fdc3-…/segments/000000.parquet
-  segment bytes                  39,435
-  footer rows                    1,254（1 row group）
+  segment                        data/sessions/3cf00cb7-…/segments/000000.parquet
+  segment bytes                  37,316
+  footer rows                    1,230（1 row group）
   canx metadata                  can-x-frame-segment / schema_version 1 /
                                  session_id / stream_id / segment_index=0 全部一致
-  DataSession                    completed / frames 1,254 / segments 1
+  DataSession                    completed / frames 1,230 / segments 1
   stream_id 一致                 是（与 /capture/start 返回的 stream_id 相同）
-  QueryService.summarize_frames  1,254
+  QueryService.summarize_frames  1,230
   integrity inspection           clean
+  · 断言是「DataSession COMPLETED + 段文件字节数与行数与注册元数据一致 +
+    query 计数等于会话帧数 + integrity clean」，不依赖具体帧数
 ```
 
 已知限制 / 边界（均为设计内行为，不是未修的缺陷）：
