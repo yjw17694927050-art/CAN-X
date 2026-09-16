@@ -35,6 +35,13 @@ class FrameFilter:
     Every field is optional except the owning session; ``None`` means "do not
     restrict on this axis". The filter never carries SQL, a column name or an
     ordering: the engine owns those, the filter only owns the predicates.
+
+    Combination semantics are fixed and deliberately narrow: **different axes are
+    AND-ed, and one axis with several accepted values is OR-ed inside itself**.
+    ``arbitration_ids=(0x100, 0x200)`` therefore means "0x100 or 0x200", while
+    supplying an id set, an id range and a mask together means all three
+    predicates must hold for one frame to match. The filter can express no other
+    boolean shape — there is no query AST here and a caller cannot build one.
     """
 
     session_id: str
@@ -47,6 +54,18 @@ class FrameFilter:
     directions: tuple[Direction, ...] | None = None
     is_extended: bool | None = None
     is_fd: bool | None = None
+    # The CAN id range and mask axes are appended *after* every V0.2-03 field.
+    # Field order is part of the constructor's contract, so appending keeps an
+    # existing positional ``FrameFilter(session, start, end)`` meaning exactly
+    # what it meant before these axes existed.
+    #
+    # A range is inclusive at both ends: 0x100..0x1FF matches 0x100 and 0x1FF.
+    # A mask is a structured equality test, ``(id & mask) == (value & mask)``,
+    # which is why mask and value are validated as a pair.
+    arbitration_id_start: int | None = None
+    arbitration_id_end: int | None = None
+    arbitration_id_mask: int | None = None
+    arbitration_id_mask_value: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -94,6 +113,59 @@ class FrameFilter:
         object.__setattr__(self, "directions", _normalize_directions(self.directions))
         _require_optional_bool(self.is_extended, field="is_extended")
         _require_optional_bool(self.is_fd, field="is_fd")
+        _require_optional_arbitration_id(
+            self.arbitration_id_start, field="arbitration_id_start"
+        )
+        _require_optional_arbitration_id(
+            self.arbitration_id_end, field="arbitration_id_end"
+        )
+        if (
+            self.arbitration_id_start is not None
+            and self.arbitration_id_end is not None
+            and self.arbitration_id_end < self.arbitration_id_start
+        ):
+            raise QueryValidationError(
+                "arbitration_id_end must not be smaller than arbitration_id_start.",
+                code="query.invalid_arbitration_id_range",
+                details={
+                    "arbitration_id_start": self.arbitration_id_start,
+                    "arbitration_id_end": self.arbitration_id_end,
+                },
+            )
+        # Bounds are validated before the pair is, so an unusable number is always
+        # reported as an out-of-range bound rather than as a missing partner.
+        _require_optional_arbitration_id(
+            self.arbitration_id_mask, field="arbitration_id_mask"
+        )
+        _require_optional_arbitration_id(
+            self.arbitration_id_mask_value, field="arbitration_id_mask_value"
+        )
+        if (self.arbitration_id_mask is None) != (
+            self.arbitration_id_mask_value is None
+        ):
+            raise QueryValidationError(
+                "arbitration_id_mask and arbitration_id_mask_value must be given"
+                " together: a mask without a value has no right-hand side, and a"
+                " value without a mask would have to invent one.",
+                code="query.invalid_arbitration_id_mask",
+                details={
+                    "arbitration_id_mask": self.arbitration_id_mask,
+                    "arbitration_id_mask_value": self.arbitration_id_mask_value,
+                },
+            )
+
+    @property
+    def arbitration_id_mask_target(self) -> int | None:
+        """Return ``value & mask``, the right-hand side of the mask predicate.
+
+        The masked comparison is ``(arbitration_id & mask) == target``. Reducing
+        the value here keeps the one and only definition of the mask semantics in
+        the domain model instead of repeating it in the engine, and it is ``None``
+        exactly when no mask filter was requested.
+        """
+        if self.arbitration_id_mask is None or self.arbitration_id_mask_value is None:
+            return None
+        return self.arbitration_id_mask_value & self.arbitration_id_mask
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,6 +516,27 @@ def _normalize_arbitration_ids(value: object) -> tuple[int, ...] | None:
                 details={"arbitration_id": repr(arbitration_id)},
             )
     return value
+
+
+def _require_optional_arbitration_id(value: object, *, field: str) -> None:
+    """Accept ``None`` or an id inside the 29-bit extended CAN id space.
+
+    An id range bound, an id mask and a mask value are all arbitration ids, so
+    they share one bound check and one failure code; the offending field name
+    travels in ``details`` so a caller can tell which argument was wrong.
+    """
+    if value is None:
+        return
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= MAX_ARBITRATION_ID
+    ):
+        raise QueryValidationError(
+            f"{field} must be an integer in [0, 0x1FFFFFFF] or None.",
+            code="query.invalid_arbitration_id",
+            details={field: repr(value)},
+        )
 
 
 def _normalize_directions(value: object) -> tuple[Direction, ...] | None:

@@ -228,6 +228,12 @@ def _frame_predicates(frame_filter: FrameFilter) -> tuple[list[str], list[object
     Every clause is a constant string; every caller value travels as a bound
     parameter. The repeated ``?`` groups are sized by an already-validated tuple,
     not by caller text.
+
+    The CAN id axes stay three independent predicates — a set membership test, an
+    inclusive range and a masked equality — joined with ``AND`` exactly like every
+    other axis. The masked predicate's right-hand side is not computed here: the
+    domain model owns the reduction, so ``(id & mask) == (value & mask)`` has one
+    definition in one place.
     """
     clauses: list[str] = []
     parameters: list[object] = []
@@ -249,6 +255,20 @@ def _frame_predicates(frame_filter: FrameFilter) -> tuple[list[str], list[object
     if frame_filter.arbitration_ids is not None:
         clauses.append(f"arbitration_id IN ({_placeholders(len(frame_filter.arbitration_ids))})")
         parameters.extend(frame_filter.arbitration_ids)
+    if frame_filter.arbitration_id_start is not None:
+        clauses.append("arbitration_id >= ?")
+        parameters.append(frame_filter.arbitration_id_start)
+    if frame_filter.arbitration_id_end is not None:
+        clauses.append("arbitration_id <= ?")
+        parameters.append(frame_filter.arbitration_id_end)
+    # The masked equality test is `(id & mask) = target`, where the target is the
+    # mask value already reduced through the mask by the domain model. Both the
+    # bitwise-and operator and the column are code-owned; both operands are bound.
+    mask = frame_filter.arbitration_id_mask
+    mask_target = frame_filter.arbitration_id_mask_target
+    if mask is not None and mask_target is not None:
+        clauses.append("(arbitration_id & ?) = ?")
+        parameters.extend((mask, mask_target))
     if frame_filter.directions is not None:
         clauses.append(f"direction IN ({_placeholders(len(frame_filter.directions))})")
         parameters.extend(direction.value for direction in frame_filter.directions)
