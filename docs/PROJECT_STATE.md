@@ -2968,6 +2968,423 @@ Independent Acceptance: PASS
 
 ---
 
+### Step V0.3-04 — DBC Decode Foundation
+
+Objective：
+
+建立 CAN-X 自有、headless、UI-independent、typed、deterministic 的
+**Frame → DBC Signal Decode Foundation**：
+
+```text
+canonical Frame  +  canonical DbcDatabase
+        ↓
+     DbcDecoder
+        ↓
+typed canonical decoded result（DecodedFrame / DecodedFrameBatch）
+```
+
+本阶段只做 Runtime / headless decode domain + decode engine + batch semantics + tests。
+不做 HTTP API、Trace decoded columns、前端、WebSocket decode、Plot、Agent tool、
+DBC Editor、active DBC、channel ↔ DBC binding、Parquet/DuckDB signal dataset。
+
+#### Architecture
+
+```text
+DBC text
+  ↓  cantools（仅 parser.py 可见）
+CAN-X DbcDatabase
+  ↓  DbcDecoder(database)      ← compile once
+compiled message index  +  per-signal extraction plan
+  ↓  decode_frame(frame)
+CAN-X DecodedFrame
+```
+
+- decoder 输入是 **canonical `DbcDatabase`**，不是 cantools database。同一个 decoder
+  因此未来可服务 transient imported DBC / project-owned asset / historical decode /
+  live decode / Agent / tests，全部走同一 contract；
+- `DbcDecoder.__init__` 一次性建立 `(frame_id, is_extended) → compiled message` 索引与
+  每个 signal 的 extraction plan。decode 期间**不做 database scan、不重算 bit topology**，
+  编译后 effectively read-only（只持有 tuple 与只读 Mapping）；
+- `runtime/canx/dbc/decode.py` 与 `decode_model.py` **不 import cantools / bitstruct /
+  textparser**。实测：`import canx.dbc` 与 `import canx.dbc.decode` 后
+  `'cantools' in sys.modules` 为 `False`，`bitstruct` 亦为 `False`；
+- 本阶段未修改 Frame / FrameBatch。
+
+#### Decoded domain models
+
+```python
+@dataclass(frozen=True, slots=True)
+class DecodedSignal:        name · raw_value(int) · physical_value(float)
+                            choice_label(str|None) · unit(str|None)
+class DecodedFrame:         frame(Frame) · message_name · signals(tuple[DecodedSignal, ...])
+class DbcDecodeFailure:     code · message · recoverable · source · details(read-only Mapping)
+class DecodedFrameOutcome:  frame · decoded(DecodedFrame|None) · failure(DbcDecodeFailure|None)
+class DecodedFrameBatch:    schema_version(=1) · stream_id · first/last_sequence ·
+                            frame_count · outcomes(tuple[DecodedFrameOutcome, ...])
+```
+
+三条刻意设计：
+
+1. **raw 数值永远保留**。choice label 是附加语义而非替换 —— `raw=2` 与
+   `physical=2.0` 与 `choice_label="Error"` 同时存在，未来 Trace / Plot / Agent /
+   raw-decoded 对照都不会丢失数值语义；
+2. **provenance 不被摘要掉**。`DecodedFrame` 直接持有原 canonical `Frame`，
+   `sequence` / `channel_id` / `direction` / `hardware_timestamp` / `host_timestamp` /
+   `normalized_timestamp` / `timestamp_quality` / `clock_domain` / `is_fd` /
+   `bitrate_switch` / `error_state_indicator` / `flags` 全部保留；
+3. **outcome 严格二选一**。`decoded XOR failure`，两者同缺或同在均被模型拒绝；
+   `DecodedFrameBatch` 为独立 schema（`CURRENT_SCHEMA_VERSION = 1`），不冒充 raw
+   FrameBatch 的 `schema_version`。
+
+#### Message identity
+
+```text
+lookup key   (frame.arbitration_id, frame.is_extended)     ← 绝不只用 arbitration_id
+is_fd        严格相等：message.is_fd == frame.is_fd
+             不等 → dbc.frame_type_mismatch（双向都拒绝）
+```
+
+同数值 ID 的 standard 与 extended 是两个不同 message，实测两者互不串。
+DbcDatabase 已保证 `(frame_id, is_extended)` 唯一，decoder 不做二次去重。
+
+#### Payload policy
+
+```text
+len(frame.data) <  message.length   → dbc.payload_too_short（不做 partial decode）
+len(frame.data) == message.length   → decode
+len(frame.data) >  message.length   → decode，只有 message.length 定义的 bits 参与
+                                       extra bytes 完全不参与任何 signal
+```
+
+长 payload 合法，因为 CAN FD 实际 payload bucket 可能大于工程定义长度；实测
+`message.length = 12` + 16/64 字节 FD frame 均可解码，且改变尾部 extra bytes
+不改变任何 signal 值。本轮明确不支持 partial / truncated decode。
+
+#### Bit extraction
+
+```text
+Intel(little endian)   字节窗口按 little 读入 → >> (start % 8) → & mask
+Motorola(big endian)   start_bit 是最 MSB（sawtooth：每字节从自己的 bit 7 递减）
+                       网络位 network_start = 8*(start//8) + (7 - start%8)
+                       字节窗口按 big 读入 → >> shift → & mask
+signed                 在 length 位上做 two's complement；8-bit 0xFF → -1（不是 255）
+```
+
+两种 byte order 都归约为「一个字节窗口 + 一次右移 + 一次 mask」，因此 decode 期间
+只做一次 `int.from_bytes` 与两次整数运算。覆盖：1/8/12/16/32/64 bit、跨 byte boundary、
+非 byte-aligned、非零 start bit、signed 跨边界。
+
+#### Physical conversion
+
+```text
+physical = raw * factor + offset        （raw 为符号解释后的 integer）
+choice_label = choices[raw]             （以 raw 数值查表，绝不以 scaled 值或 label 匹配）
+unit                                    （原样保留，缺省 None）
+```
+
+- 未声明的 raw 值 **不抛错**，`choice_label = None`，数值原样保留；
+- `minimum` / `maximum` **不是 clamp**。超出范围的解码结果原样返回，raw 亦不受影响；
+- 计算结果若为 NaN / ±inf → `dbc.signal_decode_failed`（typed），绝不静默返回。
+
+#### Multiplexing
+
+支持（基础单层）：
+
+```text
+multiplexer 开关本身 decode 并出现在结果中（不被消耗掉）
+multiplexer_signal is None 的普通 signal 视为 common / always active
+multiplexer_ids 含当前 raw 开关值的 signal 才 decode，其余省略
+选择依据是 raw 值：不是 scaled 值，也不是 VAL_ label
+decoded signals 顺序 = DBC 文档声明顺序（inactive 省略后仍保持原序）
+开关值未被任何 branch 声明时：返回 common + 开关本身，不猜任何一个 branch
+```
+
+明确 Deferred（不在本轮支持，且**不**声称支持）：
+
+```text
+nested / extended multiplexing（多层 mux 依赖）
+```
+
+该 topology 在当前 canonical model 中**无法无歧义表达**：V0.3-02 的
+`_require_optionally_multiplexed` 拒绝「既是开关又有 parent」的半关系，因此 decoder
+永远看不到真正的嵌套结构；但一个 extended-mux 源文件经 cantools 44.0.0 解析后会
+**塌缩成「同一 message 里有两个开关、其余信号看起来都是 common」**——把它当作
+「所有 signal 都 active」解码会静默返回错误结果。因此 `_resolve_multiplexer()`
+在 compile 阶段拒绝两种拓扑并记录 `ambiguous_multiplexing`：
+
+```text
+message 中出现 >1 个 is_multiplexer=True 的 signal
+某 signal 的 multiplexer_signal 在 message 内无法解析（不存在 / 不是开关）
+```
+
+#### Float signal audit（§28–30）
+
+真实 probe（cantools 44.0.0，本机 `.venv`）：
+
+```text
+输入：SIG_VALTYPE_ 291 FloatSig : 1;   （合法 DBC 32-bit float 声明）
+cantools：接受，signal.is_float == True
+CAN-X（修复前）：DbcSignal 无 is_float 字段 → 元数据静默丢失
+                 probe 输出：has is_float attr? False
+```
+
+结论：这是 **correctness blocker**，按 §29 做最小修复。
+
+```text
+canonical change        DbcSignal + is_float: bool（唯一允许的 canonical schema 变化）
+parser                  显式 signal.is_float → DbcSignal.is_float（仍然 eager 转换，
+                        cantools object 不越过 parser boundary）
+RED evidence            tests/unit/dbc/test_dbc_float_metadata.py
+                        修复前 7 failed / 1 passed，失败原因为
+                        AttributeError: 'DbcSignal' object has no attribute 'is_float'
+GREEN                   修复后 8 passed
+```
+
+decode 行为（§30 选择更安全的方案）：
+
+```text
+本阶段不实现 float signal decode
+message 中任一 signal is_float=True → 整个 message 报 dbc.decode_unsupported
+                                      （details.reason = "float_signal_payload"）
+绝不把 float raw bits 当普通 integer 解码，也绝不返回半正确结果
+```
+
+#### Batch semantics
+
+```text
+decode_frame(frame)  → DecodedFrame | raise typed DbcError      （strict API）
+decode_batch(batch)  → DecodedFrameBatch                        （one outcome per frame）
+```
+
+- 每个 input Frame 都有且只有一个 outcome，顺序与输入一致，`frame_count` 与输入相等；
+- per-frame failure（message_not_found / payload_too_short / unsupported…）被捕获为
+  `DbcDecodeFailure` immutable snapshot，**不中断整批**；
+- 只有 programming error（参数类型错误 / 内部不变量破坏）才让整批失败；
+- 输入复用既有 `FrameBatch`（caller-bounded），不引入第二套 raw batch，也不做
+  whole-dataset API；性能 smoke 逐 batch / 循环处理，不 materialize 整个数据集；
+- decoder 确定性：相同 `DbcDatabase` + 相同 `Frame` 重复调用结果相等；实测 8 线程
+  并发读取同一 decoder 64 次，结果与单线程完全一致。
+
+#### Typed errors
+
+```text
+dbc.message_not_found      (frame_id, is_extended) 在本 database 无定义        recoverable=false
+dbc.frame_type_mismatch    frame 与 message 的 is_fd 不一致                    recoverable=false
+dbc.payload_too_short      payload 短于 message.length                        recoverable=false
+dbc.decode_unsupported     定义无法无歧义解码（越界 / float / mux 拓扑）        recoverable=false
+dbc.signal_decode_failed   单个 signal 值无法成立（如 scaling 溢出为非有限数）   recoverable=false
+```
+
+- 全部 `source = "dbc"`，五字段契约与既有域一致；全部 `recoverable = false`，
+  因为同一 Frame + 同一 database 重复执行结果不变，重试不可能改变结果；
+- **不修改**既有 `DbcDecodeError`：`dbc.decode_failed` 继续只表示「DBC 文件 bytes
+  不是声明 encoding 下的文本」，不得被 frame decoding 复用；
+- error details 只含安全字段（sequence / arbitration_id / is_extended / is_fd /
+  message_name / signal_name / expected_length / actual_length / reason）；
+  不含 traceback、cantools repr、完整 payload dump；
+- `KeyError` / `IndexError` / `OverflowError` / `struct.error` / 裸 `ValueError` /
+  `cantools.DecodeError` 均不穿越 decoder public boundary：越界定义在 compile 阶段
+  被拒绝，scaling 失败被翻译为 `dbc.signal_decode_failed`。
+
+#### Differential verification（本阶段 acceptance 硬要求）
+
+```text
+oracle                  cantools == 44.0.0（pyproject pinned；仅 tests 使用）
+oracle 使用面            仅 public API：load_string / Message.decode /
+                        Database.decode_message / NamedSignalValue
+                        （不 import _codec 等私有内部结构）
+比较方式                 raw int 精确相等（==）
+                        physical float 用 math.isclose
+向量                    6672 个单 signal 定义 × 3 个 seeded payload
+                        （random.Random(20260628)，无 Hypothesis 等新依赖）
+                        = 20,016 次 raw + scaled 比较，全部一致
+覆盖                    Intel / Motorola · signed / unsigned · 1..64 bit ·
+                        8 字节内所有可行 start bit · factor / offset ·
+                        multi-signal message · choices · multiplexing · CAN FD
+结果                    全部一致（0 mismatch），tests/unit/dbc/test_dbc_decode_differential.py
+```
+
+一处**刻意分歧**（已写进测试而非抹平）：
+
+```text
+开关值未被任何 branch 声明时
+  cantools  → raises DecodeError("expected multiplexer id 0, 1 or 2, but got 7")
+  CAN-X     → 返回开关本身与所有 always-active signal（不猜 branch）
+理由：该 Frame 仍然携带有效数据；Trace 应当能显示这个异常开关值，
+      而抛异常的 API 显示不出来。两端行为都被测试钉住，不会各自漂移。
+```
+
+#### Project asset integration
+
+`tests/integration/test_dbc_decode_project_asset.py`（6 例）实测通过：
+
+```text
+create project → import DBC asset → close → reopen
+→ ProjectDbcService.load_asset(asset_id) → document.database
+→ DbcDecoder(document.database) → canonical Frame → decode
+```
+
+验证：message 名与 signal 值正确（EngineSpeed 3000 → 750.0 rpm、CoolantTemp 80 → 40.0 degC、
+ThrottlePosition 128 → 50.196078 %）、`decoded.frame is <原 Frame>`、
+provenance（sequence / channel_id / direction / hardware_timestamp / normalized_timestamp /
+timestamp_quality）完整、multiplexed asset reopen 后只返回被选中的 branch、
+batch 路径 per-frame failure 正确、同项目内两个 asset 各自独立互不串。
+
+两个层次只通过 canonical domain 耦合：V0.3-03 交付 `DbcDocument`，V0.3-04 消费
+`DbcDatabase`，互不依赖。
+
+#### Performance baseline
+
+本机实测（`tests/performance/test_dbc_decode_benchmark.py`，100,000 frames，`-q -s`）：
+
+```text
+simple（basic_standard.dbc，3 signals）     100,000 frames in 0.721s  → 138,688 frames/sec
+multiplexed（multiplexed.dbc）             100,000 frames in 0.611s  → 163,791 frames/sec
+batched（1000-frame FrameBatch 流）         100,000 frames in 1.341s  →  74,596 frames/sec
+```
+
+**不设 PASS throughput threshold，也不声称 real-time ready**：本轮只记录真实测量值
+与「不崩溃、工作集有界（frame 按需生成、逐 batch 消费，不 materialize 整个数据集）」。
+benchmark 断言的是测量确实发生（每个 input frame 都产出 outcome、measured span > 0），
+而不是某个 fps 门槛。
+
+#### Tests added（逐文件实测收集数）
+
+```text
+tests/unit/dbc/test_dbc_float_metadata.py              8   is_float 模型契约 + parser 保留元数据（RED→GREEN）
+tests/unit/dbc/test_dbc_decode_model.py               56   DecodedSignal/Frame/Failure/Outcome/Batch 全部不变式
+                                                           与 immutability、decoded XOR failure、details 只读
+tests/unit/dbc/test_dbc_decoder_lookup.py             19   (frame_id, is_extended) 身份、同号 standard/extended 隔离、
+                                                           FD 双向 mismatch、unknown、参数类型、provenance 保留
+tests/unit/dbc/test_dbc_decoder_bits.py               33   Intel / Motorola 手算向量、non-aligned、跨 byte、
+                                                           two's complement 多宽度
+tests/unit/dbc/test_dbc_decoder_values.py             24   factor / offset（含负值）、choices 语义、
+                                                           未声明 choice、range 不 clamp、非有限数 typed failure
+tests/unit/dbc/test_dbc_decoder_payload.py            18   exact / excess / truncated、zero-length、CAN FD、
+                                                           越界 / float / 歧义 mux 定义被拒绝
+tests/unit/dbc/test_dbc_decoder_multiplex.py          17   基础单层 mux、common signal、inactive 省略、返回开关、
+                                                           raw 而非 scaled/label 选择、顺序、extended mux 拒绝
+tests/unit/dbc/test_dbc_decoder_batch.py              20   one outcome per frame、顺序、无丢帧、failure snapshot、
+                                                           determinism、8 线程并发读一致
+tests/unit/dbc/test_dbc_decode_differential.py        14   cantools 差分（20,016 次比较）+ 分歧钉死 + 边界回归
+tests/integration/test_dbc_decode_project_asset.py     6   项目资产 reopen → decode 端到端
+tests/performance/test_dbc_decode_benchmark.py         3   100k frames × 3 条路径的实测基线
+tests/unit/dbc/test_dbc_errors.py                     +7   5 个新 typed error 进入五字段契约与 code 唯一性
+tests/unit/dbc/test_dbc_parser.py                     +1   float_signal.dbc 进入 canonical-graph 边界参数化
+                                                           本轮新增 226 例（逐文件实测）
+```
+
+新增 fixture（最小、可审、license-clean，全部手写）：
+
+```text
+tests/fixtures/dbc/float_signal.dbc       合法 DBC float signal（SIG_VALTYPE_ 声明）
+tests/fixtures/dbc/fd_extra_payload.dbc   FD message.length(12) < FD frame payload 的 excess 用例
+```
+
+#### Full regression（2026-09-16，本阶段实现完成时，全部为实际执行结果）
+
+```text
+full pytest                          1398 passed, 1 skipped（V0.3-03 记录为 1153 passed, 1 skipped）
+  · tests/unit/dbc                    503 passed, 1 skipped
+  · tests/integration（DBC 三个文件）    43 passed
+  · tests/unit/project + schema upgrade 73 passed
+ruff check runtime tests             exit 0（All checks passed!）
+mypy runtime                         exit 0（62 source files，strict）
+```
+
+1 skipped 为既有既知项：本机无权限创建目录链接（WinError 1314），
+V0.3-03 已记录同一 skip，非本轮引入。
+
+#### Packaging
+
+```text
+scripts\package-windows.cmd          exit 0
+  · [1/6] runtime build + staged sidecar   PASS
+  · [2/6] staged sidecar verified           ok
+  · [3/6] packaged-runtime smoke test       PASS
+  · [4/6] Tauri MSI build                   Finished 1 bundle
+  · [5/6] MSI artifact check                ok: CAN-X_0.1.0_x64_en-US.msi
+  · [6/6] packaging complete                 exit 0
+
+独立复核（对新构建的 exe 重跑 smoke）
+  CANX_TEST_RUNTIME_EXE=<repo>\build\runtime-dist\canx-runtime.exe \
+    python -m pytest tests\integration\test_packaged_runtime_smoke.py -q
+  → 3 passed in 13.43s
+
+build\runtime-dist\canx-runtime.exe             59,553,571 bytes（V0.3-03-FINAL: 59,553,459）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi   62,373,888 bytes（与 V0.3-03-FINAL 相同）
+exe 内字符串出现次数：cantools 0 · bitstruct 0 · textparser 0 · duckdb 13（均与 V0.3-03-FINAL 一致）
+```
+
+packaged runtime scope（诚实说明）：本轮**不主张** packaged runtime 提供 DBC decode 能力。
+`canx.dbc` 仍不在 runtime 入口的 import graph 中——grep 全 `runtime/canx`（`dbc/` 之外）
+没有任何模块 import 它，本阶段也没有 HTTP API、没有组合根接线。exe 字节数相比
+V0.3-03-FINAL 只有 112 字节差异，本轮**不对其做因果解释**（PyInstaller 归档的构建期差异）。
+打包回归证明的是：**没有破坏**既有 runtime build / packaged smoke / Tauri package；
+它**不**证明 `canx.dbc.decode` 已进入 shipped runtime。
+
+#### Schema / 依赖变化
+
+```text
+SQLite project schema  未改（仍为 V3；未新增任何表、未触碰 migration）
+project.json           未改
+Parquet schema         未改
+Frame / FrameBatch     未改
+HTTP / WebSocket       未改（未新增 endpoint，未改 canx.api.*）
+DBC canonical schema   最小变化：DbcSignal + is_float: bool（§29 correctness blocker 修复）
+新增依赖               none（仅标准库：int.from_bytes · math.isfinite · MappingProxyType · frozenset）
+```
+
+#### Known limitations（诚实记录）
+
+```text
+ 1  nested / extended multiplexing 不完整支持。真正的多级 mux 拓扑在 canonical model 中
+    无法表达，且 cantools 44.0.0 对 `m0M` / `m0m0` 源文件会静默塌缩成「两个开关 + 其余
+    看似 common」。decoder 只能检测到塌缩后的形态（>1 个开关）并拒绝整个 message，
+    不能还原原始拓扑。基础单层 mux 已支持。
+ 2  float signal（SIG_VALTYPE_）只保留元数据，不实现解码；遇到即 dbc.decode_unsupported。
+    32-bit / 64-bit IEEE-754、byte order、scaling 均未实现，也未验证。
+ 3  不支持 partial / truncated decode：payload 短于 message.length 一律 typed failure。
+ 4  container message / J1939 特定语义未实现，也未纳入本轮范围。
+ 5  没有 live subscription、没有 historical bulk pipeline、没有 channel ↔ DBC binding、
+    没有 active DBC、没有 API / UI / Agent tool。
+ 6  `decoded signals 顺序 = DBC 文档声明顺序` 是 CAN-X 自己的 contract；cantools 的顺序是
+    「root codec 后接 branch codec」，两者在 child 声明于 switch 之前的文档上不同。
+    差分测试按 signal 名逐个比较数值，不比较顺序。
+ 7  性能数字是单机单次实测，未做统计重复、未做 CPU 亲和性/频率锁定；不同机器/负载下会不同。
+ 8  decoder 不做任何缓存：同一 Frame 重复解码会重复计算（当前无 cache 需求，避免先引入状态）。
+```
+
+#### Deferred（明确留给后续 coherent increment，本阶段一行都没做）
+
+```text
+DBC HTTP API（POST /dbc/{id}/decode · GET /dbc/messages …）
+Trace decoded columns / trace.query decoded 字段 / trace.summary 改动
+live WebSocket decoded-signal stream（backpressure / CPU budget / subscription）
+Plot signal binding 与统一 timeline
+Agent `dbc.decode` tool
+DBC Editor / active DBC selection UI / channel ↔ DBC binding
+float / IEEE-754 decode（含 differential tests）
+nested / extended multiplexing 拓扑表达与解码
+derived Parquet signal dataset / DuckDB decoded-signal query
+decode cache persistence
+```
+
+#### 状态
+
+```text
+V0.3-04 DBC Decode Foundation
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做实现 + 本机自验证。**不自行宣布 V0.3-04 Final Acceptance: PASS**；
+最终验收由项目负责人独立执行。若通过，下一推荐 coherent increment 由项目负责人决定
+（不得由本轮自行开始）。
+
+---
+
 ## V0.3 — Professional Trace & DBC Foundation
 
 目标：
