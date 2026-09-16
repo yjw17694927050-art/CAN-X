@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-03 DBC Project Registry & Persistence Foundation
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-04 DBC Decode Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -2951,6 +2951,20 @@ Awaiting independent acceptance
 本轮只做修复 + 本机自验证。**不自行宣布 V0.3-03 Acceptance PASS**；等待项目负责人
 重新独立验收 V0.3-03。只有在 V0.3-03 获得 `Final Acceptance: PASS` 之后，才允许
 进入 **V0.3-04 — DBC Decode Foundation**。
+
+#### 独立验收结果（项目负责人，已执行）
+
+```text
+V0.3-03 — DBC Project Registry & Persistence Foundation
+Final Acceptance: PASS
+Status: CLOSED
+
+V0.3-03-FINAL — DBC Asset Path Identity & Containment Closure
+Independent Acceptance: PASS
+```
+
+以上为项目负责人给出的独立验收结论，由本轮（V0.3-04 开工前）原样记录。V0.3-03
+（含 FINAL）自此关闭，项目负责人已批准进入 **V0.3-04 — DBC Decode Foundation**。
 
 ---
 
