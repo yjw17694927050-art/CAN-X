@@ -54,9 +54,24 @@ class FrameWire(BaseModel):
     (``hardware_timestamp`` / ``host_timestamp`` / ``clock_domain`` /
     ``timestamp_quality``) is carried through: a later Trace timestamp mode needs
     it, and re-adding a field later would be a breaking schema change.
+
+    ``strict=True`` because a JSON payload has primitive categories and this
+    contract is about them. Without it a caller can send ``"sequence": true``,
+    ``"arbitration_id": false`` or ``"host_timestamp": "100.25"`` and have the
+    value silently coerced *before* :func:`wire_to_frame` ever runs — the
+    canonical frame would then be built from a different payload than the one
+    that was sent, and "wrong primitive type" would be accepted instead of
+    rejected.
+
+    Strictness here is about the JSON category, never about narrowing the legal
+    value set. Pydantic still accepts a JSON integer where the field is a float,
+    so ``"host_timestamp": 1`` stays legal exactly as before while
+    ``"host_timestamp": "1"`` does not, and ``null`` stays legal for the optional
+    timestamp. What a legal frame *is* remains :class:`~canx.domain.frame.Frame`'s
+    decision — this only stops the wire from rewriting the question.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, strict=True)
 
     sequence: int
     channel_id: str

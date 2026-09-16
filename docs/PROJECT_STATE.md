@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-05 DBC Runtime Read & Decode API Foundation
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-05-FINAL HTTP Frame Input Strictness Remediation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -3640,6 +3640,235 @@ Awaiting independent acceptance
 
 本轮只做实现 + 本机自验证。**不自行宣布 V0.3-05 Final Acceptance: PASS**；最终验收由
 项目负责人独立执行。不得由本轮自行开始 V0.3-06。
+
+### Step V0.3-05-FINAL — HTTP Frame Input Strictness Remediation
+
+V0.3-05 独立验收结论：**Conditional PASS**（P0: 0 · P1: 1 · P2: 1）。
+
+#### Independent acceptance finding
+
+P1：共享 HTTP frame wire model `FrameWire` 只配置了 `ConfigDict(frozen=True)`，Pydantic
+默认 lax 模式会对 JSON primitive category 做静默转换。调用方发送 `"sequence": "1"`、
+`"arbitration_id": false`、`"is_fd": 1`、`"host_timestamp": "100.25"` 等跨类别值时，
+值先被转成合法 Python 类型，`wire_to_frame()` 与 canonical `Frame` 都看不到原始错误
+类型，请求被接受。
+
+P2：`runtime/canx/api/dbc.py` 模块 docstring 写 "Four endpoints"，实际为 5 个。
+
+#### Root cause
+
+不是 `wire_to_frame()` 或 canonical `Frame` 的缺陷——两者都没有被错误输入到达。缺的是
+**wire 层的类型类别约束**：`FrameWire` 没有声明「JSON payload 的 primitive category 是
+contract 的一部分」，于是 Pydantic 的 lax 转换在 domain 之前改写了问题本身。
+
+#### Fix
+
+```python
+class FrameWire(BaseModel):
+    model_config = ConfigDict(frozen=True, strict=True)
+```
+
+单行配置变更（外加类 docstring 说明）。`DbcFramePayload(FrameWire)` 继承该配置，因此
+single decode 与 batch decode 同时生效，无需在两个端点各写一遍。
+
+选择 `strict=True` 而非字段级 `Strict*` 注解，依据是一条 30 秒探针实测（Pydantic
+2.13.5）：
+
+```text
+ACCEPTED  int    <- int             REJECTED  int    <- str
+ACCEPTED  float  <- float           REJECTED  int    <- bool
+ACCEPTED  float  <- int   ← 保留    REJECTED  int    <- float
+ACCEPTED  bool   <- bool            REJECTED  bool   <- int
+ACCEPTED  str    <- str             REJECTED  bool   <- str
+ACCEPTED  float|None <- None        REJECTED  float  <- str
+ACCEPTED  literal <- literal        REJECTED  str    <- int
+                                    REJECTED  literal <- int
+```
+
+关键点：`float` 在 strict 模式下**仍接受 int**，所以 `"host_timestamp": 1`（JSON int）
+保持合法，而 `"host_timestamp": "1"`（JSON string）被拒——这恰好是「拒绝跨 JSON
+primitive category coercion」，而不是「为了 strict 收窄合法值集合」。字段级
+`StrictFloat` 会拒绝 int，反而破坏既有合法 contract，因此未被采用。
+
+P2：`Four endpoints` → `Five endpoints`（仅文档文字，未借机重构）。
+
+#### RED → GREEN 证据
+
+修复前（源码探针，26 例覆盖全部字段类别）：
+
+```text
+ACCEPTED  sequence <- "1"              coerced-> 1
+ACCEPTED  sequence <- true             coerced-> 1
+ACCEPTED  arbitration_id <- "291"      coerced-> 291
+ACCEPTED  arbitration_id <- false      coerced-> 0
+ACCEPTED  is_fd <- 1                   coerced-> True
+ACCEPTED  is_extended <- "false"       coerced-> False
+ACCEPTED  host_timestamp <- "100.25"   coerced-> 100.25
+…（共 15 例非法输入被静默接受）
+```
+
+修复后同一探针：15 例非法输入全部 `REJECTED`，5 例合法输入（JSON int → float 字段、
+JSON float、`0`、`null` optional、baseline）保持 `ACCEPTED`。
+
+回滚验证（在测试层确认新增测试确实捕获缺陷，而不是修复后补写的恒真断言）：
+
+```text
+临时移除 strict=True
+  pytest tests/unit/api/test_dbc_api.py -q -k "wrong_json_category or coercion"
+  → 19 failed, 7 passed, 72 deselected
+恢复 strict=True
+  同上 → 26 passed, 72 deselected
+```
+
+#### Why canonical Frame remains the source of domain invariants
+
+`wire_to_frame()` 未改动：
+
+```text
+HTTP wire validation (FrameWire, strict)
+   ↓
+wire_to_frame()   ← 仍只做 hex 解码 + 构造 canonical Frame
+   ↓
+canonical Frame   ← 仍决定 DLC legality / arbitration id range /
+                     classic-FD flag compatibility / timestamp finite &
+                     non-negative / sequence bounds / flags bounds /
+                     channel & clock-domain non-empty
+```
+
+DBC decode 请求路径上仍没有任何第二套 Frame validation；`runtime/canx/domain/frame.py`
+本轮**一行未改**。本次修的是「进入 domain 之前的类型保真」，不是 domain 规则本身。
+
+#### Tests added
+
+`tests/unit/api/test_dbc_api.py` 新增 35 例：
+
+```text
+test_a_frame_field_sent_as_the_wrong_json_category_is_rejected    22
+   integer 字段 ← string / boolean / float（sequence, arbitration_id, dlc, flags）
+   boolean 字段 ← integer / string（is_extended, is_fd, bitrate_switch,
+                                   error_state_indicator）
+   string / Literal 字段 ← integer（channel_id, clock_domain, direction,
+                                    timestamp_quality, data）
+   timestamp 字段 ← numeric string（hardware / host / normalized）
+test_a_legal_json_payload_still_decodes_with_its_values             9
+   JSON int → float 字段、JSON float、JSON int 0、null optional、
+   int 字段 ← JSON int、lowercase hex、uppercase hex
+test_a_batch_member_with_a_wrong_json_category_rejects_the_request  3
+   frames[1].sequence = "2" / is_fd = 0 / channel_id = 42
+test_a_coercion_refusal_echoes_no_value_and_no_internals            1
+```
+
+`tests/integration/test_packaged_runtime_smoke.py` 的 packaged DBC 测试内增加 strict
+检查（`"sequence": "1"` → 422 / `api.request_validation_failed` / `source = api` /
+`recoverable = false`）。
+
+batch 断言刻意同时验证「是 request 失败而非 per-frame failure」：响应体中 `outcomes`
+与 `frame_count` 均不存在。`error_state_indicator` 用 `"false"` 而非 `"true"` 作为用例，
+否则被 coercion 成 `True` 后同时触发 classic-frame 语义拒绝，无法区分类型拒绝与 domain
+拒绝。
+
+#### Full regression（2026-09-16/17，本轮实现完成时，全部为实际执行结果）
+
+```text
+python -m pytest tests/unit/api/test_dbc_api.py -q                  98 passed
+python -m pytest tests/unit/api -q                                 199 passed
+python -m pytest tests/unit/dbc -q                                 503 passed, 1 skipped
+python -m pytest tests/integration/test_dbc_api_integration.py -q    8 passed
+python -m pytest tests/integration -q                              238 passed
+python -m pytest -q                                              1505 passed, 1 skipped
+ruff check runtime tests tools                                     exit 0（All checks passed!）
+mypy runtime                                                       exit 0（64 source files，strict）
+```
+
+用例总数 1470 → 1505（净增 35，与新增测试数一致）。
+
+Trace 回归：`tests/unit/api/test_trace_query_api.py`（含 frame 16 字段集合断言与
+`first["data"] == "00ABCD"` uppercase hex 断言）与
+`tests/unit/api/test_request_validation_envelope.py` 全部通过；`FrameWire` 的 strict 化
+未改变 `/trace/query` wire contract。1 skipped 为既有既知项（本机无权限创建目录链接
+WinError 1314），非本轮引入。
+
+#### Packaging
+
+```text
+scripts\package-windows.cmd                 exit 0
+  · [1/6] runtime build + staged sidecar     PASS
+  · [2/6] staged sidecar verified            ok
+  · [3/6] packaged-runtime smoke test        4 passed in 17.15s
+  · [4/6] Tauri MSI build                    Finished 1 bundle
+  · [5/6] MSI artifact check                 ok: CAN-X_0.1.0_x64_en-US.msi
+  · [6/6] packaging complete                 exit 0
+
+独立复核（对新构建的 exe 重跑 smoke）
+  CANX_TEST_RUNTIME_EXE=<repo>\build\runtime-dist\canx-runtime.exe \
+    python -m pytest tests\integration\test_packaged_runtime_smoke.py -q
+  → 4 passed in 18.25s
+
+build\runtime-dist\canx-runtime.exe             60,116,826 bytes（V0.3-05: 60,116,283）
+apps\...\binaries\canx-runtime-...-msvc.exe     60,116,826 bytes（与上一致）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi   62,939,136 bytes（未变）
+```
+
+#### Packaged strict-validation proof
+
+修复前后对 packaged smoke 的实测对照（请求体发送 `"sequence": "1"`）：
+
+```text
+修复前（V0.3-05 构建的 exe，60,116,283 bytes）
+  POST /dbc/assets/{id}/decode  {"sequence": "1", …}
+  → 200 OK，响应中 "sequence": 1
+  → 字符串被静默转换为整数并成功解码（P1 在 shipped runtime 中复现）
+
+修复后（本轮构建的 exe，60,116,826 bytes）
+  POST /dbc/assets/{id}/decode  {"sequence": "1", …}
+  → 422，code = api.request_validation_failed，source = api，recoverable = false
+```
+
+该检查位于 `test_packaged_runtime_smoke.py` 的 packaged DBC 测试内，由新建
+`canx-runtime.exe` 自身进程应答，证明 strict wire contract 确实进入 shipped runtime，
+而不只存在于源码树。
+
+#### Schema / dependency changes
+
+```text
+SQLite project schema     未改
+project.json              未改
+Parquet schema            未改
+Frame schema              未改（runtime/canx/domain/frame.py 本轮一行未改）
+FrameBatch schema         未改
+DBC canonical schema      未改
+DecodedFrame schema       未改
+WebSocket schema          未改
+frontend schema           未改
+新增依赖                  none
+HTTP wire contract 变更   FrameWire 收紧为 strict：拒绝跨 JSON primitive category；
+                          合法值集合不变（JSON int 仍可用于 float 字段，null 仍合法）
+```
+
+#### Known limitations（诚实记录）
+
+```text
+ 1 strict 只约束 JSON primitive category，不约束取值语义（范围 / 枚举仍由 canonical
+   Frame 与 Literal 类型决定）。
+ 2 strict 收紧后，此前会被 lax 接受的畸形 payload 现在返回 422。这是修复目标本身，但对
+   依赖旧 lax 行为的调用方属于有意的 breaking change。
+ 3 JSON 无 int / float 区分：`1.0` 进入 int 字段会被拒（实测），`1` 进入 float 字段仍被
+   接受。后者与 canonical Frame 允许 int | float timestamp 一致。
+ 4 本轮未对 packaged exe 之外的分发形态（macOS / Linux 构建）验证 strict contract，
+   仅 Windows 打包产物实测。
+```
+
+#### 状态
+
+```text
+V0.3-05-FINAL HTTP Frame Input Strictness Remediation
+remediation implemented
+Local verification complete
+Awaiting independent final acceptance
+```
+
+本轮只做 P1 / P2 修复 + 本机自验证。**不自行宣布 V0.3-05 Final Acceptance: PASS**；
+最终验收由项目负责人独立执行。不得由本轮自行开始 V0.3-06。
 
 
 ---

@@ -511,6 +511,20 @@ async def test_packaged_runtime_loads_a_project_dbc_and_decodes_with_it(
             assert coolant["physical_value"] == 40.0
             assert throttle["raw_value"] == 128
 
+            # The strict wire contract has to be in the *shipped* runtime, not only
+            # in the source tree: a coercible wrong primitive is refused here too.
+            coerced = await client.post(
+                f"/dbc/assets/{asset_id}/decode",
+                json={
+                    "project_path": str(project_root),
+                    "frame": _dbc_frame(_DBC_ENGINE_DATA, sequence="1"),
+                },
+            )
+            assert coerced.status_code == 422, coerced.text
+            assert coerced.json()["code"] == "api.request_validation_failed"
+            assert coerced.json()["source"] == "api"
+            assert coerced.json()["recoverable"] is False
+
             batch = await client.post(
                 f"/dbc/assets/{asset_id}/decode-batch",
                 json={

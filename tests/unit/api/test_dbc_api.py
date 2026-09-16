@@ -102,7 +102,7 @@ def _wire(data: str, **overrides: object) -> dict[str, object]:
         "is_fd": False,
         "bitrate_switch": False,
         "error_state_indicator": False,
-        "dlc": len(data) // 2,
+        "dlc": len(data) // 2 if isinstance(data, str) else len(ENGINE_DATA) // 2,
         "data": data,
         "direction": "rx",
         "hardware_timestamp": 12.5,
@@ -1123,3 +1123,183 @@ async def test_a_batch_against_an_unknown_asset_is_a_404(tmp_path: Path) -> None
 
     assert response.status_code == 404
     assert response.json()["code"] == "dbc.asset_not_found"
+
+
+# --- wire primitive-type strictness (V0.3-05-FINAL) --------------------------
+
+
+@pytest.mark.parametrize(
+    ("data", "overrides"),
+    [
+        (ENGINE_DATA, {"sequence": "1"}),
+        (ENGINE_DATA, {"sequence": True}),
+        (ENGINE_DATA, {"sequence": 1.0}),
+        (ENGINE_DATA, {"arbitration_id": "291"}),
+        (ENGINE_DATA, {"arbitration_id": False}),
+        (ENGINE_DATA, {"dlc": "8"}),
+        (ENGINE_DATA, {"flags": "0"}),
+        (ENGINE_DATA, {"flags": True}),
+        (ENGINE_DATA, {"is_extended": 0}),
+        (ENGINE_DATA, {"is_extended": "false"}),
+        (ENGINE_DATA, {"is_fd": 1}),
+        (ENGINE_DATA, {"is_fd": "false"}),
+        (ENGINE_DATA, {"bitrate_switch": "false"}),
+        (ENGINE_DATA, {"error_state_indicator": "false"}),
+        (ENGINE_DATA, {"channel_id": 123}),
+        (ENGINE_DATA, {"clock_domain": 123}),
+        (ENGINE_DATA, {"direction": 1}),
+        (ENGINE_DATA, {"timestamp_quality": 1}),
+        (123, {}),
+        (ENGINE_DATA, {"hardware_timestamp": "12.5"}),
+        (ENGINE_DATA, {"host_timestamp": "100.25"}),
+        (ENGINE_DATA, {"normalized_timestamp": "0.25"}),
+    ],
+    ids=[
+        "sequence-from-string",
+        "sequence-from-boolean",
+        "sequence-from-float",
+        "arbitration-id-from-string",
+        "arbitration-id-from-boolean",
+        "dlc-from-string",
+        "flags-from-string",
+        "flags-from-boolean",
+        "is-extended-from-integer",
+        "is-extended-from-string",
+        "is-fd-from-integer",
+        "is-fd-from-string",
+        "bitrate-switch-from-string",
+        "error-state-indicator-from-string",
+        "channel-id-from-integer",
+        "clock-domain-from-integer",
+        "direction-from-integer",
+        "timestamp-quality-from-integer",
+        "data-from-integer",
+        "hardware-timestamp-from-string",
+        "host-timestamp-from-string",
+        "normalized-timestamp-from-string",
+    ],
+)
+async def test_a_frame_field_sent_as_the_wrong_json_category_is_rejected(
+    tmp_path: Path, data: object, overrides: dict[str, object]
+) -> None:
+    """A JSON payload has primitive categories, and this contract is about them.
+
+    Each case below is one cross-category send. Without wire-level strictness the
+    coercion happens inside the model layer, *before* ``wire_to_frame`` runs, so
+    the canonical frame would be built from a different payload than the caller
+    sent — and a wrong primitive type would be accepted instead of rejected.
+
+    ``error_state_indicator`` is sent as ``"false"`` rather than ``"true"`` on
+    purpose: a coerced ``True`` on a classic frame is also semantically illegal, so
+    the latter could not tell a type refusal apart from a domain refusal.
+    """
+    root, asset_ids = _project(tmp_path, BASIC)
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode",
+            json=_decode_body(root, data, **overrides),
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+
+
+@pytest.mark.parametrize(
+    ("data", "overrides"),
+    [
+        (ENGINE_DATA, {}),
+        (ENGINE_DATA, {"host_timestamp": 1}),
+        (ENGINE_DATA, {"host_timestamp": 1.0}),
+        (ENGINE_DATA, {"hardware_timestamp": 1}),
+        (ENGINE_DATA, {"normalized_timestamp": 0}),
+        (ENGINE_DATA, {"hardware_timestamp": None}),
+        (ENGINE_DATA, {"sequence": 0, "flags": 0, "dlc": 8}),
+        (ENGINE_DATA.lower(), {}),
+        (ENGINE_DATA.upper(), {}),
+    ],
+    ids=[
+        "baseline",
+        "timestamp-as-json-integer",
+        "timestamp-as-json-float",
+        "optional-timestamp-as-json-integer",
+        "timestamp-zero-as-json-integer",
+        "optional-timestamp-null",
+        "integer-fields-as-json-integers",
+        "lowercase-hex",
+        "uppercase-hex",
+    ],
+)
+async def test_a_legal_json_payload_still_decodes_with_its_values(
+    tmp_path: Path, data: str, overrides: dict[str, object]
+) -> None:
+    """Strictness must not narrow the legal value set.
+
+    A JSON integer where the field is a float, and ``null`` for the optional
+    timestamp, are legal input and stay legal. What is refused is a *string* where
+    a number belongs — not an integer where a float belongs.
+    """
+    root, asset_ids = _project(tmp_path, BASIC)
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode",
+            json=_decode_body(root, data, **overrides),
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["message_name"] == "EngineData"
+    assert body["signals"][0]["raw_value"] == 3000
+    assert body["frame"]["data"] == ENGINE_DATA
+    if overrides.get("host_timestamp") is not None:
+        assert body["frame"]["host_timestamp"] == float(str(overrides["host_timestamp"]))
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"sequence": "2"}, {"is_fd": 0}, {"channel_id": 42}],
+    ids=["string-sequence", "integer-boolean", "integer-channel"],
+)
+async def test_a_batch_member_with_a_wrong_json_category_rejects_the_request(
+    tmp_path: Path, override: dict[str, object]
+) -> None:
+    """A coercible member is a request-shape failure, not a per-frame outcome.
+
+    The whole request is refused, and it is refused *as a request*: a payload that
+    does not match the contract is not "a batch with one bad frame", so no
+    ``outcomes`` may come back and no asset may be loaded.
+    """
+    root, asset_ids = _project(tmp_path, BASIC)
+    member = _wire(ENGINE_DATA, sequence=2)
+    member.update(override)
+    frames = [
+        _wire(ENGINE_DATA, sequence=1),
+        member,
+        _wire(ENGINE_DATA, sequence=3),
+    ]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-batch",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    body = response.json()
+    _assert_validation_envelope(response.status_code, body)
+    assert "outcomes" not in body
+    assert "frame_count" not in body
+
+
+async def test_a_coercion_refusal_echoes_no_value_and_no_internals(tmp_path: Path) -> None:
+    """A rejected value is a diagnostic location, never an echo of the payload."""
+    root, asset_ids = _project(tmp_path, BASIC)
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode",
+            json=_decode_body(root, ENGINE_DATA, channel_id=99887766),
+        )
+
+    body = response.json()
+    _assert_validation_envelope(response.status_code, body)
+    assert "99887766" not in str(body)

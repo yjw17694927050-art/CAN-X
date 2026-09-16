@@ -1,6 +1,6 @@
 """DBC runtime HTTP surface — a thin adapter over the DBC and project domains.
 
-Four endpoints, and nothing else:
+Five endpoints, and nothing else:
 
 ```text
 GET  /dbc/assets?project_path=…                     list registered assets
