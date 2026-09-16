@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04-FINAL-3 Runtime Status Truthfulness During Finalization
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-01 Trace Query & Filtering Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -1701,11 +1701,225 @@ finalization；Frame / Parquet / SQLite schema 均未变；未新增依赖。
 
 ```text
 V0.2-04-FINAL-3 remediation complete
-Awaiting final independent acceptance
+V0.2-04 Final Acceptance: PASS
+  （独立验收结论：FINAL-3 修复的 runtime status truthfulness 通过；
+    此前 "transient false FAILED runtime status during stop/finalization"
+    为 V0.2-04 最后一处阻塞项，已修复并保留并发 status 回归证据）
 ```
 
-本轮只做了实现 + 自验证。**不自行宣布 Final Acceptance: PASS**；
-最终独立验收由 ChatGPT / 项目负责人执行。
+V0.2-04 至此关闭。后续增量（V0.3-01 起）不再改动 recorder 终态协议 /
+terminal commit gate / SQLite 仲裁 / DataSessionWriter finalization。
+
+---
+
+### Step V0.3-01 — Trace Query & Filtering Foundation
+
+本阶段的任务不是"做一个 Trace 页面"，而是建立**一个专业 Trace 功能可以长期依赖的
+查询契约**：bounded、typed、deterministic 的 CAN frame 查询语义，让未来的 Trace UI、
+DBC decoder、Plot、Export 与 Agent 全部消费同一个事实来源。
+
+唯一 coherent increment：在 V0.2-03 已有 Query Foundation 上补齐
+**CAN ID range 与 ID mask** 两个过滤轴，并把这条链路第一次通过**类型化 HTTP Trace API**
+暴露出来。**没有引入第二套 query engine**——没有 TraceQueryEngine、
+TraceDuckDBEngine 或 TraceStorageEngine。
+
+架构（复用，不复制）：
+
+```text
+CAN-X Project
+   ↓  ProjectService.open（唯一项目身份边界，绝不 QueryService(Path(path))）
+   ↓
+DataSession（committed segment metadata snapshot）
+   ↓
+FrameFilter（本阶段扩展 ID range / ID mask）
+   ↓
+planning（仅 sequence 剪枝；ID 轴不假造 segment 级剪枝）
+   ↓
+DuckDB（列名 / 操作符 / 排序全部 code-owned；调用者值全部绑定参数）
+   ↓
+bounded canonical Frame page（FETCH limit + 1，无 OFFSET）
+   ↓
+POST /trace/query · POST /trace/summary（typed JSON）
+```
+
+复用 V0.2 组件（未复制任何查询逻辑）：
+`QueryService` / `QueryEngine` / `query.planning` / `QueryError` 契约 /
+`validate_segment_header` / `resolve_within_root` / `repository` 元数据 snapshot。
+
+新增组件：
+
+```text
+runtime/canx/api/trace.py        Trace HTTP adapter（request/response models + router）
+runtime/canx/api/errors.py       共享错误 envelope + 诊断→状态码映射
+FrameFilter.arbitration_id_start / arbitration_id_end
+FrameFilter.arbitration_id_mask / arbitration_id_mask_value
+FrameFilter.arbitration_id_mask_target（掩码右值归一，语义单点定义）
+```
+
+Filter 契约（本轮完整轴）：
+
+```text
+sequence                 sequence_start / sequence_end            两端 inclusive
+normalized_timestamp     normalized_timestamp_start / end        两端 inclusive
+channel                  channel_ids                             轴内 OR
+exact CAN ID             arbitration_ids                         轴内 OR
+CAN ID range             arbitration_id_start / arbitration_id_end 两端 inclusive
+CAN ID mask              (id & mask) == (value & mask)
+RX / TX                  directions
+standard / extended      is_extended（与 ID 数值独立，绝不从 id 推断帧类型）
+CAN / CAN FD             is_fd
+组合语义                  不同轴之间 AND；同一轴内多值 OR；不引入通用查询 AST
+```
+
+掩码语义固定为 `(id & mask) == (value & mask)`：mask 与 value 必须成对出现
+（半个掩码 → `query.invalid_arbitration_id_mask`），否则一个孤立的 mask 会静默
+退化成"恒真"谓词。range 反向 → `query.invalid_arbitration_id_range`；
+越界 → `query.invalid_arbitration_id`。掩码右值由 domain 归一
+（`arbitration_id_mask_target`），engine 只绑定参数，不重复定义语义。
+
+Pagination（延续 V0.2-03，未改）：
+
+```text
+cursor      after_sequence（exclusive，取上一页最后一个 returned sequence）
+ordering    ORDER BY sequence ASC（唯一确定性排序；本轮不允许任意 ORDER BY）
+fetch       limit + 1 → has_more；无 OFFSET
+顺序        过滤在分页之前（WHERE filters AND sequence > cursor … FETCH limit + 1）
+```
+
+HTTP 契约：
+
+```text
+POST /trace/query
+  request   project_path · session_id · filters{...} · after_sequence · limit
+  response  session_id · frames[] · has_more · next_after_sequence
+POST /trace/summary
+  request   project_path · session_id · filters{...}
+  response  session_id · matching_frame_count · 四条 bounds（空结果全为 null）
+payload     data = uppercase hex（如 "1122AABB"），全 endpoint 统一
+frame 投影  与 Parquet 列一一对应的 16 个 canonical 字段（含 timestamp provenance：
+            hardware_timestamp / host_timestamp / clock_domain / timestamp_quality），
+            后续 Trace timestamp mode 无需再改 schema
+```
+
+错误映射（共享 envelope：`code` / `message` / `details` / `recoverable` / `source`）：
+
+```text
+filter / 分页语义非法    400   透传 query 域 code（如 query.invalid_arbitration_id_range）
+project 不可读           400   project.* code，source = project
+session 未注册           404   query.session_not_found
+segment 文件缺失         409   query.segment_missing（recoverable，明确不是 404 session）
+segment 损坏 / 外来      500   query.segment_unreadable / query.segment_invalid
+引擎执行失败             503   query.execution_failed
+```
+
+API 边界另外保证两件事：
+
+```text
+project_path 一律经 ProjectService.open 验证（路径不可信输入）
+查询在 worker thread 执行（asyncio.to_thread），不阻塞 realtime WebSocket 所在 event loop
+```
+
+本轮测试面（`648 → 795 passed`，新增 147 例）：
+
+```text
+unit/query    FrameFilter ID 轴校验、越界/反向/半掩码的 typed 错误、
+              向后兼容（新字段追加在末尾，位置参数语义不变）
+              engine 可观察选择：range 两端 inclusive 边界、mask 归约语义
+              （能区分 (id&m)==(v&m) 与 (id&m)==v）、组合 AND、
+              SQL 注入边界（caller 值恒为绑定参数）
+integration   多 segment 真实链路 ProjectService → DataSessionService → Parquet →
+              QueryService → DuckDB：ID range / mask / 组合 / 过滤后 cursor 分页 /
+              空结果 / planner 不因 ID 过滤剪枝
+              专门构造"每个轴都有一个只违反该轴的见证帧"的组合 fixture：
+              逐轴放宽必须恰好新增那一帧 —— 证明没有谓词被静默忽略
+unit/api      POST /trace/query · /trace/summary 契约与全部语义级非法输入的结构化错误、
+              missing/corrupt segment 的诊断语义、注入尝试、空 session、
+              interrupted session 的已 committed 数据仍可查
+100k smoke    100,000 frames / 20 segments：ID range / mask / channel / direction /
+              组合 / 全量与过滤后分页无损重建（无重复、无缺失、顺序确定）
+```
+
+100k correctness / performance smoke（Windows 11 10.0.26200 / Python 3.13.15 /
+本机 .venv / 单进程；timing 仅供信息，不是门槛）：
+
+```text
+total frames                    100,000（20 segments × 5,000）
+ID range 全覆盖                 matched 100,000 / candidate segments 20/20（不剪枝）
+ID range 0x101-0x103            matched 37,500
+ID mask 0x04（half the volume） matched 50,000
+combined（range+mask+channel+
+  direction+sequence）          matched 250
+全量分页（page size 10,000）     10 页；拼接 == 0..99,999；无重复无缺失；cursor 严格递增
+过滤后分页（50,000 匹配）        5 页；与单次查询结果一致
+内存                            每页最多 limit + 1 行；无整会话 materialization；无 pandas
+```
+
+Packaged DuckDB query path（**由 NOT VERIFIED 变为 VERIFIED**）：
+
+```text
+build\runtime-dist\canx-runtime.exe       59,550,936 bytes
+  · canx.query 与 duckdb 现已在打包 import graph 内（exe 内 duckdb 字符串出现 13 次；
+    此前各版本均为 0 次）
+packaged-runtime smoke                    PASS（3 passed）
+  · 新增 test_packaged_runtime_answers_a_trace_query_from_persisted_parquet：
+    同一个 canx-runtime.exe 先 capture 写出 Parquet segment，再通过
+    POST /trace/query 与 /trace/summary 读回；帧数与会话 frame_count 一致；
+    ID 过滤条件由 exe 自己返回的帧构造，因此不依赖虚拟适配器的具体 ID
+  · 断言还覆盖：range 与 exact 结果一致、mask 谓词逐帧成立、空结果无 cursor
+Tauri MSI                                 PASS（CAN-X_0.1.0_x64_en-US.msi）
+```
+
+Schema 与依赖：
+
+```text
+SQLite schema      未改（user_version 仍为 2）
+Parquet schema     未改（FRAME_PARQUET_SCHEMA_VERSION 仍为 1）
+Frame schema       未改（ID range / mask 是查询语义，不是持久化字段）
+新增依赖            无（duckdb / pyarrow / FastAPI / pydantic 已足够）
+```
+
+本阶段刻意未进入（属 V0.3 后续子阶段）：DBC import / parse / decode、
+Plot、完整 Trace 前端（Dockview / virtualized table）、markers persistence、
+changed-byte 渲染、freeze/follow、列定制、Agent `trace.query` / `trace.filter` tool、
+自然语言查询、CSV/ASC export、arbitrary SQL、regex over raw payload、
+cross-session project-wide query。
+
+已知限制（诚实记录）：
+
+```text
+1  generic Trace search syntax 仍未定义：本轮不猜 regex / full-text / payload
+   wildcard / SQL LIKE 的语义，等 PRD 明确后再做。ID / channel / direction /
+   time 四个轴是当前唯一受支持的过滤面。
+2  ID 轴不做 segment 级剪枝：DataSegment 没有 min/max arbitration_id 元数据，
+   假造一个 range 会制造 silent false negative，因此保持全部 registered segment
+   为 candidate。只有 persistence 契约真正提供可信 ID 边界后才可重新考虑。
+   （未为此修改 SQLite schema。）
+3  timestamp segment pruning 仍关闭（V0.2-03 决定，未变）。
+4  delta 与 changed bytes 不在本轮持久化，也不在响应中直接返回；Query API 已提供
+   计算所需的原始字段（normalized_timestamp / sequence / data / ID / channel）。
+5  HTTP 请求体的**类型级**错误（例如 limit 传非整数）仍由框架校验返回非结构化
+   422；所有**语义级**非法输入（越界、反向 range、半掩码、空数组、非法 direction
+   等）都是结构化 400。
+6  查询范围仍是单个 Data Session；跨 session / project-wide 查询属后续增量。
+7  ACTIVE 会话只暴露已 committed segment，writer buffer 中的帧不可见
+   （Live Trace 是 WebSocket 路径，两条路径未耦合）。
+8  /trace/id-counts 未暴露：QueryService.count_by_arbitration_id 已存在且本轮未改，
+   但本阶段只暴露 query 与 summary 两个最必要的端点，保持 API surface 最小。
+```
+
+状态：
+
+```text
+V0.3-01 Trace Query & Filtering Foundation
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做了实现 + 自验证。**不自行宣布 acceptance PASS**；
+独立验收由 ChatGPT / 项目负责人执行。
+
+下一步（需独立验收通过后才启动）：DBC Domain Foundation。不要自动进入 V0.3-02。
 
 ---
 
@@ -2223,13 +2437,15 @@ lifecycle race）。定向修复 V0.2-04-FINAL 已完成；该轮最终独立验
 该轮最终独立验收仍为 **V0.2-04 Final Acceptance: NOT PASS**，剩余唯一阻塞项是
 stop/finalization 期间短暂发布 `capture_state=failed` 且 `failure=null` 的错误状态；
 已由 V0.2-04-FINAL-3 定向修复（见 §18 Step V0.2-04-FINAL-3）：
-**V0.2-04-FINAL-3 remediation complete / Awaiting final independent acceptance**。
+**V0.2-04-FINAL-3 remediation complete**。该轮独立验收已通过：
+**V0.2-04 Final Acceptance: PASS**。
 本阶段把实时 Capture 正式接入 Project → DataSession → Parquet 持久化链路，并让
 runtime 的可观察终态始终与 SQLite 的真实持久化终态一致：cleanup timeout 只在
 durable verdict 确实落定时才被声明；终态写入已在执行中时 runtime 进入 finalizing
 并等待 worker 的真实结果，而不是猜测结论。packaged `canx-runtime.exe` 真正执行了
-Parquet 写入路径（**Packaged Parquet execution path: VERIFIED**，
-Packaged DuckDB query path 仍为 NOT VERIFIED）。
+Parquet 写入路径（**Packaged Parquet execution path: VERIFIED**）。该轮
+Packaged DuckDB query path 仍为 NOT VERIFIED —— 已由 V0.3-01 关闭
+（见 §18 Step V0.3-01：**Packaged DuckDB query path: VERIFIED**）。
 
 状态：
 
