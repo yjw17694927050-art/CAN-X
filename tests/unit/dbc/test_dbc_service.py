@@ -21,7 +21,7 @@ from canx.dbc.errors import (
 )
 from canx.dbc.model import DbcDocument
 from canx.dbc.parser import CantoolsDbcParser
-from canx.dbc.service import DEFAULT_DBC_ENCODING, DbcImportService
+from canx.dbc.service import DEFAULT_DBC_ENCODING, DbcImportService, _with_source
 
 VALID_DBC = (
     'VERSION "1.0"\n'
@@ -344,3 +344,92 @@ def test_the_project_root_of_an_import_is_the_source_directory(tmp_path: Path) -
     document = DbcImportService().import_file(path)
 
     assert Path(document.source.path or "").parent == tmp_path.resolve()
+
+
+# --- loading bytes a caller already owns ------------------------------------
+
+
+def test_loading_bytes_returns_the_same_document_as_importing_the_file(tmp_path: Path) -> None:
+    """The project layer parses the bytes it verified, not a second file read."""
+    path = write(tmp_path / "basic.dbc", VALID_DBC)
+    raw = path.read_bytes()
+
+    imported = DbcImportService().import_file(path)
+    loaded = DbcImportService().load_bytes(raw, source_name="basic.dbc")
+
+    assert loaded.database == imported.database
+    assert loaded.source.sha256 == imported.source.sha256
+    assert loaded.source.size_bytes == imported.source.size_bytes
+    assert loaded.source.encoding == imported.source.encoding
+
+
+def test_loaded_bytes_carry_no_external_path(tmp_path: Path) -> None:
+    """A project-owned copy is not bound to where it was imported from."""
+    path = write(tmp_path / "basic.dbc", VALID_DBC)
+
+    loaded = DbcImportService().load_bytes(path.read_bytes(), source_name="basic.dbc")
+
+    assert loaded.source.name == "basic.dbc"
+    assert loaded.source.path is None
+
+
+def test_loading_bytes_honours_the_declared_encoding() -> None:
+    raw = LEGACY_CP1252_DBC.encode("cp1252")
+
+    loaded = DbcImportService().load_bytes(raw, source_name="legacy.dbc", encoding="cp1252")
+
+    assert loaded.source.encoding == "cp1252"
+    assert loaded.database.messages[0].signals[0].unit == "°C"
+
+
+def test_non_utf8_bytes_are_still_a_typed_decode_failure_when_loaded() -> None:
+    """The strict decoding policy is the service's, not the file path's."""
+    raw = LEGACY_CP1252_DBC.encode("cp1252")
+
+    with pytest.raises(DbcDecodeError) as captured:
+        DbcImportService().load_bytes(raw, source_name="legacy.dbc")
+
+    assert captured.value.code == "dbc.decode_failed"
+    assert captured.value.details["source_name"] == "legacy.dbc"
+    assert isinstance(captured.value.details["byte_offset"], int)
+
+
+def test_loading_bytes_reports_a_parse_failure_with_its_source_name() -> None:
+    with pytest.raises(DbcParseError) as captured:
+        DbcImportService().load_bytes(
+            b'VERSION "1.0"\n\nBO_ not_a_number M: 8 N1\n', source_name="broken.dbc"
+        )
+
+    assert captured.value.code == "dbc.parse_failed"
+    assert captured.value.details["source_name"] == "broken.dbc"
+
+
+def test_loading_bytes_reports_an_invariant_violation_as_a_model_failure() -> None:
+    with pytest.raises(DbcModelError) as captured:
+        DbcImportService().load_bytes(
+            REVERSED_RANGE_DBC.encode("utf-8"), source_name="reversed.dbc"
+        )
+
+    assert captured.value.code == "dbc.invalid_model"
+
+
+# --- source attribution -----------------------------------------------------
+
+
+def test_the_service_source_name_wins_over_one_an_inner_failure_carried() -> None:
+    """The layer that opened the file decides which file is named.
+
+    Regression: the details were merged in the wrong direction, so an inner
+    ``source_name`` would have silenced the true one. The parser's diagnostics do
+    not carry that key today, which is exactly why this test exists — the defect
+    would have appeared silently on the day one did.
+    """
+    inner = DbcParseError("could not parse", details={"source_name": "wrong.dbc", "line": 4})
+
+    attributed = _with_source(inner, source_name="right.dbc")
+
+    assert attributed.details["source_name"] == "right.dbc"
+    assert attributed.details["line"] == 4
+    assert attributed.code == "dbc.parse_failed"
+    assert attributed.message == "could not parse"
+    assert attributed.recoverable is False
