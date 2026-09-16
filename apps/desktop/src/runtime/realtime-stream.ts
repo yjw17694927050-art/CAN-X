@@ -82,6 +82,10 @@ export class RealtimeStreamStore {
     const worker = this.deps.createWorker();
     const socket = this.deps.createSocket(this.deps.url);
     if (worker === null || socket === null) {
+      // Atomic initialization: if either resource is unavailable, release the
+      // one that was created so no orphan Worker or WebSocket is left behind.
+      worker?.terminate();
+      socket?.close();
       this.#patch({ connection: "unsupported" });
       return;
     }

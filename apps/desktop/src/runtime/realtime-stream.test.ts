@@ -148,4 +148,46 @@ describe("RealtimeStreamStore", () => {
     expect(sockets).toHaveLength(2);
     resubscribe();
   });
+
+  it("terminates a created worker when the socket cannot be created", () => {
+    const workers: FakeWorker[] = [];
+    const store = new RealtimeStreamStore({
+      createSocket: () => null,
+      createWorker: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+      url: "ws://test/stream/frames",
+    });
+
+    const unsubscribe = store.subscribe(() => undefined);
+
+    expect(workers).toHaveLength(1);
+    expect(workers[0]?.terminated).toBe(true);
+    expect(store.getState().connection).toBe("unsupported");
+    expect(store.getState().snapshot).toBeNull();
+    unsubscribe();
+  });
+
+  it("closes a created socket when the worker cannot be created", () => {
+    const sockets: FakeSocket[] = [];
+    const store = new RealtimeStreamStore({
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+      createWorker: () => null,
+      url: "ws://test/stream/frames",
+    });
+
+    const unsubscribe = store.subscribe(() => undefined);
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]?.closed).toBe(true);
+    expect(store.getState().connection).toBe("unsupported");
+    expect(store.getState().snapshot).toBeNull();
+    unsubscribe();
+  });
 });
