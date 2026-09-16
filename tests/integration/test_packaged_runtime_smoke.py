@@ -218,3 +218,158 @@ async def test_packaged_runtime_writes_a_queryable_project_data_session(tmp_path
             FrameQuery(filter=FrameFilter(session_id=session_id), limit=10)
         )
         assert len(page.frames) == min(10, session.frame_count)
+
+
+@pytest.mark.skipif(
+    packaged_runtime() is None, reason="packaged canx-runtime.exe has not been built"
+)
+async def test_packaged_runtime_answers_a_trace_query_from_persisted_parquet(
+    tmp_path: Path,
+) -> None:
+    """The frozen executable must serve a bounded Trace query off real Parquet.
+
+    V0.2-03 recorded "Packaged DuckDB query execution path: NOT VERIFIED" because
+    no HTTP surface reached ``canx.query`` inside the image. This test is what
+    turns that note into evidence, and it is deliberately double-ended: the same
+    ``canx-runtime.exe`` both captures (writing the Parquet segments) and answers
+    ``POST /trace/query``. A response can therefore only come from DuckDB scanning
+    the files that process wrote to disk — never from an in-process frame buffer,
+    which a capture-less query path could otherwise be mistaken for.
+
+    The id filter is built from a frame the executable itself returned, so the
+    assertion does not depend on which ids the virtual adapter happens to use.
+    """
+    exe = packaged_runtime()
+    assert exe is not None
+    project_root = tmp_path / "packaged-trace.canx"
+    with ProjectService().create(project_root, display_name="Packaged Trace"):
+        pass
+
+    port = _free_port()
+    token = "v0301-trace-token"
+    proc = subprocess.Popen(
+        [str(exe), "--host", "127.0.0.1", "--port", str(port), "--session-token", token],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30) as client:
+            await _await_health(client)
+
+            started = await client.post(
+                "/capture/start",
+                json={
+                    "rate_hz": 4_000,
+                    "batch_size": 25,
+                    "project_path": str(project_root),
+                },
+            )
+            assert started.status_code == 202, started.text
+            session_id = started.json()["data_session_id"]
+            assert session_id is not None
+
+            await asyncio.sleep(0.4)
+
+            stopped = await client.post("/capture/stop")
+            assert stopped.status_code == 200, stopped.text
+            assert stopped.json()["finalization_pending"] is False
+
+            def body(**overrides: object) -> dict[str, object]:
+                payload: dict[str, object] = {
+                    "project_path": str(project_root),
+                    "session_id": session_id,
+                    "filters": {},
+                    "limit": 5,
+                }
+                payload.update(overrides)
+                return payload
+
+            unfiltered = await client.post("/trace/query", json=body())
+            assert unfiltered.status_code == 200, unfiltered.text
+            page = unfiltered.json()
+            assert page["session_id"] == session_id
+            assert page["frames"], "the packaged executable returned no frames at all"
+
+            summary = await client.post(
+                "/trace/summary",
+                json={
+                    "project_path": str(project_root),
+                    "session_id": session_id,
+                    "filters": {},
+                },
+            )
+            assert summary.status_code == 200, summary.text
+            summary_body = summary.json()
+
+            first = page["frames"][0]
+            exact_id = first["arbitration_id"]
+            by_id = await client.post(
+                "/trace/query", json=body(filters={"arbitration_ids": [exact_id]}, limit=1_000)
+            )
+            by_range = await client.post(
+                "/trace/query",
+                json=body(
+                    filters={
+                        "arbitration_id_start": exact_id,
+                        "arbitration_id_end": exact_id,
+                    },
+                    limit=1_000,
+                ),
+            )
+            mask = 0xFFF
+            mask_value = exact_id & mask
+            by_mask = await client.post(
+                "/trace/query",
+                json=body(
+                    filters={
+                        "arbitration_id_mask": mask,
+                        "arbitration_id_mask_value": mask_value,
+                    },
+                    limit=1_000,
+                ),
+            )
+
+            empty = await client.post(
+                "/trace/query",
+                json=body(filters={"arbitration_id_start": 0x1FFFFFF0, "arbitration_id_end": 0x1FFFFFFF}),
+            )
+
+            shutdown = await client.post(
+                "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
+            )
+            assert shutdown.status_code == 202
+
+        proc.wait(timeout=30)
+        assert proc.returncode == 0
+    finally:
+        _terminate(proc)
+
+    # Read the same session from the source tree to fix the expected numbers.
+    with ProjectService().open(project_root) as reopened:
+        session = DataSessionService(reopened.root).get_session(session_id)
+
+    assert session.state is DataSessionState.COMPLETED
+    assert session.frame_count > 0
+
+    assert summary_body["matching_frame_count"] == session.frame_count
+    assert len(page["frames"]) == min(5, session.frame_count)
+    assert [item["sequence"] for item in page["frames"]] == list(range(len(page["frames"])))
+    assert isinstance(first["data"], str) and first["data"] == first["data"].upper()
+    assert first["direction"] in {"rx", "tx"}
+    assert first["dlc"] == len(first["data"]) // 2
+
+    for response in (by_id, by_range):
+        assert response.status_code == 200, response.text
+        frames = response.json()["frames"]
+        assert frames, "an id filter that names a real frame must match it"
+        assert {item["arbitration_id"] for item in frames} == {exact_id}
+
+    masked_frames = by_mask.json()["frames"]
+    assert masked_frames, "the masked predicate must still select matching frames"
+    assert all(
+        (item["arbitration_id"] & mask) == (mask_value & mask) for item in masked_frames
+    )
+
+    assert empty.status_code == 200
+    assert empty.json()["frames"] == []
+    assert empty.json()["has_more"] is False

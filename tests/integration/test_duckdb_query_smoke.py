@@ -18,7 +18,7 @@ from canx.data.session import DataSessionService
 from canx.domain.batch import FrameBatch
 from canx.domain.frame import Direction, Frame, TimestampQuality
 from canx.project.service import ProjectHandle, ProjectService
-from canx.query.model import FrameFilter, FrameQuery
+from canx.query.model import MAX_QUERY_ROWS, FrameFilter, FrameQuery
 from canx.query.service import QueryService
 
 STREAM_ID = "smoke-stream"
@@ -282,3 +282,311 @@ def test_the_smoke_volume_is_integrity_clean(
     assert len(segments) == SEGMENT_COUNT
     assert sum(segment.frame_count for segment in segments) == TOTAL_FRAMES
     assert service.inspect_integrity().clean is True
+
+# --- V0.3-01: CAN id range, mask and combination on the same 100k volume --------
+#
+# These assertions reuse the module fixture, so the 100,000 frames are written
+# once for the whole module. Their expected counts are derived from the fixture's
+# own id formula rather than from a second query, so the engine cannot confirm
+# itself. Timings are still informational only — nothing here is a threshold.
+
+#: The canonical ids the fixture cycles through.
+CANONICAL_IDS = tuple(0x100 + offset for offset in range(DISTINCT_IDS))
+#: ``0x100`` has bit 2 clear, so masking the canonical ids with ``0x04`` compares
+#: bit 2 of the fixture's own cycle offset: the four ids ``0x104``-``0x107`` match
+#: and the other four do not — exactly half the volume.
+MASK_LOW_BITS = 0x04
+MASK_LOW_BITS_VALUE = 0x04
+
+
+def _expected_id_count(predicate: object) -> int:
+    """Count frames the fixture's id formula will produce, independently."""
+    matching = 0
+    for sequence in range(TOTAL_FRAMES):
+        arbitration_id = 0x100 + (sequence % DISTINCT_IDS)
+        if predicate(arbitration_id):  # type: ignore[operator]
+            matching += 1
+    return matching
+
+
+def test_a_full_page_walk_reconstructs_every_frame_exactly_once(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    """The core scale claim: 100,000 frames paged, in order, with nothing lost.
+
+    A filtered or unfiltered walk must concatenate into the single-query result —
+    no duplicate, no gap, strictly increasing order — and the cursor must be the
+    last returned sequence rather than a row count.
+    """
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(session_id=session_id)
+
+    collected: list[int] = []
+    cursors: list[int] = []
+    pages = 0
+    cursor = None
+    started = time.perf_counter()
+    while True:
+        page = service.query_frames(
+            FrameQuery(filter=frame_filter, after_sequence=cursor, limit=MAX_QUERY_ROWS)
+        )
+        pages += 1
+        collected.extend(item.sequence for item in page.frames)
+        if not page.has_more:
+            assert page.next_after_sequence is None
+            break
+        assert page.next_after_sequence == page.frames[-1].sequence
+        cursors.append(page.next_after_sequence)
+        cursor = page.next_after_sequence
+    elapsed = time.perf_counter() - started
+
+    _write_report(
+        total_frames=TOTAL_FRAMES,
+        segments=SEGMENT_COUNT,
+        filter="unbounded",
+        page_size=MAX_QUERY_ROWS,
+        page_count=pages,
+        returned_rows=len(collected),
+        full_walk_seconds=round(elapsed, 3),
+        timing="informational only, not a gate",
+    )
+
+    assert pages == TOTAL_FRAMES // MAX_QUERY_ROWS == 10
+    assert collected == list(range(TOTAL_FRAMES))
+    assert len(set(collected)) == TOTAL_FRAMES
+    assert cursors == sorted(cursors) and len(set(cursors)) == len(cursors)
+
+
+def test_an_id_range_covering_the_whole_id_space_returns_every_frame(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(
+        session_id=session_id,
+        arbitration_id_start=CANONICAL_IDS[0],
+        arbitration_id_end=CANONICAL_IDS[-1],
+    )
+
+    plan = service.plan_frames(frame_filter)
+    summary = service.summarize_frames(frame_filter)
+
+    assert summary.matching_frame_count == TOTAL_FRAMES
+    assert summary.first_sequence == 0
+    assert summary.last_sequence == TOTAL_FRAMES - 1
+    # An id filter carries no segment metadata to prune on, so every registered
+    # segment stays a candidate — correctness before pruning.
+    assert plan.candidate_segment_count == SEGMENT_COUNT
+
+
+def test_an_id_range_narrower_than_the_id_space_is_exact(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(
+        session_id=session_id, arbitration_id_start=0x101, arbitration_id_end=0x103
+    )
+
+    summary = service.summarize_frames(frame_filter)
+    page = service.query_frames(FrameQuery(filter=frame_filter, limit=1_000))
+    expected = _expected_id_count(lambda arbitration_id: 0x101 <= arbitration_id <= 0x103)
+
+    _write_report(
+        total_frames=TOTAL_FRAMES,
+        filter="arbitration_id 0x101-0x103",
+        matched_rows=summary.matching_frame_count,
+        expected_rows=expected,
+        result="bounded range",
+        timing="informational only, not a gate",
+    )
+
+    assert expected == TOTAL_FRAMES * 3 // DISTINCT_IDS
+    assert summary.matching_frame_count == expected
+    assert len(page.frames) == 1_000
+    assert page.has_more is True
+    assert all(0x101 <= item.arbitration_id <= 0x103 for item in page.frames)
+
+
+def test_an_id_range_that_matches_no_frame_is_empty_at_scale(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(
+        session_id=session_id, arbitration_id_start=0x200, arbitration_id_end=0x2FF
+    )
+
+    page = service.query_frames(FrameQuery(filter=frame_filter, limit=1_000))
+    summary = service.summarize_frames(frame_filter)
+
+    assert page.frames == ()
+    assert page.has_more is False
+    assert page.next_after_sequence is None
+    assert summary.matching_frame_count == 0
+    assert summary.first_sequence is None
+
+
+def test_an_id_mask_selects_the_low_bit_group_exactly(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    """``(id & 0x06) == (0x104 & 0x06)`` must hold for every returned frame."""
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(
+        session_id=session_id,
+        arbitration_id_mask=MASK_LOW_BITS,
+        arbitration_id_mask_value=MASK_LOW_BITS_VALUE,
+    )
+
+    summary = service.summarize_frames(frame_filter)
+    page = service.query_frames(FrameQuery(filter=frame_filter, limit=1_000))
+    expected = _expected_id_count(
+        lambda arbitration_id: (arbitration_id & MASK_LOW_BITS)
+        == (MASK_LOW_BITS_VALUE & MASK_LOW_BITS)
+    )
+
+    _write_report(
+        total_frames=TOTAL_FRAMES,
+        filter=f"mask 0x{MASK_LOW_BITS:X}/value 0x{MASK_LOW_BITS_VALUE:X}",
+        matched_rows=summary.matching_frame_count,
+        expected_rows=expected,
+        result="bounded masked",
+        timing="informational only, not a gate",
+    )
+
+    assert expected == TOTAL_FRAMES // 2
+    assert summary.matching_frame_count == expected
+    assert page.has_more is True
+    assert all(
+        (item.arbitration_id & MASK_LOW_BITS)
+        == (MASK_LOW_BITS_VALUE & MASK_LOW_BITS)
+        for item in page.frames
+    )
+
+
+def test_a_channel_filter_is_applied_on_the_smoke_volume(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    """The fixture writes one channel, so the axis must match all or nothing."""
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+
+    present = service.summarize_frames(FrameFilter(session_id=session_id, channel_ids=("can0",)))
+    absent = service.summarize_frames(FrameFilter(session_id=session_id, channel_ids=("can9",)))
+
+    assert present.matching_frame_count == TOTAL_FRAMES
+    assert absent.matching_frame_count == 0
+
+
+def test_a_direction_filter_is_applied_on_the_smoke_volume(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+
+    rx = service.summarize_frames(
+        FrameFilter(session_id=session_id, directions=(Direction.RX,))
+    )
+    both = service.summarize_frames(
+        FrameFilter(session_id=session_id, directions=(Direction.RX, Direction.TX))
+    )
+
+    assert rx.matching_frame_count == TOTAL_FRAMES // 2
+    assert both.matching_frame_count == TOTAL_FRAMES
+
+
+def test_a_combined_id_channel_direction_and_sequence_filter_is_and_ed(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    """Four axes at once, with the expectation derived from the fixture formula."""
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(
+        session_id=session_id,
+        arbitration_id_start=CANONICAL_IDS[0],
+        arbitration_id_end=CANONICAL_IDS[-1],
+        arbitration_id_mask=MASK_LOW_BITS,
+        arbitration_id_mask_value=MASK_LOW_BITS_VALUE,
+        channel_ids=("can0",),
+        directions=(Direction.RX,),
+        sequence_start=0,
+        sequence_end=999,
+    )
+
+    page = service.query_frames(FrameQuery(filter=frame_filter, limit=MAX_QUERY_ROWS))
+    summary = service.summarize_frames(frame_filter)
+    expected = [
+        sequence
+        for sequence in range(1_000)
+        if ((0x100 + sequence % DISTINCT_IDS) & MASK_LOW_BITS)
+        == (MASK_LOW_BITS_VALUE & MASK_LOW_BITS)
+        and sequence % 2 == 0
+    ]
+
+    _write_report(
+        total_frames=TOTAL_FRAMES,
+        filter="range + mask + channel + direction + sequence",
+        matched_rows=summary.matching_frame_count,
+        expected_rows=len(expected),
+        result="bounded combined",
+        timing="informational only, not a gate",
+    )
+
+    assert [item.sequence for item in page.frames] == expected
+    assert summary.matching_frame_count == len(expected)
+    assert len(expected) == 250
+
+
+def test_a_filtered_page_walk_on_the_smoke_volume_is_lossless(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    """A non-contiguous 100k-scale result set must page without loss or overlap."""
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(
+        session_id=session_id,
+        arbitration_id_mask=MASK_LOW_BITS,
+        arbitration_id_mask_value=MASK_LOW_BITS_VALUE,
+    )
+
+    single = service.query_frames(FrameQuery(filter=frame_filter, limit=MAX_QUERY_ROWS))
+    collected: list[int] = []
+    cursor = None
+    pages = 0
+    while True:
+        page = service.query_frames(
+            FrameQuery(filter=frame_filter, after_sequence=cursor, limit=MAX_QUERY_ROWS)
+        )
+        pages += 1
+        collected.extend(item.sequence for item in page.frames)
+        if not page.has_more:
+            break
+        cursor = page.next_after_sequence
+
+        assert page.next_after_sequence == page.frames[-1].sequence
+
+    assert len(single.frames) == MAX_QUERY_ROWS
+    assert pages == 5
+    assert collected == sorted(set(collected))
+    assert len(collected) == TOTAL_FRAMES // 2
+    # Every first page of a filtered walk must match the single-query head.
+    assert collected[:MAX_QUERY_ROWS] == [item.sequence for item in single.frames]
+
+
+def test_the_smoke_volume_reports_a_consistent_summary_under_an_id_filter(
+    smoke_project: tuple[Path, str, float],
+) -> None:
+    root, session_id, _seconds = smoke_project
+    service = QueryService(root)
+    frame_filter = FrameFilter(
+        session_id=session_id, arbitration_ids=(SELECTIVE_ID,)
+    )
+
+    summary = service.summarize_frames(frame_filter)
+
+    assert summary.matching_frame_count == TOTAL_FRAMES // DISTINCT_IDS
+    assert summary.first_sequence == 3
+    assert summary.last_sequence == TOTAL_FRAMES - 5
+    assert summary.first_normalized_timestamp == pytest.approx(3 / 1_000.0)
