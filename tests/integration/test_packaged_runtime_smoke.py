@@ -339,6 +339,30 @@ async def test_packaged_runtime_answers_a_trace_query_from_persisted_parquet(
                 ),
             )
 
+            # The app-level request-validation boundary is registered in the same
+            # application factory the frozen executable runs, so a malformed
+            # payload must be answered with the shared envelope here too — not with
+            # the framework's own payload and not with a packaging-specific variant.
+            malformed = await client.post(
+                "/trace/query",
+                json={
+                    "project_path": str(project_root),
+                    "session_id": session_id,
+                    "limit": "ten",
+                },
+            )
+            assert malformed.status_code == 422, malformed.text
+            assert set(malformed.json()) == {
+                "code",
+                "message",
+                "details",
+                "recoverable",
+                "source",
+            }
+            assert malformed.json()["code"] == "api.request_validation_failed"
+            assert malformed.json()["source"] == "api"
+            assert malformed.json()["recoverable"] is False
+
             shutdown = await client.post(
                 "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
             )

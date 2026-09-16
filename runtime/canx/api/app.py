@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -22,7 +23,13 @@ from canx.agent.tools import (
     UnknownToolError,
 )
 from canx.agent.trace_summary import TraceSummaryInput, TraceSummaryOutput, summarize_frames
-from canx.api.errors import ErrorResponse, error_envelope, status_for
+from canx.api.errors import (
+    REQUEST_VALIDATION_FAILED_STATUS,
+    ErrorResponse,
+    error_envelope,
+    request_validation_envelope,
+    status_for,
+)
 from canx.api.trace import create_trace_router
 from canx.devices.virtual import VirtualAdapterConfig
 from canx.metrics.models import MetricsSnapshot
@@ -174,6 +181,24 @@ def create_app(
         """
         return JSONResponse(
             status_code=status_for(error), content=error_envelope(error).model_dump()
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_failure(
+        _request: Request, error: RequestValidationError
+    ) -> JSONResponse:
+        """Report a request the framework rejected before any route handler ran.
+
+        This is a different layer from the two handlers above: nothing in the
+        domain was reached, so there is no domain diagnosis to report. It keeps
+        the framework's own 422 and gets its own code and source — a caller must be
+        able to tell "my payload does not match the contract" apart from "the
+        contract rejected my values". Registering it app-wide is what keeps every
+        endpoint on one error protocol instead of each route inventing its own.
+        """
+        return JSONResponse(
+            status_code=REQUEST_VALIDATION_FAILED_STATUS,
+            content=request_validation_envelope(error.errors()).model_dump(),
         )
 
     # The historical Trace surface reads persisted data and shares no state with
