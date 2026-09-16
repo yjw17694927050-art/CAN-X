@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-02 DBC Domain Foundation
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-03 DBC Project Registry & Persistence Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -2385,6 +2385,37 @@ Awaiting independent acceptance
 
 本轮只做了实现 + 自验证。**不自行宣布 V0.3-02 Acceptance PASS**；
 最终验收由 ChatGPT / 项目负责人独立执行。
+
+**独立验收结果（项目负责人，已执行）**：
+
+```text
+V0.3-02 — DBC Domain Foundation
+Final Acceptance: PASS
+Status: CLOSED
+```
+
+这是项目负责人人工执行的独立验收结论，不是 Agent 自行宣布的 PASS。项目负责人已正式
+批准从 V0.3-02 进入 **V0.3-03 — DBC Project Registry & Persistence Foundation**。
+
+### Step V0.3-03 — DBC Project Registry & Persistence Foundation
+
+Objective：
+
+把 V0.3-02 的只读临时导入能力，升级为 **Project 拥有的、具有稳定身份、持久化 metadata、
+项目内文件副本和完整性校验的工程资产**：
+
+```text
+external .dbc
+↓  Project identity validation
+↓  V0.3-02 DbcImportService validation
+↓  project-owned immutable copy   <project>/dbc/<asset_id>.dbc
+↓  SQLite dbc_assets registry（project schema V3）
+↓  close → reopen → list / get / load by asset_id
+↓  canonical DbcDocument
+```
+
+本阶段**不是** decode 阶段。不做 Frame → Signal decode、不做 HTTP API、不做前端、
+不做 Agent tool、不定义全局 active DBC、不做 delete / rename / replace。
 
 ---
 
