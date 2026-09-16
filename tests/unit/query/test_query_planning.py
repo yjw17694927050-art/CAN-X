@@ -126,14 +126,24 @@ def test_a_cursor_matching_a_segment_end_still_keeps_that_segment() -> None:
     assert _candidate_indexes(plan.relative_paths) == [2, 3, 4]
 
 
-def test_a_timestamp_window_prunes_the_same_way_as_a_sequence_window() -> None:
+def test_a_timestamp_window_never_prunes_a_segment() -> None:
+    """Segment timestamp bounds are not trustworthy min/max, so they cannot prune.
+
+    ``first_timestamp`` / ``last_timestamp`` are the first and last frame in
+    segment order, not the extremes, so a narrow timestamp window must keep every
+    registered segment as a candidate.
+    """
     plan = plan_segments(
         _segments(),
-        FrameFilter(session_id=SESSION_ID, normalized_timestamp_start=15.0,
-                    normalized_timestamp_end=24.0),
+        FrameFilter(
+            session_id=SESSION_ID,
+            normalized_timestamp_start=15.0,
+            normalized_timestamp_end=24.0,
+        ),
     )
 
-    assert _candidate_indexes(plan.relative_paths) == [1, 2]
+    assert _candidate_indexes(plan.relative_paths) == [0, 1, 2, 3, 4]
+    assert plan.pruned_segment_count == 0
 
 
 def test_frame_level_axes_never_prune_a_segment() -> None:
@@ -153,7 +163,8 @@ def test_frame_level_axes_never_prune_a_segment() -> None:
     assert plan.candidate_segment_count == 5
 
 
-def test_sequence_and_timestamp_windows_intersect() -> None:
+def test_a_combined_filter_prunes_on_sequence_only() -> None:
+    """A timestamp bound must not narrow the sequence-derived candidate set."""
     plan = plan_segments(
         _segments(),
         FrameFilter(
@@ -165,7 +176,9 @@ def test_sequence_and_timestamp_windows_intersect() -> None:
         ),
     )
 
-    assert _candidate_indexes(plan.relative_paths) == [2]
+    # Segments 1-3 come from the sequence window alone; the timestamp window
+    # adds no pruning on top of it.
+    assert _candidate_indexes(plan.relative_paths) == [1, 2, 3]
 
 
 def test_the_plan_scans_the_candidate_paths_of_the_registered_segments() -> None:

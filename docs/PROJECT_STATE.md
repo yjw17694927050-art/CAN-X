@@ -995,12 +995,60 @@ sequence window 40000-40099  returned 100 / candidate 1/20 / 0.025 s
 10-50 GB target              NOT VERIFIED
 ```
 
+独立验收结论：**Conditional PASS**（一项 P1）。定向修复（V0.2-03-FINAL）已完成：
+
+```text
+P1  不安全的 timestamp segment pruning（silent false negative）
+    现象：planner 把 DataSegment.first_timestamp / last_timestamp 当作 segment 的
+          完整时间范围做剪枝，但 V0.2-02 writer 只保证 batch 首 <= batch 尾，
+          且跨 batch 不倒退，并不保证 segment 内逐帧 timestamp 单调。
+          一个合法 segment 可以持有 [0, 100, 1]（记录为 first = 0 / last = 1），
+          此时查询 timestamp = 100 会剪掉真正含命中帧的 segment，
+          返回 0 行而不是 1 行 —— silent false negative。
+
+    修复：关闭 timestamp segment pruning；sequence / after_sequence 剪枝保留；
+          timestamp 过滤继续由 DuckDB 的 frame-level predicate 承担。
+          未改动 persistence 格式、SQLite schema、Parquet schema 与公共 Query API。
+
+    证据：tests/integration/test_query_timestamp_regression.py（9 例，走真实
+          Project → Data Session → Parquet → QueryService → planning → DuckDB → Frame）
+          修复前（探针复现）：plan candidates = 0，query(ts=100) = []，summary count = 0
+          修复后：              plan candidates = 1，query(ts=100) = [1]，summary count = 1
+          回归：timestamp-only filter 现在保留全部 registered segment（smoke 20/20）；
+               sequence window 仍能剪枝（smoke 20 → 1）。
+```
+
+定向修复后本机验证（2026-09-16，V0.2-03-FINAL 重新执行）：
+
+```text
+focused pytest (unit/query + query_across_segments + timestamp_regression + smoke)
+                                                          182 passed
+full pytest                                               561 passed
+ruff check runtime tests tools                            exit 0
+mypy runtime                                              exit 0 (48 source files)
+scripts\package-windows.cmd                               exit 0
+  · runtime build + staged sidecar                         PASS
+  · packaged-runtime smoke (canx-runtime.exe)              PASS (1 passed)
+  · Tauri MSI build + artifact check                       PASS (CAN-X_0.1.0_x64_en-US.msi)
+Packaged DuckDB query execution path                 仍为 NOT VERIFIED
+  （本次未扩大 packaged import graph；canx.query 与 duckdb 都不在其中）
+```
+
+未决优化（不在本阶段实现）：
+
+```text
+Timestamp segment pruning 只有在持久化契约真正提供可靠的 per-segment
+min/max timestamp metadata（或等价保证）之后，才可安全重新启用。
+```
+
 状态：
 
 ```text
 V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service
 Implementation complete
-Awaiting independent acceptance
+Independent acceptance: Conditional PASS
+Final remediation completed
+Awaiting final acceptance
 ```
 
 本阶段刻意未进入：FastAPI query endpoint、Trace / Plot historical UI、
@@ -1510,9 +1558,10 @@ V0.2-02 Data Session & Parquet Segment Persistence 已完成实现、本机验�
 独立验收（Conditional PASS）与定向修复（见 §18 Step V0.2-02）：
 **V0.2-02 Final Acceptance: PASS**。
 
-V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service 已完成实现与本机验证
-（见 §18 Step V0.2-03），当前等待 **V0.2-03 Independent Acceptance**。
-尚未开始 V0.2-04。
+V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service 已完成实现、本机验证
+与独立验收（见 §18 Step V0.2-03）：**V0.2-03 Independent Acceptance: Conditional PASS**
+（一项 P1 查询正确性）。定向修复 V0.2-03-FINAL 已完成，当前等待
+**V0.2-03 Final Acceptance**。尚未开始 V0.2-04。
 
 状态：
 
@@ -1534,7 +1583,9 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-02 final acceptance         ✅ PASS
 ├── V0.2-03 implementation           ✅ done
 ├── V0.2-03 local verification       ✅ done
-├── V0.2-03 independent acceptance   ⏳ awaiting
+├── V0.2-03 independent acceptance   ✅ Conditional PASS (1 P1)
+├── V0.2-03 final remediation        ✅ done
+├── V0.2-03 final acceptance         ⏳ awaiting
 └── V0.2-04 (next coherent increment) not started
 ```
 

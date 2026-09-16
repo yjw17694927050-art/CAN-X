@@ -222,9 +222,15 @@ def test_a_narrow_sequence_window_prunes_to_one_segment(
     assert page.has_more is False
 
 
-def test_a_narrow_timestamp_window_prunes_to_one_segment(
+def test_a_narrow_timestamp_window_keeps_all_segments_but_still_returns_the_right_rows(
     smoke_project: tuple[Path, str, float],
 ) -> None:
+    """Timestamp segment pruning is deliberately disabled; correctness is kept.
+
+    The window still selects exactly the same frames, but the planner may no
+    longer skip a segment on timestamp bounds, so the candidate set equals the
+    registered set. The scan grows; the answer does not change.
+    """
     root, session_id, _seconds = smoke_project
     service = QueryService(root)
     frame_filter = FrameFilter(
@@ -235,11 +241,17 @@ def test_a_narrow_timestamp_window_prunes_to_one_segment(
 
     plan = service.plan_frames(frame_filter)
     summary = service.summarize_frames(frame_filter)
+    page = service.query_frames(FrameQuery(filter=frame_filter, limit=1_000))
 
-    assert plan.candidate_segment_count == 1
+    assert plan.registered_segment_count == SEGMENT_COUNT
+    assert plan.candidate_segment_count == SEGMENT_COUNT
+    assert plan.pruned_segment_count == 0
     assert summary.matching_frame_count == NARROW_END - NARROW_START + 1
     assert summary.first_sequence == NARROW_START
     assert summary.last_sequence == NARROW_END
+    assert [item.sequence for item in page.frames] == list(
+        range(NARROW_START, NARROW_END + 1)
+    )
 
 
 def test_arbitration_counts_stay_bounded_on_the_smoke_volume(
