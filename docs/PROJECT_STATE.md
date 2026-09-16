@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-01 Trace Query & Filtering Foundation
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-01-FINAL HTTP Request Validation Envelope Closure
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -1932,7 +1932,158 @@ Awaiting independent acceptance
 本轮只做了实现 + 自验证。**不自行宣布 acceptance PASS**；
 独立验收由 ChatGPT / 项目负责人执行。
 
-下一步（需独立验收通过后才启动）：DBC Domain Foundation。不要自动进入 V0.3-02。
+---
+
+### Step V0.3-01-FINAL — HTTP Request Validation Envelope Closure
+
+V0.3-01 独立验收结论：主体实现没有新的阻塞问题（ID range / mask 及
+`(id & mask) == (value & mask)` 语义、QueryService 单一查询事实来源、bounded DuckDB
+query、参数绑定与 SQL injection boundary、`sequence ASC`、`after_sequence` exclusive
+cursor、`limit + 1`、无 OFFSET、`ProjectService.open` 工程身份验证、segment header /
+path integrity、`/trace/query`、`/trace/summary`、worker-thread 查询执行、
+packaged DuckDB query path 全部通过），但发现**一个阻塞 Final Acceptance 的缺口**：
+
+```text
+FastAPI / Pydantic 在路由进入 domain 之前拒绝请求体时，响应仍是框架原生的
+{"detail": [...]} —— 一个没有 code、没有 source、并且会把调用方原始输入
+（"input": ...）回显回去的第二套错误协议。
+
+复现（修复前，真实 ASGI 调用）：
+  limit="abc"      → 422 {"detail":[{"type":"int_parsing","loc":["body","limit"],
+                                    "msg":"...","input":"abc"}]}
+  缺失 session_id   → 422 {"detail":[{"type":"missing","loc":["body","session_id"],
+                                    "msg":"Field required","input":{...}}]}
+  malformed JSON   → 422 {"detail":[{"type":"json_invalid",...}]}
+  /capture/start   → 同样 {"detail": [...]}
+```
+
+SPEC §38 要求所有跨 API 边界的可诊断错误使用统一五字段结构，而该缺口是 domain
+契约之外的**框架层**错误路径——`QueryError` / `ProjectError` 已统一，只有
+`RequestValidationError` 尚未进入该契约。
+
+修复原因（唯一的 coherent increment）：把框架层请求校验失败纳入同一 envelope，
+同时**保留其独立语义**——统一的是错误 body contract，不是 HTTP status。
+
+实际错误契约：
+
+```text
+HTTP status   422（保持框架语义；未与 domain 的 400/404/409/500/503 合并）
+code          api.request_validation_failed
+message       "The request payload does not match the API contract."
+details       {"errors": [{"location": [...], "type": "...", "message": "..."}]}
+recoverable   false
+source        api
+```
+
+`details` 只保留 `location` / `type` / `message`：
+
+* Pydantic 的 `input` 与 `ctx` **被丢弃**——不回显调用方 payload，也不泄漏 validator
+  内部上下文；
+* `location` 段只保留字段名与数组下标，任何非 `str`/`int` 段降级为类型名（如 `dict`），
+  因此异常位置自身也不可能变成 payload echo；
+* 不返回 traceback、exception repr、raw exception object、SQL、DuckDB / SQLite /
+  pyarrow internals、credentials/token。
+
+实现位置（共享 API boundary，未在 endpoint 内复制逻辑）：
+
+```text
+runtime/canx/api/errors.py   REQUEST_VALIDATION_FAILED_{CODE,MESSAGE,STATUS}
+                             request_validation_envelope() + issue sanitizer
+runtime/canx/api/app.py      单个 app-level @app.exception_handler(RequestValidationError)
+```
+
+因此 `/trace/query`、`/trace/summary`、`/capture/start` 以及后续任何 endpoint 共用同一
+边界，不会形成"Trace 专属错误协议"。未修改 QueryEngine / FrameFilter / QueryService；
+未新增第二套 error framework；未在路由内手工复制 try/except。
+
+层次分离（本轮固定为契约）：
+
+```text
+domain semantic validation        400   code = query.* / project.*，source = query / project
+request schema / type validation  422   code = api.request_validation_failed，source = api
+```
+
+两者不得互相降级：把 `arbitration_id_start = -1` 这类**取值**问题报成
+`api.request_validation_failed` 是错的（它是合法 payload、非法取值），已有专门测试
+锁住这一点。
+
+新增测试（39 例，`tests/unit/api/test_request_validation_envelope.py`）：
+
+```text
+/trace/query     15 例：limit 非整数 / cursor 非整数 / cursor 为浮点 / limit 为数组 /
+                 缺失 project_path / 缺失 session_id / is_fd 为对象 / is_fd 为数组 /
+                 filters 为字符串 / sequence_start 为对象 / mask 为对象 /
+                 channel_ids 为整数 / project_path 为整数 / session_id 为数组 /
+                 body 为数组
+/trace/summary    6 例：filter flag 类型 / directions 类型 / 缺失必填字段 / 空 body /
+                 body 为数组
+malformed JSON    4 例：截断对象 / 空 body / 缺值 / 单引号
+跨 endpoint       7 例：/capture/start 的 channel_count（非字面量、超出字面量）、
+                 rate_hz / batch_size / is_fd / project_path / recording_path 类型
+定位可诊断        3 例：location 指向真正出错的字段（body + 字段名）；
+                 JSON 解析失败只报告位置，不回显收到的字节
+无副作用          3 例：被拒的 capture 不产生 session（has_session / capture_active /
+                 data_session_id 与磁盘均不变）；被拒的请求不创建 project、不改变既有
+                 project 内容；被拒的 Trace 请求**不进入 route handler**
+                 —— 用对照组证明：同一 absent project + 合法 payload 得到
+                 400 project.not_found（handler 执行了），非法 payload 得到 422
+                 （handler 根本没执行）
+层次不合并        1 例：domain 语义错误仍是 400 + query.* 且 source = query
+```
+
+每条断言同时校验：`status == 422`、body 键恰为五字段、`code` / `source` /
+`recoverable` 的精确值、`details.errors[*]` 只有 location/type/message，
+以及响应文本中不含 `traceback` / `pydantic` / `duckdb` / `sqlite` / `pyarrow` /
+`"input"` 等泄漏标记。
+
+本机验证（2026-09-16，V0.3-01-FINAL，全部为实际执行结果）：
+
+```text
+full pytest                           835 passed（本增量前 796；新增 39 例）
+ruff check runtime tests tools        exit 0
+mypy runtime                          exit 0（52 source files）
+scripts\package-windows.cmd           exit 0
+  · runtime build + staged sidecar     PASS
+  · packaged-runtime smoke             3 passed
+  · Tauri MSI build + artifact check   PASS（CAN-X_0.1.0_x64_en-US.msi）
+build\runtime-dist\canx-runtime.exe   59,552,228 bytes
+```
+
+packaged runtime 差异验证：packaged smoke 现在额外断言**打包后的
+`canx-runtime.exe` 对非法 payload 同样返回统一 envelope**
+（422 / `api.request_validation_failed` / `source = api` / `recoverable = false`），
+因此该 handler 在打包镜像中与 source 侧行为一致，而不是只在 pytest 进程内成立的假象。
+
+Schema 与依赖：
+
+```text
+SQLite / Parquet / Frame schema   未改
+新增依赖                          无
+```
+
+回归验证（domain 语义错误未受影响，仍为原 status 与 code）：
+
+```text
+invalid CAN ID / inverted range / half mask / invalid direction /
+invalid session UUID / sequence 反向            → 结构化 400（code 仍为 query.*）
+session not found                               → 404
+missing segment                                 → 409
+corrupt segment                                 → 500
+```
+
+状态：
+
+```text
+V0.3-01-FINAL HTTP Request Validation Envelope Closure
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做了实现 + 自验证。**不自行宣布 V0.3-01 Final Acceptance: PASS**；
+最终 PASS 由 ChatGPT / 项目负责人独立验收。
+
+**Do not enter V0.3-02 (DBC Domain Foundation) until independent acceptance.**
 
 ---
 
