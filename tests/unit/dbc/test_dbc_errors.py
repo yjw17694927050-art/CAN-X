@@ -16,11 +16,16 @@ from canx.dbc.errors import (
     DbcAssetStorageError,
     DbcAssetValidationError,
     DbcDecodeError,
+    DbcDecodeUnsupportedError,
     DbcError,
     DbcFileNotFoundError,
+    DbcFrameTypeMismatchError,
+    DbcMessageNotFoundError,
     DbcModelError,
     DbcParseError,
+    DbcPayloadTooShortError,
     DbcReadError,
+    DbcSignalDecodeError,
     DbcSourceChangedError,
     DbcUnsupportedFormatError,
 )
@@ -38,6 +43,11 @@ CONCRETE_ERRORS = (
     (DbcAssetRegistryError, "dbc.asset_registry_failed", True),
     (DbcAssetIntegrityError, "dbc.asset_integrity_failed", False),
     (DbcSourceChangedError, "dbc.source_changed", True),
+    (DbcMessageNotFoundError, "dbc.message_not_found", False),
+    (DbcFrameTypeMismatchError, "dbc.frame_type_mismatch", False),
+    (DbcPayloadTooShortError, "dbc.payload_too_short", False),
+    (DbcDecodeUnsupportedError, "dbc.decode_unsupported", False),
+    (DbcSignalDecodeError, "dbc.signal_decode_failed", False),
 )
 
 
@@ -97,6 +107,11 @@ def test_every_concrete_failure_is_distinguishable_by_code() -> None:
         "dbc.asset_registry_failed",
         "dbc.asset_integrity_failed",
         "dbc.source_changed",
+        "dbc.message_not_found",
+        "dbc.frame_type_mismatch",
+        "dbc.payload_too_short",
+        "dbc.decode_unsupported",
+        "dbc.signal_decode_failed",
     }
 
 
@@ -129,3 +144,22 @@ def test_the_asset_failures_judge_recoverability_the_same_way() -> None:
     assert DbcAssetValidationError("bad record").recoverable is False
     assert DbcAssetNotFoundError("unknown asset").recoverable is False
     assert DbcAssetIntegrityError("tampered file").recoverable is False
+
+
+def test_every_frame_decode_failure_is_deterministic() -> None:
+    """The same Frame against the same database fails the same way, every time."""
+    for error_type in (
+        DbcMessageNotFoundError,
+        DbcFrameTypeMismatchError,
+        DbcPayloadTooShortError,
+        DbcDecodeUnsupportedError,
+        DbcSignalDecodeError,
+    ):
+        assert error_type("nope").recoverable is False
+        assert error_type("nope").source == "dbc"
+
+
+def test_a_frame_decode_failure_is_not_the_text_decoding_failure() -> None:
+    """``dbc.decode_failed`` keeps meaning "these bytes are not DBC text"."""
+    assert DbcDecodeError("not utf-8").code == "dbc.decode_failed"
+    assert DbcSignalDecodeError("bad bits").code == "dbc.signal_decode_failed"

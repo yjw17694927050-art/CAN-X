@@ -235,3 +235,111 @@ class DbcSourceChangedError(DbcError):
         details: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message, code=code, details=details, recoverable=True)
+
+
+# --- frame decoding ----------------------------------------------------------
+#
+# ``DbcDecodeError`` above already means one specific thing — DBC *text* could
+# not be decoded under the declared encoding — and it keeps that meaning. The
+# failures below are a different axis entirely: they are raised when a canonical
+# Frame is decoded against a canonical DbcDatabase. Reusing the import code for
+# them would make "the file's bytes are not valid text" and "this frame is not
+# in this database" indistinguishable at a call site.
+#
+# Recoverability is judged the same way as everywhere else in this domain: a
+# decode failure is deterministic. The same Frame against the same DbcDatabase
+# produces the same outcome every time, so retrying changes nothing and every
+# failure here is ``recoverable = False``.
+
+class DbcMessageNotFoundError(DbcError):
+    """Raised when a frame's identifier pair is not defined in the database.
+
+    The strict per-frame entry point reports this instead of returning an empty
+    result: a caller that asked "what does this frame mean?" must be told that
+    the question has no answer, not handed a plausible empty answer.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.message_not_found",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcFrameTypeMismatchError(DbcError):
+    """Raised when a frame and its message disagree about being CAN FD.
+
+    Matching is strict on purpose: a Classic definition is never silently
+    applied to an FD frame (or the reverse), because the two say different
+    things about the payload that follows the identifier.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.frame_type_mismatch",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcPayloadTooShortError(DbcError):
+    """Raised when a frame carries fewer payload bytes than its message defines.
+
+    Truncated decoding is not supported in V0.3-04: a short payload is reported,
+    never partially interpreted. A payload *longer* than the definition is
+    accepted, because a CAN FD payload bucket may legitimately exceed the
+    engineering length.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.payload_too_short",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcDecodeUnsupportedError(DbcError):
+    """Raised when a canonical definition cannot be decoded unambiguously.
+
+    Two shapes reach this: a definition whose signals cannot be extracted
+    without reading past the message payload, and a multiplexing topology the
+    canonical model cannot express without guessing (more than one multiplexer
+    switch, or a multiplexed signal whose parent cannot be resolved). CAN-X
+    refuses such a definition rather than returning half-correct signals.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.decode_unsupported",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcSignalDecodeError(DbcError):
+    """Raised when one signal's bits could not become a decoded value.
+
+    A last-resort translation at the decoder boundary: a definition that passed
+    compilation should never reach it, so reaching it means the arithmetic or
+    the bit extraction genuinely failed for this payload (for example a scaling
+    step that overflowed to a non-finite number).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.signal_decode_failed",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
