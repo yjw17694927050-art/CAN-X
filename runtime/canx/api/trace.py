@@ -33,6 +33,7 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
+from canx.api.frame import FrameWire, frame_to_wire
 from canx.domain.frame import Direction, Frame
 from canx.project.service import ProjectHandle, ProjectService
 from canx.query.errors import QueryValidationError
@@ -85,34 +86,10 @@ class TraceQueryRequest(BaseModel):
     limit: int = DEFAULT_FRAME_QUERY_LIMIT
 
 
-class TraceFrameResponse(BaseModel):
-    """One canonical frame, in the wire representation Trace consumers rely on.
-
-    This is the full persisted projection, so no field of the Parquet schema is
-    silently dropped at the API boundary. In particular the timestamp provenance
-    (``hardware_timestamp`` / ``host_timestamp`` / ``clock_domain`` /
-    ``timestamp_quality``) is carried through: a later Trace timestamp mode needs
-    it, and re-adding a field later would be a breaking schema change.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    sequence: int
-    channel_id: str
-    arbitration_id: int
-    is_extended: bool
-    is_fd: bool
-    bitrate_switch: bool
-    error_state_indicator: bool
-    dlc: int
-    data: str
-    direction: str
-    hardware_timestamp: float | None
-    host_timestamp: float
-    normalized_timestamp: float
-    clock_domain: str
-    timestamp_quality: str
-    flags: int
+#: The Trace frame projection *is* the shared wire frame, not a second copy of
+#: it. The identical shape is now also what the DBC decode surface accepts and
+#: returns, and one definition is what keeps the two from drifting apart.
+TraceFrameResponse = FrameWire
 
 
 class TraceQueryResponse(BaseModel):
@@ -278,25 +255,8 @@ def _to_directions(values: list[str] | None) -> tuple[Direction, ...] | None:
 def _frame_payload(frame: Frame) -> TraceFrameResponse:
     """Render one canonical frame for the wire.
 
-    The payload is uppercase hex: it is a stable, lossless, self-describing
-    representation that no JSON encoder has to guess at, and fixing the case here
-    keeps every Trace endpoint using the same encoding.
+    The projection itself lives in :mod:`canx.api.frame`, because the DBC decode
+    surface now speaks the same shape. A private copy here is precisely the drift
+    that module exists to prevent.
     """
-    return TraceFrameResponse(
-        sequence=frame.sequence,
-        channel_id=frame.channel_id,
-        arbitration_id=frame.arbitration_id,
-        is_extended=frame.is_extended,
-        is_fd=frame.is_fd,
-        bitrate_switch=frame.bitrate_switch,
-        error_state_indicator=frame.error_state_indicator,
-        dlc=frame.dlc,
-        data=frame.data.hex().upper(),
-        direction=frame.direction.value,
-        hardware_timestamp=frame.hardware_timestamp,
-        host_timestamp=frame.host_timestamp,
-        normalized_timestamp=frame.normalized_timestamp,
-        clock_domain=frame.clock_domain,
-        timestamp_quality=frame.timestamp_quality.value,
-        flags=frame.flags,
-    )
+    return frame_to_wire(frame)

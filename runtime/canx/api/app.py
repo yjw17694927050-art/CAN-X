@@ -23,6 +23,7 @@ from canx.agent.tools import (
     UnknownToolError,
 )
 from canx.agent.trace_summary import TraceSummaryInput, TraceSummaryOutput, summarize_frames
+from canx.api.dbc import create_dbc_router
 from canx.api.errors import (
     REQUEST_VALIDATION_FAILED_STATUS,
     ErrorResponse,
@@ -31,6 +32,7 @@ from canx.api.errors import (
     status_for,
 )
 from canx.api.trace import create_trace_router
+from canx.dbc.errors import DbcError
 from canx.devices.virtual import VirtualAdapterConfig
 from canx.metrics.models import MetricsSnapshot
 from canx.project.errors import ProjectError
@@ -183,6 +185,20 @@ def create_app(
             status_code=status_for(error), content=error_envelope(error).model_dump()
         )
 
+    @app.exception_handler(DbcError)
+    async def _dbc_failure(_request: Request, error: DbcError) -> JSONResponse:
+        """Report a typed DBC failure the same way.
+
+        An unregistered asset, a project-owned copy that no longer matches its
+        registry row, and a frame the database does not define are three different
+        facts. Each keeps its own code and the status that names it, so a caller
+        can tell "there is no such asset" from "this project's asset is broken"
+        from "this frame means nothing here".
+        """
+        return JSONResponse(
+            status_code=status_for(error), content=error_envelope(error).model_dump()
+        )
+
     @app.exception_handler(RequestValidationError)
     async def _request_validation_failure(
         _request: Request, error: RequestValidationError
@@ -202,8 +218,11 @@ def create_app(
         )
 
     # The historical Trace surface reads persisted data and shares no state with
-    # the capture lifecycle, so it is mounted as its own router.
+    # the capture lifecycle, so it is mounted as its own router. The DBC surface
+    # owns no state at all — every request loads its own asset and compiles its own
+    # decoder — so it is mounted the same way.
     app.include_router(create_trace_router())
+    app.include_router(create_dbc_router())
 
     broker = batch_broker if batch_broker is not None else service.broker
     registry = ToolRegistry()

@@ -2,14 +2,16 @@
 
 SPEC §38 requires every diagnosable failure that crosses an API boundary to carry
 ``code``, a human ``message``, ``details``, ``recoverable`` and ``source``. That
-envelope is defined once, here, so the capture endpoints and the Trace endpoints
-cannot drift into two subtly different shapes.
+envelope is defined once, here, so the capture, project, Trace and DBC boundaries
+cannot drift into subtly different shapes.
 
 The status mapping lives here for the same reason. It is deliberately one-to-one
 between diagnoses: an unregistered session, a missing segment file and an
 unreadable segment are three different facts, and collapsing them into a single
 status would hide which one a caller has to fix. In particular a missing segment
-is **not** reported as a missing session.
+is **not** reported as a missing session, and a project-owned DBC whose bytes no
+longer match its registry row is a 409 rather than the 404 an unregistered asset
+gets — one is a broken project, the other is a lookup that found nothing.
 """
 
 from __future__ import annotations
@@ -18,6 +20,18 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
+from canx.dbc.errors import (
+    DbcAssetIntegrityError,
+    DbcAssetNotFoundError,
+    DbcAssetRegistryError,
+    DbcAssetValidationError,
+    DbcDecodeUnsupportedError,
+    DbcError,
+    DbcFrameTypeMismatchError,
+    DbcMessageNotFoundError,
+    DbcPayloadTooShortError,
+    DbcSignalDecodeError,
+)
 from canx.project.errors import ProjectError
 from canx.query.errors import (
     QueryDataUnavailableError,
@@ -30,7 +44,7 @@ from canx.query.errors import (
 
 #: Every failure that a domain boundary may hand to the HTTP layer, already
 #: carrying the five structured fields the envelope needs.
-DomainError = ProjectError | QueryError
+DomainError = ProjectError | QueryError | DbcError
 
 
 class ErrorResponse(BaseModel):
@@ -55,6 +69,37 @@ def status_for(error: DomainError) -> int:
         # The request named a target that is not a readable CAN-X project. That is
         # a bad request, not a server fault and not an unknown route.
         return 400
+    if isinstance(error, DbcAssetValidationError):
+        # A record that cannot describe a project-owned asset: the caller supplied
+        # something that could never identify one.
+        return 400
+    if isinstance(error, DbcAssetNotFoundError):
+        # A well-formed lookup for an asset this project does not have. An asset
+        # registered in another project answers the same way: from here it is not
+        # an integrity problem, it simply is not this project's asset.
+        return 404
+    if isinstance(error, DbcAssetIntegrityError):
+        # The project owns a registry row that contradicts the file it points at.
+        # Storage state, not the request, and CAN-X never repairs it silently.
+        return 409
+    if isinstance(error, DbcAssetRegistryError):
+        # The registry could not be read or committed; the environment may settle.
+        return 503
+    if isinstance(
+        error,
+        (
+            DbcMessageNotFoundError,
+            DbcFrameTypeMismatchError,
+            DbcPayloadTooShortError,
+            DbcDecodeUnsupportedError,
+            DbcSignalDecodeError,
+        ),
+    ):
+        # The request was well formed and the frame is the problem: it is not
+        # defined in this database, or the definition cannot decode it. Distinct
+        # codes, one status — the fix is the same (send a frame the database
+        # defines) even though the reason is not.
+        return 422
     if isinstance(error, QueryValidationError):
         return 400
     if isinstance(error, QuerySessionError):

@@ -28,6 +28,7 @@ import pytest
 import websockets
 from canx.data.model import DataSessionState
 from canx.data.session import DataSessionService
+from canx.dbc.project_service import ProjectDbcService
 from canx.project.service import ProjectService
 from canx.query.model import FrameFilter, FrameQuery
 from canx.query.service import QueryService
@@ -402,3 +403,169 @@ async def test_packaged_runtime_answers_a_trace_query_from_persisted_parquet(
     assert empty.status_code == 200
     assert empty.json()["frames"] == []
     assert empty.json()["has_more"] is False
+
+
+#: The DBC fixture used by the packaged DBC proof, and the frame the packaged
+#: process must decode from the project-owned copy it loads itself.
+_DBC_FIXTURE = _REPO_ROOT / "tests" / "fixtures" / "dbc" / "basic_standard.dbc"
+_DBC_ENGINE_DATA = "B80B508000000000"
+
+
+def _dbc_frame(data: str, **overrides: object) -> dict[str, object]:
+    """Build one canonical frame wire payload carrying ``data``."""
+    payload: dict[str, object] = {
+        "sequence": 1,
+        "channel_id": "can0",
+        "arbitration_id": 0x123,
+        "is_extended": False,
+        "is_fd": False,
+        "bitrate_switch": False,
+        "error_state_indicator": False,
+        "dlc": len(data) // 2,
+        "data": data,
+        "direction": "rx",
+        "hardware_timestamp": 12.5,
+        "host_timestamp": 100.25,
+        "normalized_timestamp": 0.25,
+        "clock_domain": "host.monotonic",
+        "timestamp_quality": "hardware",
+        "flags": 0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.skipif(
+    packaged_runtime() is None, reason="packaged canx-runtime.exe has not been built"
+)
+async def test_packaged_runtime_loads_a_project_dbc_and_decodes_with_it(
+    tmp_path: Path,
+) -> None:
+    """The frozen executable — not the source tree — performs the DBC decode.
+
+    V0.3-04 recorded that the packaged runtime did not provide DBC decode at all:
+    ``canx.dbc`` was not in the runtime entry import graph. This test is what turns
+    that note into evidence.
+
+    The project and its project-owned DBC are created here with the trusted
+    domain, and the executable is handed nothing but the project path. Every value
+    asserted below is computed inside that process from the project-owned copy on
+    disk. The tampered-asset case runs against the same process, so it also proves
+    the packaged image re-verifies the registered digest rather than trusting the
+    registry row.
+    """
+    exe = packaged_runtime()
+    assert exe is not None
+    project_root = tmp_path / "packaged-dbc.canx"
+    inbox = tmp_path / "dbc-inbox"
+    inbox.mkdir()
+    source = inbox / "basic_standard.dbc"
+    source.write_bytes(_DBC_FIXTURE.read_bytes())
+
+    with ProjectService().create(project_root, display_name="Packaged DBC") as handle:
+        asset_id = ProjectDbcService(handle.root).import_asset(source).asset_id
+
+    port = _free_port()
+    token = "v0305-dbc-token"
+    proc = subprocess.Popen(
+        [str(exe), "--host", "127.0.0.1", "--port", str(port), "--session-token", token],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30) as client:
+            await _await_health(client)
+
+            listed = await client.get(
+                "/dbc/assets", params={"project_path": str(project_root)}
+            )
+            assert listed.status_code == 200, listed.text
+            assert [asset["asset_id"] for asset in listed.json()["assets"]] == [asset_id]
+
+            database = await client.get(
+                f"/dbc/assets/{asset_id}/database",
+                params={"project_path": str(project_root)},
+            )
+            assert database.status_code == 200, database.text
+            assert [message["name"] for message in database.json()["messages"]] == [
+                "EngineData"
+            ]
+
+            decoded = await client.post(
+                f"/dbc/assets/{asset_id}/decode",
+                json={
+                    "project_path": str(project_root),
+                    "frame": _dbc_frame(_DBC_ENGINE_DATA),
+                },
+            )
+            assert decoded.status_code == 200, decoded.text
+            body = decoded.json()
+            assert body["message_name"] == "EngineData"
+            assert body["frame"]["data"] == _DBC_ENGINE_DATA
+            speed, coolant, throttle = body["signals"]
+            assert speed["name"] == "EngineSpeed"
+            assert speed["raw_value"] == 3000
+            assert speed["physical_value"] == 750.0
+            assert speed["unit"] == "rpm"
+            assert coolant["raw_value"] == 80
+            assert coolant["physical_value"] == 40.0
+            assert throttle["raw_value"] == 128
+
+            batch = await client.post(
+                f"/dbc/assets/{asset_id}/decode-batch",
+                json={
+                    "project_path": str(project_root),
+                    "stream_id": "packaged-dbc",
+                    "frames": [
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=1),
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=2, arbitration_id=0x7FF),
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=3),
+                    ],
+                },
+            )
+            assert batch.status_code == 200, batch.text
+            outcomes = batch.json()["outcomes"]
+            assert [outcome["decoded"] is not None for outcome in outcomes] == [
+                True,
+                False,
+                True,
+            ]
+            assert outcomes[1]["failure"]["code"] == "dbc.message_not_found"
+
+            unknown = await client.get(
+                "/dbc/assets/11111111-2222-4333-8444-555555555555/database",
+                params={"project_path": str(project_root)},
+            )
+            assert unknown.status_code == 404
+            assert unknown.json()["code"] == "dbc.asset_not_found"
+
+            absent = await client.get(
+                "/dbc/assets", params={"project_path": str(tmp_path / "absent.canx")}
+            )
+            assert absent.status_code == 400
+            assert absent.json()["source"] == "project"
+
+            # Tamper with the project-owned copy while the process is running. A
+            # 409 means the packaged image re-verified the registered digest rather
+            # than trusting the registry row.
+            target = project_root / "dbc" / f"{asset_id}.dbc"
+            target.write_bytes(target.read_bytes() + b"\n")
+            tampered = await client.post(
+                f"/dbc/assets/{asset_id}/decode",
+                json={
+                    "project_path": str(project_root),
+                    "frame": _dbc_frame(_DBC_ENGINE_DATA),
+                },
+            )
+            assert tampered.status_code == 409, tampered.text
+            assert tampered.json()["code"] == "dbc.asset_integrity_failed"
+
+            shutdown = await client.post(
+                "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
+            )
+            assert shutdown.status_code == 202
+
+        proc.wait(timeout=30)
+        assert proc.returncode == 0
+    finally:
+        _terminate(proc)

@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-04 DBC Decode Foundation
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-05 DBC Runtime Read & Decode API Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -3382,6 +3382,265 @@ Awaiting independent acceptance
 本轮只做实现 + 本机自验证。**不自行宣布 V0.3-04 Final Acceptance: PASS**；
 最终验收由项目负责人独立执行。若通过，下一推荐 coherent increment 由项目负责人决定
 （不得由本轮自行开始）。
+
+---
+
+### Step V0.3-05 — DBC Runtime Read & Decode API Foundation
+
+V0.3-04 由项目负责人独立验收：**Final Acceptance: PASS**（见本轮开工任务书）。V0.3-04 的
+decode semantics 在本轮**未被修改**。
+
+#### Objective
+
+把 V0.3-03 的 project-owned DBC asset 与 V0.3-04 的 canonical decode engine，接到
+Runtime 的 typed HTTP control plane 上：
+
+```text
+Project-owned DBC Asset
+        ↓
+ProjectDbcService
+        ↓
+canonical DbcDatabase
+        ↓
+DbcDecoder
+        ↓
+typed Runtime HTTP API
+```
+
+本轮只做：DBC asset 只读查询 + canonical DBC definition 查询 + single/batch frame
+decode HTTP API。**不**扩展到前端、Trace decoded columns、WebSocket decode、Plot 或 Agent。
+
+#### Architecture
+
+```text
+HTTP Adapter (runtime/canx/api/dbc.py)
+   request validation / wire ↔ canonical conversion / result projection
+        ↓
+ProjectDbcService            asset source of truth (V0.3-03)
+        ↓
+DbcImportService / CantoolsDbcParser     唯一 cantools 边界 (V0.3-02)
+        ↓
+canonical DbcDatabase (V0.3-02)
+        ↓
+DbcDecoder                   decode source of truth (V0.3-04)
+```
+
+HTTP 层**不做**：bit extraction、Intel / Motorola decode、scaling、multiplexing、
+project validation、asset integrity validation、直接调用 cantools decode API、保存
+active / current DBC 全局状态、创建第二套 DBC engine。每条请求独立 `load_asset` + 独立
+编译 `DbcDecoder`，进程内没有任何 active DBC 状态或 decode cache。
+
+#### Endpoints
+
+```text
+GET  /dbc/assets?project_path=<path>
+GET  /dbc/assets/{asset_id}?project_path=<path>
+GET  /dbc/assets/{asset_id}/database?project_path=<path>
+POST /dbc/assets/{asset_id}/decode
+POST /dbc/assets/{asset_id}/decode-batch
+```
+
+新增独立模块 `runtime/canx/api/dbc.py` 与独立 `create_dbc_router()`，在 `create_app()`
+中注册。`GET /dbc/assets` 只调用 `ProjectDbcService.list_assets()`，**不**扫描
+`project/dbc/` 目录，也**不**自动采用未注册文件（测试用一个手工放入的 `.dbc` 验证它不被
+列出）。
+
+**未**实现 `POST /dbc/import`：现有 `ProjectDbcService.import_asset(source_path)` 会读取
+Project 外部文件路径，V0.3-05 不新增一个可通过 HTTP 任意指定 local source path 的文件
+读取入口。DBC import 的 desktop / Tauri filesystem boundary 后续单独设计。
+
+#### Wire contract
+
+- asset 投影：`asset_id / source_name / sha256 / size_bytes / encoding / imported_at`。
+  不含 `relative_path`（内部布局）。顺序保持 domain 已提供的 deterministic order。
+- database 投影：`version / messages[] / nodes[]`；message = `frame_id / name / length /
+  is_extended / is_fd / senders / comment / cycle_time / signals[]`；signal = `name /
+  start_bit / length / byte_order / is_signed / is_float / factor / offset / minimum /
+  maximum / unit / receivers / choices / is_multiplexer / multiplexer_signal /
+  multiplexer_ids / comment`；choice = `value / label`；node = `name / comment`。不返回任何
+  cantools object / repr，也不返回 filesystem path / traceback / parser internals。
+- single decode 响应：`frame / message_name / signals[]`；每个 signal = `name / raw_value /
+  physical_value / choice_label / unit`。`frame` 是完整 16 字段 provenance，不是摘要。
+- `data` 接受任意大小写 hex 输入，输出统一 **UPPERCASE HEX**。
+- batch 响应：`schema_version / stream_id / first_sequence / last_sequence / frame_count /
+  outcomes[]`；outcome = `frame / decoded | null / failure | null`，其中 `decoded` 与
+  `failure` **恰好一个存在**；`failure` 保留 domain snapshot 的
+  `code / message / details / recoverable / source`。
+
+#### Shared frame wire model
+
+Trace 已有的 16-field canonical frame response 被提取为共享模块
+`runtime/canx/api/frame.py`（`FrameWire` / `frame_to_wire` / `wire_to_frame`），Trace 与
+DBC 共同使用，未改变 `/trace/query` 的 wire contract、字段名、`data = uppercase hex` 与
+Trace 行为。
+
+`wire_to_frame` **不复制** Frame 的业务不变式：它只解码 hex payload，然后构造 canonical
+`Frame`，由 domain 对象决定 DLC legality / arbitration id range / timestamp policy /
+flags / classic-FD flag 组合是否合法。
+
+#### Batch bound
+
+HTTP request guard：`1 <= frame_count <= 1000`（`MAX_BATCH_FRAMES`）。这是 HTTP 端点的
+边界，**不是** `FrameBatch` domain 的永久能力——domain 未被改动。frames 的 `sequence`
+必须连续，因为 `FrameBatch` 定义即连续；不连续的 frames 不是 batch。
+
+#### Error mapping
+
+`api/errors.py` 的 `DomainError` 扩展为 `ProjectError | QueryError | DbcError`，
+`status_for` 新增映射，`create_app()` 注册统一 `DbcError` exception handler：
+
+```text
+ProjectError                     → 400
+DbcAssetValidationError          → 400   dbc.invalid_asset
+DbcAssetNotFoundError            → 404   dbc.asset_not_found
+DbcAssetIntegrityError           → 409   dbc.asset_integrity_failed
+DbcAssetRegistryError            → 503   dbc.asset_registry_failed
+DbcMessageNotFoundError          → 422   dbc.message_not_found
+DbcFrameTypeMismatchError        → 422   dbc.frame_type_mismatch
+DbcPayloadTooShortError          → 422   dbc.payload_too_short
+DbcDecodeUnsupportedError        → 422   dbc.decode_unsupported
+DbcSignalDecodeError             → 422   dbc.signal_decode_failed
+其它无专门映射的 typed DbcError   → 500
+```
+
+`api/dbc.py` 内**没有**第二套 ErrorResponse。请求体形状与语义失败继续走全局
+`api.request_validation_failed`（422 / source = api），不恢复 FastAPI 原生
+`{"detail": ...}`，也不回显 caller payload。
+
+**某个 frame decode 失败不代表 HTTP request 失败**：mixed batch 返回 200 与每帧一个
+outcome；只有 request 或 asset 本身失败才是 error response。
+
+#### Thread / offload boundary
+
+asset load（filesystem + SQLite + hash + text decode + cantools parse）、decoder 构造、
+single / batch decode 全部在 `asyncio.to_thread` 中执行，沿用 Trace API 已有模式，未引入
+新 executor framework、未新增 dependency。
+
+#### Tests added
+
+```text
+tests/unit/api/test_dbc_api.py                        63   端点 / 投影 / single decode / decode failure / request validation / batch bound
+tests/integration/test_dbc_api_integration.py          8   真实链路 reopen / domain-vs-API 对照 / 双 asset 不串 / tamper 409 / 404 / 400
+tests/integration/test_packaged_runtime_smoke.py      +1   packaged exe 真跑 DBC read + decode + batch
+```
+
+新增 fixture：无（复用既有 `tests/fixtures/dbc/`，全部为既有手写、license-clean fixture）。
+
+#### Full regression（2026-09-16，本轮实现完成时，全部为实际执行结果）
+
+```text
+python -m pytest tests/unit/api -q          164 passed
+python -m pytest tests/unit/dbc -q          503 passed, 1 skipped
+python -m pytest tests/integration -q       238 passed（重建 exe 后）
+python -m pytest -q                         1470 passed, 1 skipped
+ruff check runtime tests tools              exit 0（All checks passed!）
+mypy runtime                                exit 0（64 source files，strict）
+```
+
+全量用例数 1398 → 1470，净增 72（= 63 + 8 + 1，逐文件实测）。1 skipped 为既有既知项
+（本机无权限创建目录链接，WinError 1314），V0.3-03 已记录同一 skip，非本轮引入。
+
+#### Packaged runtime proof
+
+V0.3-04 记录 "packaged runtime did NOT yet provide DBC decode / `canx.dbc` was not in the
+runtime entry import graph"。本轮接入 DBC router 后该状态改变，并用真实 exe 证明：
+
+```text
+scripts\package-windows.cmd               exit 0
+  · [1/6] runtime build + staged sidecar   PASS
+  · [2/6] staged sidecar verified           ok
+  · [3/6] packaged-runtime smoke test       4 passed in 16.95s
+  · [4/6] Tauri MSI build                   Finished 1 bundle
+  · [5/6] MSI artifact check                ok: CAN-X_0.1.0_x64_en-US.msi
+  · [6/6] packaging complete                exit 0
+
+独立复核（对新构建的 exe 重跑 smoke）
+  CANX_TEST_RUNTIME_EXE=<repo>\build\runtime-dist\canx-runtime.exe \
+    python -m pytest tests\integration\test_packaged_runtime_smoke.py -q
+  → 4 passed in 18.31s
+```
+
+packaged DBC test 的真实链路：source-side 用既有 domain 创建 project 并 import 一个已知
+DBC fixture → 启动新建 `canx-runtime.exe` → 对该 exe 调 `GET /dbc/assets`、
+`GET /dbc/assets/{id}/database`、`POST /dbc/assets/{id}/decode`、
+`POST /dbc/assets/{id}/decode-batch` → 断言 message 与 signal 数值（EngineSpeed raw 3000
+→ 750 rpm、CoolantTemp 80 → 40 degC）→ 对同一运行中的进程篡改 project-owned 文件后断言
+409 `dbc.asset_integrity_failed`。**不是** grep exe strings、不是 source-side import
+test、不是 unit test。
+
+```text
+build\runtime-dist\canx-runtime.exe            60,116,283 bytes（V0.3-04: 59,553,571）
+apps\...\binaries\canx-runtime-...-msvc.exe    60,116,283 bytes（与上一致）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi  62,939,136 bytes（V0.3-04: 62,373,888）
+exe 内字符串出现次数：cantools 0 → 55 · bitstruct 2 · textparser 2 · duckdb 13（未变）
+                      "dbc/assets" 0（纯 Python 模块进 PYZ 归档，不以明文出现在 exe）
+```
+
+打包前旧 exe（V0.3-04 构建）内 `dbc/assets` 与 `cantools` 均出现 0 次，且
+`GET /dbc/assets` 返回 404 `{"detail":"Not Found"}`——这确认首次 smoke failure 来自
+**旧 binary**，重建后同一测试通过。
+
+`scripts\package-windows.cmd` 未修改；`packaging\canx-runtime.spec` 未修改：PyInstaller
+静态分析已能从 `canx.api.app → canx.api.dbc → canx.dbc.* → cantools` 跟踪到依赖，无需
+新增 hiddenimports。
+
+#### Schema / dependency changes
+
+```text
+SQLite project schema     未改（仍为 V3；未新增表、未触碰 migration）
+project.json              未改
+Parquet schema            未改
+Frame / FrameBatch        未改
+DBC canonical schema      未改
+DecodedFrame schema       未改
+WebSocket schema          未改
+frontend schema           未改
+新增依赖                  none
+新增 HTTP schema          是（/dbc/* 五个端点的 request / response model）
+```
+
+#### Known limitations（诚实记录）
+
+```text
+ 1 batch 上限 1000 是 HTTP request guard，未做吞吐 benchmark；本轮不主张任何 throughput。
+ 2 frames 的 sequence 必须连续（FrameBatch 定义），非连续 frames 被 422 拒绝，不支持 gap。
+ 3 batch 的 outcome.decoded 只含 message_name + signals；frame 在 outcome 顶层，不重复。
+ 4 不提供 POST /dbc/import：HTTP 层不新增任意 local source path 的文件读取入口。
+ 5 无 active / current DBC 状态、无 channel ↔ DBC binding、无 decode cache；每条请求独立
+   load + compile + decode，因此同一 asset 的重复请求会重复解析与编译。
+ 6 其它域未映射的 typed DbcError 统一 500，未逐类细分。
+ 7 未做并发 / 压测：blocking work 已 offload 到 worker thread，但未测量 event loop 在高
+   并发 DBC 请求下的行为。
+```
+
+#### Deferred（明确留给后续 coherent increment，本阶段一行都没做）
+
+```text
+DBC import over HTTP（desktop / Tauri filesystem boundary 设计）
+DBC Editor / active DBC selection UI / channel ↔ DBC binding
+Trace decoded columns / trace.query decoded 字段
+live WebSocket decoded-signal stream（backpressure / CPU budget / subscription）
+Plot signal binding 与统一 timeline
+Agent `dbc.decode` tool
+float / IEEE-754 decode（含 differential tests）
+nested / extended multiplexing 拓扑表达与解码
+derived Parquet signal dataset / DuckDB decoded-signal query
+decode cache / decode throughput benchmark
+delete / rename / replace DBC asset
+```
+
+#### 状态
+
+```text
+V0.3-05 DBC Runtime Read & Decode API Foundation
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做实现 + 本机自验证。**不自行宣布 V0.3-05 Final Acceptance: PASS**；最终验收由
+项目负责人独立执行。不得由本轮自行开始 V0.3-06。
+
 
 ---
 

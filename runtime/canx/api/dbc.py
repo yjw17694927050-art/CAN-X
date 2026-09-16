@@ -1,0 +1,550 @@
+"""DBC runtime HTTP surface — a thin adapter over the DBC and project domains.
+
+Four endpoints, and nothing else:
+
+```text
+GET  /dbc/assets?project_path=…                     list registered assets
+GET  /dbc/assets/{id}?project_path=…                one asset's metadata
+GET  /dbc/assets/{id}/database?project_path=…       the canonical DBC definition
+POST /dbc/assets/{id}/decode                        decode one frame
+POST /dbc/assets/{id}/decode-batch                  decode a bounded batch
+```
+
+Everything this module does is a translation: HTTP in, canonical model through,
+HTTP out. It does not extract bits, does not scale a value, does not resolve a
+multiplexer, does not walk a project directory and does not open SQLite.
+:class:`~canx.dbc.project_service.ProjectDbcService` stays the one source of
+truth for "what DBCs does this project own", :class:`~canx.dbc.decode.DbcDecoder`
+stays the one implementation of "what does this frame mean", and this file is
+only the wire between them.
+
+Four properties are load-bearing:
+
+* **The decoder is not duplicated.** Each request loads the asset through
+  ``ProjectDbcService.load_asset`` and compiles a fresh ``DbcDecoder`` from the
+  canonical database it returns. There is no second decode path and no cached
+  "current DBC" — a decoder held between requests would be exactly the active-DBC
+  global this increment does not have.
+* **The request body is bounded.** A batch is capped at
+  :data:`MAX_BATCH_FRAMES`; the cap is an HTTP guard on this endpoint, not a
+  property of the ``FrameBatch`` domain, whose own limits are untouched.
+* **Nothing blocking runs on the event loop.** Loading an asset reads a file,
+  verifies a hash, decodes text and parses it; decoding compiles and runs a plan.
+  All of it is offloaded with ``asyncio.to_thread`` so a DBC request can never
+  stall the realtime WebSocket served by the same loop.
+* **A frame's failure is data, not the request's failure.** ``decode_batch``
+  answers 200 with one outcome per frame even when some frames could not be
+  decoded; only a failure of the *request* or of the *asset* becomes an error
+  response. Aborting a batch because one frame was unknown would throw away the
+  frames that were fine.
+
+Failures are not translated here. ``ProjectError`` and every typed ``DbcError``
+propagate to the application boundary, which maps them to the shared envelope and
+an honest status code (see :mod:`canx.api.errors`).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC
+from pathlib import Path
+from typing import Self
+
+from fastapi import APIRouter
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from canx.api.errors import ErrorResponse
+from canx.api.frame import FrameWire, FrameWireError, frame_to_wire, wire_to_frame
+from canx.dbc.asset import DbcAsset
+from canx.dbc.decode import DbcDecoder
+from canx.dbc.decode_model import (
+    DecodedFrame,
+    DecodedFrameBatch,
+    DecodedFrameOutcome,
+    DecodedSignal,
+)
+from canx.dbc.model import DbcDatabase, DbcDocument, DbcMessage, DbcNode, DbcSignal
+from canx.dbc.project_service import ProjectDbcService
+from canx.domain.batch import FrameBatch
+from canx.domain.frame import Frame
+
+#: The HTTP request guard on one ``decode-batch`` call. Chosen so a single request
+#: stays a bounded amount of CPU, and kept here rather than in the domain: a
+#: ``FrameBatch`` is a realtime unit and its size is a pipeline decision, not an
+#: HTTP one.
+MAX_BATCH_FRAMES = 1000
+
+
+class DbcAssetResponse(BaseModel):
+    """One registered project-owned DBC asset.
+
+    The project-relative copy path is deliberately absent. It is internal project
+    layout, it is not needed to do anything with an asset, and this projection is
+    what a caller is allowed to see. ``source_name`` is provenance — the name the
+    file had when it was imported — never a path the caller can act on.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    asset_id: str
+    source_name: str
+    sha256: str
+    size_bytes: int
+    encoding: str
+    imported_at: str
+
+
+class DbcAssetListResponse(BaseModel):
+    """This project's assets, in the domain's own deterministic order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    assets: list[DbcAssetResponse]
+
+
+class DbcChoiceResponse(BaseModel):
+    """One declared ``VAL_`` entry: a raw value and the label naming it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value: int
+    label: str
+
+
+class DbcSignalResponse(BaseModel):
+    """One canonical signal definition, as declared by the DBC document.
+
+    This is the *definition*, not a decoded value: ``factor``/``offset`` describe
+    the mapping without applying it, and ``start_bit`` is carried exactly as the
+    document expresses it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    start_bit: int
+    length: int
+    byte_order: str
+    is_signed: bool
+    is_float: bool
+    factor: float
+    offset: float
+    minimum: float | None
+    maximum: float | None
+    unit: str | None
+    receivers: list[str]
+    choices: list[DbcChoiceResponse]
+    is_multiplexer: bool
+    multiplexer_signal: str | None
+    multiplexer_ids: list[int] | None
+    comment: str | None
+
+
+class DbcMessageResponse(BaseModel):
+    """One canonical message definition.
+
+    ``frame_id`` travels with ``is_extended``: the pair, never the id alone,
+    decides which identifier space the message addresses.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    frame_id: int
+    name: str
+    length: int
+    is_extended: bool
+    is_fd: bool
+    senders: list[str]
+    comment: str | None
+    cycle_time: int | None
+    signals: list[DbcSignalResponse]
+
+
+class DbcNodeResponse(BaseModel):
+    """One canonical network node."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    comment: str | None
+
+
+class DbcDatabaseResponse(BaseModel):
+    """The canonical content of one imported DBC document.
+
+    No path, no traceback and no parser internals: a caller receives the document
+    as CAN-X understands it, in the order the source declared it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    version: str | None
+    messages: list[DbcMessageResponse]
+    nodes: list[DbcNodeResponse]
+
+
+class DecodedSignalResponse(BaseModel):
+    """One decoded signal value, with its raw value kept alongside.
+
+    ``choice_label`` is additional semantics, never a replacement: ``raw_value``
+    stays visible so a caller can still plot and compare raw against physical.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    raw_value: int
+    physical_value: float
+    choice_label: str | None
+    unit: str | None
+
+
+class DecodedMessageResponse(BaseModel):
+    """The decoded content of one frame: its message and its active signals."""
+
+    model_config = ConfigDict(frozen=True)
+
+    message_name: str
+    signals: list[DecodedSignalResponse]
+
+
+class DecodeResponse(BaseModel):
+    """One decoded frame.
+
+    The frame is the full canonical projection and not a summary, so
+    ``sequence``, ``channel_id``, ``direction``, every timestamp field and
+    ``flags`` survive the decode. Returning ``dict[str, float]`` would throw that
+    provenance away and force every later view to reinvent it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    frame: FrameWire
+    message_name: str
+    signals: list[DecodedSignalResponse]
+
+
+class DecodeBatchOutcomeResponse(BaseModel):
+    """What happened to exactly one frame of a batch.
+
+    ``decoded`` and ``failure`` are mutually exclusive: exactly one is present, so
+    a caller branches on one fact instead of guessing which field to trust. The
+    frame is always present, whether or not it decoded.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    frame: FrameWire
+    decoded: DecodedMessageResponse | None
+    failure: ErrorResponse | None
+
+
+class DecodeBatchResponse(BaseModel):
+    """One outcome per submitted frame, in the submitted order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: int
+    stream_id: str
+    first_sequence: int
+    last_sequence: int
+    frame_count: int
+    outcomes: list[DecodeBatchOutcomeResponse]
+
+
+class DbcFramePayload(FrameWire):
+    """One frame submitted for decoding, validated by building the canonical frame.
+
+    The frame's rules are not restated here. The payload is turned into a
+    canonical :class:`~canx.domain.frame.Frame` while the request is being
+    validated, so the domain object is what rejects an illegal DLC, an
+    out-of-range arbitration id, a payload whose length contradicts its DLC, or a
+    non-finite timestamp. The failure surfaces as the shared request-validation
+    envelope, exactly like a shape error, because a caller cannot act differently
+    on the two — and it happens before any project is opened.
+    """
+
+    @model_validator(mode="after")
+    def _reject_non_canonical(self) -> Self:
+        try:
+            wire_to_frame(self)
+        except FrameWireError as error:
+            raise ValueError(str(error)) from error
+        return self
+
+
+class DbcDecodeRequest(BaseModel):
+    """One frame decode against one project-owned asset."""
+
+    model_config = ConfigDict(frozen=True)
+
+    project_path: str
+    frame: DbcFramePayload
+
+
+class DbcDecodeBatchRequest(BaseModel):
+    """A bounded batch decode against one project-owned asset."""
+
+    model_config = ConfigDict(frozen=True)
+
+    project_path: str
+    stream_id: str = Field(min_length=1)
+    frames: list[DbcFramePayload] = Field(min_length=1, max_length=MAX_BATCH_FRAMES)
+
+    @model_validator(mode="after")
+    def _reject_non_canonical_batch(self) -> Self:
+        """Prove the submitted frames form a canonical batch, before any work.
+
+        A ``FrameBatch`` is contiguous by definition, so a frame list that is not
+        one does not describe a batch at all: it is a request that does not match
+        the contract, reported the same way as any other payload-shape failure.
+        Checking it here rather than in the handler also means a rejected request
+        never opens a project or reads an asset.
+        """
+        try:
+            FrameBatch.create(
+                stream_id=self.stream_id,
+                frames=[wire_to_frame(frame) for frame in self.frames],
+            )
+        except ValueError as error:
+            raise ValueError(str(error)) from error
+        return self
+
+
+def create_dbc_router() -> APIRouter:
+    """Build the DBC router.
+
+    A separate router keeps the DBC surface independent of the capture lifecycle,
+    which it genuinely is: reading a project's DBC assets needs no running
+    capture, and a running capture does not make a DBC decodable.
+    """
+    router = APIRouter(tags=["dbc"], prefix="/dbc")
+
+    @router.get("/assets", response_model=DbcAssetListResponse)
+    async def list_assets(project_path: str) -> DbcAssetListResponse:
+        """List the assets this project owns, in the domain's own order."""
+        assets = await asyncio.to_thread(_list_assets, project_path)
+        return DbcAssetListResponse(assets=[_asset_payload(asset) for asset in assets])
+
+    @router.get("/assets/{asset_id}", response_model=DbcAssetResponse)
+    async def get_asset(asset_id: str, project_path: str) -> DbcAssetResponse:
+        """Return one registered asset's metadata, or a typed 404."""
+        asset = await asyncio.to_thread(_get_asset, project_path, asset_id)
+        return _asset_payload(asset)
+
+    @router.get("/assets/{asset_id}/database", response_model=DbcDatabaseResponse)
+    async def get_database(asset_id: str, project_path: str) -> DbcDatabaseResponse:
+        """Return the canonical definition of one registered asset."""
+        document = await asyncio.to_thread(_load_document, project_path, asset_id)
+        return _database_payload(document.database)
+
+    @router.post("/assets/{asset_id}/decode", response_model=DecodeResponse)
+    async def decode(asset_id: str, request: DbcDecodeRequest) -> DecodeResponse:
+        """Decode one frame against one asset; a frame it does not define is 422."""
+        decoded = await asyncio.to_thread(
+            _decode_one, request.project_path, asset_id, request.frame
+        )
+        return _decoded_payload(decoded)
+
+    @router.post("/assets/{asset_id}/decode-batch", response_model=DecodeBatchResponse)
+    async def decode_batch(
+        asset_id: str, request: DbcDecodeBatchRequest
+    ) -> DecodeBatchResponse:
+        """Decode a bounded batch; one outcome per frame, always in input order."""
+        decoded = await asyncio.to_thread(
+            _decode_batch, request.project_path, asset_id, request.stream_id, request.frames
+        )
+        return _batch_payload(decoded)
+
+    return router
+
+
+def _list_assets(project_path: str) -> tuple[DbcAsset, ...]:
+    """Open the project and list its registered assets. Blocking by design.
+
+    ``ProjectDbcService`` validates the project through the project domain, so a
+    directory that merely looks like a project is rejected with ``source =
+    "project"`` rather than silently producing an empty list.
+    """
+    return ProjectDbcService(Path(project_path)).list_assets()
+
+
+def _get_asset(project_path: str, asset_id: str) -> DbcAsset:
+    """Open the project and read one asset's metadata. Blocking by design."""
+    return ProjectDbcService(Path(project_path)).get_asset(asset_id)
+
+
+def _load_document(project_path: str, asset_id: str) -> DbcDocument:
+    """Load one project-owned asset into a canonical document. Blocking by design."""
+    return ProjectDbcService(Path(project_path)).load_asset(asset_id)
+
+
+def _decode_one(project_path: str, asset_id: str, payload: DbcFramePayload) -> DecodedFrame:
+    """Load the asset, compile a decoder and decode one frame. Blocking by design.
+
+    The decoder is compiled per request and never cached. A decoder is a compiled
+    view of one asset, and keeping one alive between requests would be the
+    "current DBC" global this increment deliberately does not have.
+    """
+    frame = _canonical_frame(payload)
+    document = ProjectDbcService(Path(project_path)).load_asset(asset_id)
+    return DbcDecoder(document.database).decode_frame(frame)
+
+
+def _decode_batch(
+    project_path: str,
+    asset_id: str,
+    stream_id: str,
+    payloads: list[DbcFramePayload],
+) -> DecodedFrameBatch:
+    """Build the canonical batch, load the asset and decode. Blocking by design.
+
+    The batch is decoded by ``DbcDecoder.decode_batch`` and not by a loop here:
+    the domain already defines what a batch outcome is — one outcome per frame,
+    ordered, with a failed frame captured as data — and a loop at this layer would
+    be a second, drifting definition of the same thing.
+    """
+    batch = FrameBatch.create(
+        stream_id=stream_id, frames=[_canonical_frame(payload) for payload in payloads]
+    )
+    document = ProjectDbcService(Path(project_path)).load_asset(asset_id)
+    return DbcDecoder(document.database).decode_batch(batch)
+
+
+def _canonical_frame(payload: DbcFramePayload) -> Frame:
+    """Rebuild the canonical frame a validated payload describes.
+
+    The payload was already proven legal while the request was validated, so this
+    cannot fail; it exists because validation and execution are two different
+    passes and the second needs the value, not the proof.
+    """
+    return wire_to_frame(payload)
+
+
+def _asset_payload(asset: DbcAsset) -> DbcAssetResponse:
+    """Render one asset's metadata for the wire."""
+    return DbcAssetResponse(
+        asset_id=asset.asset_id,
+        source_name=asset.source_name,
+        sha256=asset.sha256,
+        size_bytes=asset.size_bytes,
+        encoding=asset.encoding,
+        imported_at=asset.imported_at.astimezone(UTC).isoformat(),
+    )
+
+
+def _database_payload(database: DbcDatabase) -> DbcDatabaseResponse:
+    """Render one canonical database as the projection a caller receives."""
+    return DbcDatabaseResponse(
+        version=database.version,
+        messages=[_message_payload(message) for message in database.messages],
+        nodes=[_node_payload(node) for node in database.nodes],
+    )
+
+
+def _message_payload(message: DbcMessage) -> DbcMessageResponse:
+    """Render one canonical message definition."""
+    return DbcMessageResponse(
+        frame_id=message.frame_id,
+        name=message.name,
+        length=message.length,
+        is_extended=message.is_extended,
+        is_fd=message.is_fd,
+        senders=list(message.senders),
+        comment=message.comment,
+        cycle_time=message.cycle_time,
+        signals=[_signal_payload(signal) for signal in message.signals],
+    )
+
+
+def _signal_payload(signal: DbcSignal) -> DbcSignalResponse:
+    """Render one canonical signal definition."""
+    return DbcSignalResponse(
+        name=signal.name,
+        start_bit=signal.start_bit,
+        length=signal.length,
+        byte_order=signal.byte_order.value,
+        is_signed=signal.is_signed,
+        is_float=signal.is_float,
+        factor=signal.factor,
+        offset=signal.offset,
+        minimum=signal.minimum,
+        maximum=signal.maximum,
+        unit=signal.unit,
+        receivers=list(signal.receivers),
+        choices=[
+            DbcChoiceResponse(value=choice.value, label=choice.label)
+            for choice in signal.choices
+        ],
+        is_multiplexer=signal.is_multiplexer,
+        multiplexer_signal=signal.multiplexer_signal,
+        multiplexer_ids=(
+            None if signal.multiplexer_ids is None else list(signal.multiplexer_ids)
+        ),
+        comment=signal.comment,
+    )
+
+
+def _node_payload(node: DbcNode) -> DbcNodeResponse:
+    """Render one canonical node."""
+    return DbcNodeResponse(name=node.name, comment=node.comment)
+
+
+def _decoded_payload(decoded: DecodedFrame) -> DecodeResponse:
+    """Render one decoded frame, provenance included."""
+    return DecodeResponse(
+        frame=frame_to_wire(decoded.frame),
+        message_name=decoded.message_name,
+        signals=[_signal_value_payload(signal) for signal in decoded.signals],
+    )
+
+
+def _signal_value_payload(signal: DecodedSignal) -> DecodedSignalResponse:
+    """Render one decoded signal value."""
+    return DecodedSignalResponse(
+        name=signal.name,
+        raw_value=signal.raw_value,
+        physical_value=signal.physical_value,
+        choice_label=signal.choice_label,
+        unit=signal.unit,
+    )
+
+
+def _batch_payload(batch: DecodedFrameBatch) -> DecodeBatchResponse:
+    """Render one decoded batch, keeping its bookkeeping and its order."""
+    return DecodeBatchResponse(
+        schema_version=batch.schema_version,
+        stream_id=batch.stream_id,
+        first_sequence=batch.first_sequence,
+        last_sequence=batch.last_sequence,
+        frame_count=batch.frame_count,
+        outcomes=[_outcome_payload(outcome) for outcome in batch.outcomes],
+    )
+
+
+def _outcome_payload(outcome: DecodedFrameOutcome) -> DecodeBatchOutcomeResponse:
+    """Render one frame's outcome, keeping ``decoded`` and ``failure`` exclusive."""
+    decoded = outcome.decoded
+    failure = outcome.failure
+    return DecodeBatchOutcomeResponse(
+        frame=frame_to_wire(outcome.frame),
+        decoded=(
+            None
+            if decoded is None
+            else DecodedMessageResponse(
+                message_name=decoded.message_name,
+                signals=[_signal_value_payload(signal) for signal in decoded.signals],
+            )
+        ),
+        failure=(
+            None
+            if failure is None
+            else ErrorResponse(
+                code=failure.code,
+                message=failure.message,
+                details=dict(failure.details),
+                recoverable=failure.recoverable,
+                source=failure.source,
+            )
+        ),
+    )
