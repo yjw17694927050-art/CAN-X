@@ -76,6 +76,15 @@ describe("FrameWorkerCore", () => {
     expect(core.flush()?.frames.map((frame) => frame.sequence)).toEqual([0n, 1n]);
   });
 
+  it("records a monotonic decode duration for each batch", () => {
+    let now = 0;
+    const core = new FrameWorkerCore(4, 0, () => (now += 1));
+
+    const snapshot = core.ingest(batch(0n, 1));
+
+    expect(snapshot?.decodeMs).toBeGreaterThan(0);
+  });
+
   it("resets bounded state when a new capture stream begins", () => {
     const core = new FrameWorkerCore(10);
     core.ingest(batch(0n, 2, "first"));

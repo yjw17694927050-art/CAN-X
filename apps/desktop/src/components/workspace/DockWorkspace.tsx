@@ -36,7 +36,7 @@ function panelContent(name: string): ReactNode {
 export function DockWorkspace() {
   const containerRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
-  const { connection } = useRealtimeStream();
+  const { connection, decodeMs } = useRealtimeStream();
   const [runtimeState, setRuntimeState] = useState<"starting" | "capturing" | "failed">("starting");
 
   useEffect(() => {
@@ -86,6 +86,7 @@ export function DockWorkspace() {
       </div>
       <div className={`stream-state stream-state-${connection}`} role="status">
         {t(`stream.${connection}`)}
+        {decodeMs > 0 ? ` · ${t("stream.decodeMs", { ms: decodeMs.toFixed(2) })}` : ""}
       </div>
       <div className="dockview-theme-dark" ref={containerRef} />
     </main>

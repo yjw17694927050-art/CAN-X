@@ -67,7 +67,7 @@ function frame(sequence: number): RuntimeFrame {
 }
 
 function snapshot(frames: readonly RuntimeFrame[]): FrameViewportSnapshot {
-  return { droppedViewFrames: 0, frames, sequenceGaps: 0, streamId: "s1" };
+  return { decodeMs: 0, droppedViewFrames: 0, frames, sequenceGaps: 0, streamId: "s1" };
 }
 
 describe("shared realtime providers", () => {

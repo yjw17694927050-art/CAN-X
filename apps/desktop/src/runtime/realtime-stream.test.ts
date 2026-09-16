@@ -50,7 +50,7 @@ function harness() {
 }
 
 function snapshot(over: Partial<FrameViewportSnapshot> = {}): FrameViewportSnapshot {
-  return { droppedViewFrames: 0, frames: [], sequenceGaps: 0, streamId: "stream-1", ...over };
+  return { decodeMs: 0, droppedViewFrames: 0, frames: [], sequenceGaps: 0, streamId: "stream-1", ...over };
 }
 
 function emitViewport(worker: FakeWorker, value: FrameViewportSnapshot): void {
@@ -95,13 +95,14 @@ describe("RealtimeStreamStore", () => {
 
     emitViewport(
       workers[0] as FakeWorker,
-      snapshot({ droppedViewFrames: 3, sequenceGaps: 5, streamId: "capture-42" }),
+      snapshot({ decodeMs: 2.5, droppedViewFrames: 3, sequenceGaps: 5, streamId: "capture-42" }),
     );
 
     const state = store.getState();
     expect(state.streamId).toBe("capture-42");
     expect(state.droppedViewFrames).toBe(3);
     expect(state.sequenceGaps).toBe(5);
+    expect(state.decodeMs).toBe(2.5);
     expect(state.snapshot).not.toBeNull();
     expect(listener).toHaveBeenCalled();
   });

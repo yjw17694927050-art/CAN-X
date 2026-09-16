@@ -31,6 +31,7 @@ const resources = {
       "stream.open": "Stream live",
       "stream.closed": "Stream disconnected",
       "stream.unsupported": "Stream unavailable",
+      "stream.decodeMs": "decode {{ms}} ms",
     },
   },
   "zh-CN": {
@@ -62,6 +63,7 @@ const resources = {
       "stream.open": "数据流实时",
       "stream.closed": "数据流已断开",
       "stream.unsupported": "数据流不可用",
+      "stream.decodeMs": "解码 {{ms}} 毫秒",
     },
   },
 } as const;

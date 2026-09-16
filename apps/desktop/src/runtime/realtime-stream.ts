@@ -11,6 +11,8 @@ export interface RealtimeStreamState {
   readonly snapshot: FrameViewportSnapshot | null;
   readonly droppedViewFrames: number;
   readonly sequenceGaps: number;
+  /** Monotonic duration of the most recent Worker batch decode, in milliseconds. */
+  readonly decodeMs: number;
 }
 
 export interface RealtimeStreamDeps {
@@ -33,6 +35,7 @@ export class RealtimeStreamStore {
     snapshot: null,
     droppedViewFrames: 0,
     sequenceGaps: 0,
+    decodeMs: 0,
   };
   readonly #listeners = new Set<() => void>();
   #worker: Worker | null = null;
@@ -70,6 +73,7 @@ export class RealtimeStreamStore {
       snapshot,
       droppedViewFrames: snapshot.droppedViewFrames,
       sequenceGaps: snapshot.sequenceGaps,
+      decodeMs: snapshot.decodeMs,
     });
   }
 
@@ -111,6 +115,7 @@ export class RealtimeStreamStore {
       snapshot: null,
       droppedViewFrames: 0,
       sequenceGaps: 0,
+      decodeMs: 0,
     };
     this.#emit();
   }

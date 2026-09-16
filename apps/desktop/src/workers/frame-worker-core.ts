@@ -6,6 +6,8 @@ export interface FrameViewportSnapshot {
   readonly droppedViewFrames: number;
   readonly sequenceGaps: number;
   readonly streamId: string | null;
+  /** Monotonic duration of the most recent batch decode, in milliseconds. */
+  readonly decodeMs: number;
 }
 
 export class FrameWorkerCore {
@@ -18,6 +20,7 @@ export class FrameWorkerCore {
   #lastSequence: bigint | null = null;
   #streamId: string | null = null;
   #lastSnapshotAt: number | null = null;
+  #lastDecodeMs = 0;
 
   constructor(
     readonly capacity: number,
@@ -34,7 +37,9 @@ export class FrameWorkerCore {
   }
 
   ingest(payload: ArrayBuffer | Uint8Array): FrameViewportSnapshot | null {
+    const decodeStarted = this.clock();
     const batch = decodeFrameBatch(payload);
+    this.#lastDecodeMs = this.clock() - decodeStarted;
     if (this.#streamId !== null && batch.streamId !== this.#streamId) this.#resetForStream();
     this.#streamId = batch.streamId;
     if (this.#lastSequence !== null && batch.firstSequence > this.#lastSequence + 1n) {
@@ -100,6 +105,7 @@ export class FrameWorkerCore {
       droppedViewFrames: this.#droppedViewFrames,
       sequenceGaps: this.#sequenceGaps,
       streamId: this.#streamId,
+      decodeMs: this.#lastDecodeMs,
     };
   }
 }
