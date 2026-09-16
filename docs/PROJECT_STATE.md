@@ -2097,6 +2097,297 @@ V0.3-01 阶段（含 FINAL）自此关闭。项目负责人已正式批准从 V0
 
 ---
 
+### Step V0.3-02 — DBC Domain Foundation
+
+Objective：
+
+建立 **CAN-X 自有 DBC canonical domain model + cantools adapter + 只读 DBC
+import / parse / validation foundation**。本阶段结束后的能力边界是：
+
+```text
+.dbc file
+↓  safe file / import boundary
+↓  cantools parser adapter
+↓  CAN-X canonical DBC domain model
+↓  typed result / typed DBC error
+```
+
+本阶段**不是** DBC 功能阶段。没有 decode、没有 project persistence、没有
+HTTP API、没有前端、没有 Agent tool、没有 legacy code 复用（SPEC 已选择
+`cantools`，`Legacy reuse = none`）。
+
+架构（单向边界；`import cantools` 只允许出现在一个模块里）：
+
+```text
+.dbc file
+   ↓  DbcImportService.import_file         唯一 filesystem 边界（READ ONLY）
+   ↓  校验 → 读取 bytes → 按声明编码 decode → sha256 provenance
+   ↓  CantoolsDbcParser.parse_text          唯一 cantools 边界
+   ↓  cantools.database.load_string(database_format="dbc",
+   ↓                                 strict=True, sort_signals=None)
+   ↓  third-party objects → canonical 转换（一次性、完整、不逃逸）
+   ↓
+DbcDocument(
+    database = DbcDatabase(messages, nodes, version),
+    source   = DbcSource(name, path, sha256, size_bytes, encoding),
+)
+```
+
+模块边界：
+
+```text
+runtime/canx/dbc/
+├── __init__.py   包导出（canonical model + typed errors），不导入 cantools
+├── model.py      CAN-X canonical immutable DBC models
+├── errors.py     typed DBC domain / import errors
+├── parser.py     唯一 cantools dependency boundary + third-party → canonical 转换
+└── service.py    只读 import orchestration：filesystem → decode → parser
+```
+
+`import canx.dbc` 与 `import canx.dbc.model` **不会**导入 cantools（有独立子进程
+测试证明）；只有 `import canx.dbc.parser`（以及使用它的 `canx.dbc.service`）
+才会把第三方引擎拉进 import graph。
+
+canonical domain models（全部 `@dataclass(frozen=True, slots=True)`，所有集合都是
+`tuple`）：
+
+```text
+DbcDatabase    messages · nodes · version
+DbcMessage     frame_id · name · length · is_extended · is_fd ·
+               senders · signals · comment · cycle_time
+DbcSignal      name · start_bit · length · byte_order · is_signed ·
+               factor · offset · minimum · maximum · unit ·
+               receivers · choices · is_multiplexer ·
+               multiplexer_signal · multiplexer_ids · comment
+DbcNode        name · comment
+DbcChoice      value · label
+DbcSource      name · path · sha256 · size_bytes · encoding
+DbcDocument    database · source
+DbcByteOrder   little_endian · big_endian（StrEnum）
+```
+
+关键 canonical 语义：
+
+```text
+标识空间      (frame_id, is_extended) 才是 message key，绝不是 frame_id 单独
+              standard 0x000..0x7FF / extended 0x00000000..0x1FFFFFFF，
+              与 Frame domain 的 ID 范围一致
+extended 编码 DBC 文件里的 id | 0x80000000 存储细节不进入 canonical model：
+              frame_id 始终是正常 arbitration ID，is_extended 独立表达
+byte order    CAN-X 自己的 DbcByteOrder；"Intel"/"Motorola" 与 cantools 内部
+              字符串都不扩散到 Runtime 其它部分
+start_bit     原样沿用 DBC/cantools 的信号定义语义（big-endian 信号保留其
+              DBC 起始位，如 fixture 中的 39）；本阶段不重写 Motorola bit layout
+scale         factor / offset / minimum / maximum 一律归一为 float；
+              physical = raw * factor + offset 只保存定义，不执行
+choices       tuple[DbcChoice, ...]，按源文件 VAL_ 声明顺序，不暴露
+              cantools 的 NamedSignalValue
+不变式        name 非空 · frame_id 合法 · length 合法（非 FD 不超过 8）·
+              start_bit >= 0 · length > 0 · factor/offset/min/max 有限 ·
+              minimum <= maximum · mux 元数据自洽 · message 名唯一 ·
+              (frame_id, is_extended) 唯一 · node 名唯一 · signal 名唯一
+```
+
+cantools boundary 与版本：
+
+```text
+cantools                              44.0.0（exact pin，见 pyproject.toml）
+license                               MIT（SPDX Classifier: MIT License）
+Requires-Python                       >=3.10；附带 py.typed
+实际安装与验证环境                    项目 .venv / Python 3.13.15 / Windows 11
+                                      10.0.26200（cp313 win_amd64）
+transitive dependencies               bitstruct 8.23.0（MIT，有 cp313 win_amd64
+                                      wheel）· textparser 0.26.2（MIT，pure
+                                      Python，Requires-Python >=3.10）·
+                                      argparse-addons 0.12.0（MIT）·
+                                      crccheck 1.3.1（MIT）· python-can 4.6.1
+                                      （已 pin，复用）
+未引入                                pandas / Polars / numpy / fastparquet /
+                                      第二个 DBC parser / cantools[cache]
+                                      （diskcache）/ cantools[plot]（matplotlib）
+仅使用的公开 API                      cantools.database.load_string(...) 与
+                                      UnsupportedDatabaseFormatError.e_dbc；
+                                      message/signal/node 只读公开属性
+typing 处理                           cantools 自带 py.typed，未新增任何
+                                      ignore_missing_imports；untyped 边界被
+                                      限制在 runtime/canx/dbc/parser.py 内部，
+                                      runtime/canx/dbc/model.py 保持 strict
+```
+
+encoding policy（本阶段固定的契约）：
+
+```text
+默认编码         utf-8-sig —— UTF-8，且容忍并剥离开头的 BOM
+失败语义         严格解码：任何非法字节 → typed dbc.decode_failed（含
+                 byte_offset），绝不静默替换
+显式覆盖         import_file(path, encoding="cp1252") 等；实际使用的 codec
+                 记录进 DbcSource.encoding
+未知 codec       → dbc.decode_failed
+与 cantools 的差异
+                 cantools 自己的 add_dbc_file() 默认 cp1252 且 errors='replace'，
+                 会把无法解码的字节静默替换成替代字符。CAN-X 刻意不继承这条
+                 路径：DBC 文件没有自描述的编码声明，"跟随系统/引擎默认并被
+                 静默修补" 不是策略。legacy 文件由调用方显式声明编码。
+```
+
+typed DBC errors（`source = "dbc"`，与 project / data / query 域同一五字段契约）：
+
+```text
+dbc.file_not_found      source 不是可读常规文件                     recoverable=false
+dbc.read_failed         source 存在但读失败（锁 / 瞬时 IO）          recoverable=true
+dbc.unsupported_format  不是 .dbc 来源（扩展名不匹配）               recoverable=false
+dbc.decode_failed       声明的编码无法解码该 bytes / codec 不存在     recoverable=false
+dbc.parse_failed        文本不是合法 DBC                             recoverable=false
+dbc.invalid_model       文档合法但违反 CAN-X canonical 不变式         recoverable=false
+```
+
+parse 失败的诊断只暴露**结构化、无内容**的信息：`source_name`（由 service 层
+补上，parser 只说文本）、`line` / `column`（当第三方异常公开了位置时）、
+`parser_error`（异常类名）、以及必要时一个长度受限的单行 `reason`。语法错误的
+`str()` 本身会内嵌出错源码行（`Invalid syntax at line 1, column 1: "…"`），
+因此**不**采用；有专门测试断言错误详情里不出现文档内容、traceback 或第三方
+对象 repr。
+
+Fixtures（`tests/fixtures/dbc/`，全部人工最小化、license-clean、未复制任何
+第三方 DBC）：
+
+```text
+basic_standard.dbc       standard CAN ID / 单 message / 多 signal / BO_+SG_ comment
+extended.dbc             extended CAN ID（0x123 + is_extended）
+endian_signed_scale.dbc  little/big endian · signed/unsigned · factor · offset ·
+                         min/max · unit
+choices.dbc              VAL_ 枚举值
+multiplexed.dbc          multiplexer + multiplexed signals（m0/m1/m2）
+metadata.dbc             node / sender / 多 receiver / comment / GenMsgCycleTime
+can_fd.dbc               VFrameFormat = StandardCAN_FD · 64 byte payload
+non_ascii.dbc            编码策略验证（UTF-8 非 ASCII comment 与 unit）
+malformed.dbc            deterministic parse failure
+```
+
+Tests added（176 例）：
+
+```text
+tests/unit/dbc/test_dbc_model.py     87    canonical model 全部不变式、标识空间、
+                                          byte order、scale 归一、choices、
+                                          multiplexing 自洽、immutability、tuple
+tests/unit/dbc/test_dbc_errors.py    12    五字段契约、code 唯一、recoverable 语义
+tests/unit/dbc/test_dbc_parser.py    34    字段级映射（message/signal/sender/
+                                          receiver/choice/mux/comment/cycle_time）、
+                                          源顺序、重复 parse deterministic、
+                                          standard vs extended、CAN FD、
+                                          转换不变式 → invalid_model、
+                                          parse 失败位置与不泄漏、
+                                          无 cantools 对象的图遍历证明、
+                                          两个子进程 import 边界证明
+tests/unit/dbc/test_dbc_service.py   23    扩展名、存在性、读取失败、编码默认与
+                                          覆盖、未知 codec、malformed、provenance、
+                                          source 不被修改、不产生新文件/目录
+tests/integration/test_dbc_import.py 20    8 个 fixture 的真实文件链路、repeated
+                                          import、真实项目目录（ProjectService
+                                          create）前后 fingerprint 完全一致、
+                                          失败路径
+```
+
+其中三条是刻意的**负向**证据：
+
+```text
+1  导入前后对源文件做 size + mtime_ns + sha256 fingerprint，必须完全一致
+2  在真实 project 目录（含 project.json / project.db / project.db-wal / 空的
+   dbc/ 目录）内导入，导入前后整个目录树 fingerprint 必须完全一致，
+   且 dbc/ 仍然为空 —— 没有 dbc table、没有 registry、没有源文件副本
+3  canonical object graph 递归遍历，每个非原始对象都必须是 canx.dbc.model
+   里声明的 dataclass（不靠类名字符串判断），且全新子进程里
+   import canx.dbc.model 后 sys.modules 不含 cantools
+```
+
+本机验证（2026-09-16，V0.3-02 实现完成时，全部为实际执行结果）：
+
+```text
+full pytest                           1011 passed（本增量前 835；新增 176 例）
+  · tests/unit/dbc                     156 passed
+  · tests/integration/test_dbc_import   20 passed
+ruff check runtime tests tools        exit 0（All checks passed!）
+mypy runtime                          exit 0（57 source files，strict）
+scripts\package-windows.cmd           exit 0
+  · runtime build + staged sidecar     PASS
+  · packaged-runtime smoke             3 passed in 13.00s
+  · Tauri MSI build + artifact check   PASS（CAN-X_0.1.0_x64_en-US.msi）
+build\runtime-dist\canx-runtime.exe   59,551,374 bytes
+  · exe 内 "cantools" / "textparser" / "bitstruct" 出现次数均为 0
+    （V0.3-01-FINAL 为 59,552,228 bytes，duckdb 仍为 13 次）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi  62,373,888 bytes
+```
+
+关于 packaged runtime 的诚实说明：本阶段**不主张** packaged runtime 提供 DBC
+能力。`canx.dbc` 尚未出现在 runtime 入口的 import graph 中（所以 cantools 未被
+打进 exe），这是本阶段 scope 的直接结果——只读 domain foundation 不接线到
+`canx.api.app`。打包回归的通过只证明一件事：新增依赖与新增包**没有**破坏既有
+runtime build / packaged smoke / Tauri package。
+
+Schema 与依赖：
+
+```text
+SQLite schema      未改（user_version 仍为 2）
+Parquet schema     未改（FRAME_PARQUET_SCHEMA_VERSION 仍为 1）
+Frame schema       未改
+HTTP schema        未改（本阶段未新增任何 endpoint）
+WebSocket schema   未改
+新增依赖            cantools==44.0.0（见上）
+```
+
+已知限制（诚实记录）：
+
+```text
+1  只接受 .dbc 扩展名（大小写不敏感）。其它扩展名一律
+   dbc.unsupported_format，不做内容嗅探。
+2  默认编码 utf-8-sig 且严格解码。真正的 cp1252 / cp932 / latin-1 文件必须由
+   调用方显式声明 encoding=，否则得到 dbc.decode_failed。这是刻意选择，不是
+   待办项：静默修补比报错更危险。
+3  nested / extended multiplexing 的**拓扑**不在 canonical model 中表达。
+   cantools 把嵌套结构放在 message.signal_tree 里，而 canonical DbcSignal 只
+   保留扁平的 multiplexer_signal / multiplexer_ids。基本 multiplexing（单个
+   开关 + 被复用信号）完整保留并有 fixture 与字段级断言覆盖。
+4  start_bit 原样沿用 DBC/cantools 的定义，CAN-X 不重新解释 Motorola /
+   big-endian 起始位语义。bit layout 的正确性由后续 decode 阶段独立验证。
+5  choice 级 comment（CM_ VAL_）不表达。
+6  cycle_time 若存在必须 >= 1；声明为 0 的 GenMsgCycleTime 会得到
+   dbc.invalid_model。
+7  canonical model 会拒绝 cantools 能接受的若干畸形文档：反转的 [min|max]、
+   重复 message 名、重复 (frame_id, is_extended)、重复 node 名。这些一律
+   得到 dbc.invalid_model，而不是"静默取最后一个"。
+   反向区间 `[100|0]` 已实测：cantools 会接受，CAN-X 会拒绝 —— 有测试锁住。
+8  本阶段不实现 Frame → Physical Signal 的 decode pipeline（见 Deferred）。
+9  本阶段不读取 legacy CAN-Space / CanLab 的任何 DBC 代码（Legacy reuse = none）。
+```
+
+Deferred（明确留给后续 coherent increment，本阶段一行都没做）：
+
+```text
+DBC project persistence / registry / <project>/dbc/ 副本 / SQLite dbc schema
+DBC HTTP API（POST /dbc/import · GET /dbc · GET /dbc/messages · POST /dbc/decode）
+DBC Editor UI / react / Dockview / Monaco
+Trace decoded columns / live signal decoding / historical signal decoding
+Plot signal binding
+Agent dbc.* tools
+DBC editing / save / export / diff / merge
+reverse engineering / automatic signal discovery
+multiplexed frame decode / dynamic mux UI / mux tree editor
+```
+
+状态：
+
+```text
+V0.3-02 DBC Domain Foundation
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做了实现 + 自验证。**不自行宣布 V0.3-02 Acceptance PASS**；
+最终验收由 ChatGPT / 项目负责人独立执行。
+
+---
+
 ## V0.3 — Professional Trace & DBC Foundation
 
 目标：
@@ -2626,7 +2917,11 @@ V0.3-01 Trace Query & Filtering Foundation 已完成实现、本机验证、提�
 Envelope Closure 的独立验收结论同样为 **PASS**（见 §18 Step V0.3-01 /
 V0.3-01-FINAL）。V0.3-01 阶段自此关闭。
 
-V0.3-02 DBC Domain Foundation 已获项目负责人独立批准并开始实现（见 §18 Step V0.3-02）。
+V0.3-02 DBC Domain Foundation 已获项目负责人独立批准并完成实现与本机验证
+（见 §18 Step V0.3-02）：新增 `cantools==44.0.0` 依赖、`runtime/canx/dbc/`
+五个模块、9 个 fixture 与 176 条测试；full pytest 1011 passed、
+`ruff check runtime tests tools` / `mypy runtime` / `scripts\package-windows.cmd`
+全部 exit 0。本阶段是只读 domain foundation，**不自行宣布 acceptance PASS**。
 
 状态：
 
@@ -2667,7 +2962,8 @@ V0.3 — Professional Trace & DBC Foundation
 ├── V0.3-01 independent acceptance   ✅ PASS
 ├── V0.3-01-FINAL implementation     ✅ done
 ├── V0.3-01-FINAL independent accept ✅ PASS
-├── V0.3-02 implementation           ⏳ in progress
+├── V0.3-02 implementation           ✅ done
+├── V0.3-02 local verification       ✅ done
 └── V0.3-02 independent acceptance   ⏳ awaiting
 ```
 
