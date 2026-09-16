@@ -171,6 +171,36 @@ class DataSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class SegmentHeader:
+    """Footer-only identity of one committed Parquet segment file.
+
+    Produced without materializing a single row, so a reader can decide whether a
+    registered file is trustworthy before an engine is allowed to scan it.
+    """
+
+    session_id: str
+    stream_id: str
+    segment_index: int
+    schema_version: int
+    row_count: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "session_id",
+            _normalize_uuid(self.session_id, field="session_id", scope="header"),
+        )
+        if not isinstance(self.stream_id, str) or not self.stream_id:
+            raise DataValidationError(
+                "stream_id must be a non-empty string.",
+                code="data.header.invalid_stream_id",
+            )
+        _require_count(self.segment_index, field="segment_index", scope="header")
+        _require_count(self.schema_version, field="schema_version", scope="header")
+        _require_count(self.row_count, field="row_count", scope="header")
+
+
+@dataclass(frozen=True, slots=True)
 class DataIntegrityReport:
     """Read-only diagnosis of the segment files against the persisted metadata.
 

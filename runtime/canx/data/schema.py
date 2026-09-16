@@ -8,7 +8,7 @@ and the exact column layout before reconstructing frames.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pyarrow as pa
@@ -144,21 +144,19 @@ def table_to_frames(
             has a different column layout, or holds a value that no longer
             satisfies the canonical :class:`~canx.domain.frame.Frame`.
     """
-    metadata = _decode_metadata(table)
-    _require_format_marker(metadata)
-    _require_supported_version(metadata)
-    _require_identity(
+    metadata = decode_schema_metadata(table.schema.metadata)
+    require_segment_metadata(
         metadata,
         expected_session_id=expected_session_id,
         expected_stream_id=expected_stream_id,
         expected_segment_index=expected_segment_index,
     )
-    _require_layout(table)
+    require_canonical_layout(table.schema)
     return _reconstruct_frames(table)
 
 
-def _decode_metadata(table: pa.Table) -> dict[str, str]:
-    raw = table.schema.metadata
+def decode_schema_metadata(raw: Mapping[bytes, bytes] | None) -> dict[str, str]:
+    """Decode Arrow footer key/value metadata into a plain string mapping."""
     if not raw:
         return {}
     return {
@@ -167,7 +165,33 @@ def _decode_metadata(table: pa.Table) -> dict[str, str]:
     }
 
 
-def _require_format_marker(metadata: dict[str, str]) -> None:
+def require_segment_metadata(
+    metadata: Mapping[str, str],
+    *,
+    expected_session_id: str | None = None,
+    expected_stream_id: str | None = None,
+    expected_segment_index: int | None = None,
+) -> None:
+    """Validate the CAN-X format, version and identity of one segment.
+
+    Kept separate from the row payload so a reader can gate a file on its footer
+    alone, without materializing any frame.
+
+    Raises:
+        DataIntegrityError: If the metadata is not a supported CAN-X segment or
+            does not belong to the expected session/stream/index.
+    """
+    _require_format_marker(metadata)
+    _require_supported_version(metadata)
+    _require_identity(
+        metadata,
+        expected_session_id=expected_session_id,
+        expected_stream_id=expected_stream_id,
+        expected_segment_index=expected_segment_index,
+    )
+
+
+def _require_format_marker(metadata: Mapping[str, str]) -> None:
     marker = metadata.get(METADATA_FORMAT_KEY)
     if marker != SEGMENT_FORMAT_MARKER:
         raise DataIntegrityError(
@@ -177,7 +201,7 @@ def _require_format_marker(metadata: dict[str, str]) -> None:
         )
 
 
-def _require_supported_version(metadata: dict[str, str]) -> None:
+def _require_supported_version(metadata: Mapping[str, str]) -> None:
     raw_version = metadata.get(METADATA_SCHEMA_VERSION_KEY)
     try:
         version = int(raw_version) if raw_version is not None else -1
@@ -195,7 +219,7 @@ def _require_supported_version(metadata: dict[str, str]) -> None:
 
 
 def _require_identity(
-    metadata: dict[str, str],
+    metadata: Mapping[str, str],
     *,
     expected_session_id: str | None,
     expected_stream_id: str | None,
@@ -222,8 +246,14 @@ def _require_identity(
             )
 
 
-def _require_layout(table: pa.Table) -> None:
-    names = table.schema.names
+def require_canonical_layout(schema: pa.Schema) -> None:
+    """Validate that ``schema`` is exactly the canonical CAN-X frame layout.
+
+    Raises:
+        DataIntegrityError: If the column names or column types differ from the
+            canonical frame layout.
+    """
+    names = schema.names
     if names != list(FRAME_COLUMNS):
         raise DataIntegrityError(
             "The segment column layout is not the canonical CAN-X frame layout.",
@@ -232,7 +262,7 @@ def _require_layout(table: pa.Table) -> None:
         )
     mismatched = [
         field.name
-        for field in table.schema
+        for field in schema
         if field.type != FRAME_ARROW_SCHEMA.field(field.name).type
     ]
     if mismatched:

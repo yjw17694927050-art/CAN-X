@@ -33,6 +33,7 @@ Python and Rust direct dependency versions and licenses are added when their loc
 | python-can | 4.6.1 | Future physical CAN adapter base | LGPL-3.0-only | Required by SPEC; dynamic Python dependency, no source copied. Distribution obligations require release review. |
 | psutil | 7.2.2 | Best-effort process telemetry | BSD-3-Clause | Returns unavailable explicitly when unsupported. |
 | pyarrow | 21.0.0 | Parquet segment writer/reader for the V0.2-02 data persistence foundation | Apache-2.0 | Added in V0.2-02 as a single direct Parquet engine; cp313 win_amd64 wheel verified in the project `.venv`. No pandas/Polars/fastparquet introduced alongside it. |
+| duckdb | 1.5.5 | Bounded historical query engine for the V0.2-03 query foundation | MIT | Added in V0.2-03 as the single analytical query engine; `duckdb-1.5.5-cp313-cp313-win_amd64.whl` installed and exercised in the project `.venv`. No core transitive dependencies (pandas/numpy/pyarrow only appear behind the package's `all` extra, which CAN-X does not use). |
 | pytest / pytest-asyncio / httpx | 9.1.1 / 1.4.0 / 0.28.1 | Python tests | MIT | Test-only. |
 | mypy / Ruff | 2.3.1 / 0.16.7 | Python static checks | MIT | Development-only. |
 | Tauri / tauri-build | 2.11.5 / 2.6.3 | Desktop shell and build | Apache-2.0 OR MIT | Tauri 2 is required; 3.0 alpha is intentionally excluded. |

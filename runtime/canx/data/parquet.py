@@ -16,8 +16,19 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from canx.data.errors import ParquetReadError, ParquetWriteError
-from canx.data.schema import frames_to_table, table_to_frames
+from canx.data.errors import DataIntegrityError, ParquetReadError, ParquetWriteError
+from canx.data.model import SegmentHeader
+from canx.data.schema import (
+    METADATA_SCHEMA_VERSION_KEY,
+    METADATA_SEGMENT_INDEX_KEY,
+    METADATA_SESSION_ID_KEY,
+    METADATA_STREAM_ID_KEY,
+    decode_schema_metadata,
+    frames_to_table,
+    require_canonical_layout,
+    require_segment_metadata,
+    table_to_frames,
+)
 from canx.domain.frame import Frame
 
 TEMPORARY_SUFFIX = ".parquet.tmp"
@@ -130,6 +141,90 @@ def read_segment(
         expected_stream_id=expected_stream_id,
         expected_segment_index=expected_segment_index,
     )
+
+
+def validate_segment_header(
+    path: Path,
+    *,
+    expected_session_id: str | None = None,
+    expected_stream_id: str | None = None,
+    expected_segment_index: int | None = None,
+) -> SegmentHeader:
+    """Read only a segment's Parquet footer and verify its CAN-X identity.
+
+    The footer carries the schema and the ``canx.*`` key/value metadata, so this
+    gate opens the file without materializing a row. A query can therefore decide
+    whether a registered file is trustworthy before an engine is allowed to scan
+    it, and a foreign or corrupt file is rejected here rather than silently
+    contributing unpredictable data to a result.
+
+    Raises:
+        ParquetReadError: If the file is missing or its footer cannot be read as
+            Parquet.
+        DataIntegrityError: If the footer is readable but the file is not a CAN-X
+            segment of the expected session/stream/index, or its column layout is
+            not the canonical frame layout.
+    """
+    if not path.is_file():
+        raise ParquetReadError(
+            "The Parquet segment file is missing.",
+            code="data.parquet_read_failed",
+            details={"path": str(path)},
+        )
+    try:
+        with pq.ParquetFile(path) as reader:
+            metadata = decode_schema_metadata(reader.schema_arrow.metadata)
+            schema = reader.schema_arrow
+            row_count = int(reader.metadata.num_rows)
+    except (pa.ArrowException, OSError) as error:
+        raise ParquetReadError(
+            "The Parquet segment footer could not be read.",
+            code="data.parquet_read_failed",
+            details={"path": str(path)},
+        ) from error
+    require_segment_metadata(
+        metadata,
+        expected_session_id=expected_session_id,
+        expected_stream_id=expected_stream_id,
+        expected_segment_index=expected_segment_index,
+    )
+    require_canonical_layout(schema)
+    return SegmentHeader(
+        session_id=_require_metadata_value(metadata, METADATA_SESSION_ID_KEY, "session_id"),
+        stream_id=_require_metadata_value(metadata, METADATA_STREAM_ID_KEY, "stream_id"),
+        segment_index=_require_metadata_integer(metadata, METADATA_SEGMENT_INDEX_KEY),
+        schema_version=_require_metadata_integer(metadata, METADATA_SCHEMA_VERSION_KEY),
+        row_count=row_count,
+    )
+
+
+def _require_metadata_value(metadata: dict[str, str], key: str, field: str) -> str:
+    value = metadata.get(key)
+    if not value:
+        raise DataIntegrityError(
+            f"The segment metadata does not declare {field}.",
+            code="data.integrity.metadata_mismatch",
+            details={"field": field, "key": key},
+        )
+    return value
+
+
+def _require_metadata_integer(metadata: dict[str, str], key: str) -> int:
+    raw = metadata.get(key)
+    if raw is None:
+        raise DataIntegrityError(
+            "The segment metadata is missing a required integer field.",
+            code="data.integrity.metadata_mismatch",
+            details={"key": key},
+        )
+    try:
+        return int(raw)
+    except ValueError as error:
+        raise DataIntegrityError(
+            "The segment metadata field is not an integer.",
+            code="data.integrity.metadata_mismatch",
+            details={"key": key, "value": raw},
+        ) from error
 
 
 def _write_table(table: pa.Table, path: Path) -> None:
