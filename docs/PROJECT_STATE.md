@@ -2,8 +2,8 @@
 
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
-> **Updated**: 2026-09-15  
-> **Current Phase**: V0.1.1 Final Cleanup complete → independent acceptance
+> **Updated**: 2026-09-16  
+> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-01 Project Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -720,13 +720,40 @@ Documentation consistency           ✅
 ```
 
 V0.1.1 implementation is complete; see `docs/V0.1.1_ACCEPTANCE_REPORT.md` for evidence.
-完成后重新验收。
 
-只有 PASS / acceptable Conditional PASS 才进入 V0.2。
+独立验收（2026-09-16）：
+
+```text
+V0.1.1 independent acceptance:
+Conditional PASS
+Approved to enter V0.2
+```
+
+三项 PARTIAL / NOT VERIFIED（windowed desktop launch、runtime→WebSocket 与 Trace/Plot 延迟、
+真实 CAN 硬件、macOS）状态未变，且与本增量无关。
 
 ---
 
 ## V0.2 — Runtime & Data Foundation
+
+### Step V0.2-01 — Project Foundation (DONE)
+
+建立了正式 Project Model、工程目录结构与 SQLite project metadata 生命周期基础：
+
+```text
+Project Model                 ✅ runtime/canx/project/{model,errors}.py
+Project manifest              ✅ project.json — deterministic UTF-8 JSON
+SQLite project metadata       ✅ project.db — PRAGMA user_version = 1
+Project lifecycle             ✅ create / open / close / reopen
+Identity survives reopen      ✅ verified
+Existing paths protected      ✅ create never overwrites user data
+Corruption detected           ✅ malformed / unsupported / identity mismatch rejected
+```
+
+本机验证（2026-09-16）：`pytest` **150 passed**（其中 42 为本增量新增）、
+`ruff check runtime tests tools` exit 0、`mypy runtime` exit 0（35 source files）。
+
+未实现（刻意留在 V0.2 后续增量）：Parquet、DuckDB、Query Service、Data Session、UI。
 
 主要目标：
 
@@ -1253,11 +1280,10 @@ Result recorded
 
 # 32. Immediate Next Action
 
-V0.1.1 实现已完成（见 `docs/V0.1.1_ACCEPTANCE_REPORT.md`）。当前禁止直接进入 V0.2。
+V0.1.1 独立验收返回 **Conditional PASS**，已批准进入 V0.2。
 
-下一任务：
-
-# CAN-X V0.1.1 Acceptance Hardening
+V0.2 的第一个增量 **V0.2-01 Project Foundation** 已完成并通过本机全量回归
+（见 §18 Step V0.2-01）。
 
 状态：
 
@@ -1265,12 +1291,11 @@ V0.1.1 实现已完成（见 `docs/V0.1.1_ACCEPTANCE_REPORT.md`）。当前禁�
 V0.1.1 implementation                ✅ done
 V0.1.1 final cleanup                 ✅ done
 push GitHub                          ✅ done
+independent acceptance               ✅ Conditional PASS
 ↓
-independent ChatGPT acceptance
-↓
-PASS?
-├── YES → V0.2
-└── NO  → targeted remediation
+V0.2 — Runtime & Data Foundation
+├── V0.2-01 Project Foundation       ✅ done
+└── V0.2-02 (next coherent increment) pending
 ```
 
 ---
