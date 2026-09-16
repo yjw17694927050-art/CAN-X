@@ -1819,7 +1819,7 @@ project_path 一律经 ProjectService.open 验证（路径不可信输入）
 查询在 worker thread 执行（asyncio.to_thread），不阻塞 realtime WebSocket 所在 event loop
 ```
 
-本轮测试面（`648 → 795 passed`，新增 147 例）：
+本轮测试面（`648 → 796 passed`，新增 148 例）：
 
 ```text
 unit/query    FrameFilter ID 轴校验、越界/反向/半掩码的 typed 错误、
@@ -1834,7 +1834,7 @@ integration   多 segment 真实链路 ProjectService → DataSessionService →
               逐轴放宽必须恰好新增那一帧 —— 证明没有谓词被静默忽略
 unit/api      POST /trace/query · /trace/summary 契约与全部语义级非法输入的结构化错误、
               missing/corrupt segment 的诊断语义、注入尝试、空 session、
-              interrupted session 的已 committed 数据仍可查
+              interrupted 与 failed session 的已 committed 数据仍可查
 100k smoke    100,000 frames / 20 segments：ID range / mask / channel / direction /
               组合 / 全量与过滤后分页无损重建（无重复、无缺失、顺序确定）
 ```
@@ -1867,6 +1867,19 @@ packaged-runtime smoke                    PASS（3 passed）
     ID 过滤条件由 exe 自己返回的帧构造，因此不依赖虚拟适配器的具体 ID
   · 断言还覆盖：range 与 exact 结果一致、mask 谓词逐帧成立、空结果无 cursor
 Tauri MSI                                 PASS（CAN-X_0.1.0_x64_en-US.msi）
+```
+
+本机验证（2026-09-16，V0.3-01 实现完成时，全部为实际执行结果）：
+
+```text
+full pytest                           796 passed（本增量前 648；新增 148 例）
+ruff check runtime tests tools        exit 0
+mypy runtime                          exit 0（52 source files）
+scripts\package-windows.cmd           exit 0
+  · runtime build + staged sidecar     PASS
+  · packaged-runtime smoke             3 passed（含 Trace query 端到端）
+  · Tauri MSI build + artifact check   PASS（CAN-X_0.1.0_x64_en-US.msi）
+  注：packaged smoke 必须在重新打包后执行；用旧 exe 运行只能证明旧镜像。
 ```
 
 Schema 与依赖：
