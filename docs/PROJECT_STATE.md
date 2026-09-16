@@ -2417,6 +2417,260 @@ external .dbc
 本阶段**不是** decode 阶段。不做 Frame → Signal decode、不做 HTTP API、不做前端、
 不做 Agent tool、不定义全局 active DBC、不做 delete / rename / replace。
 
+架构（数据流）：
+
+```text
+external .dbc
+   ↓  ProjectService.open(root)                 项目身份校验（project.json ↔ project.db 一致）
+   ↓  DbcImportService.import_file(source)      V0.3-02 唯一 filesystem 读取边界（READ ONLY）
+   ↓  validate → bytes → decode → cantools → canonical model + sha256 / size / encoding
+   ↓  re-read source, compare sha256 + size     TOCTOU 防护 → 不一致则 dbc.source_changed
+   ↓  staging write  dbc/.tmp-<asset_id>.dbc    write + flush + fsync
+   ↓  atomic promote dbc/<asset_id>.dbc         os.replace
+   ↓  INSERT dbc_assets row                     SQLite 短连接 + 显式事务
+   ↓
+DbcAsset(asset_id, project_id, source_name, relative_path, sha256, size_bytes,
+         encoding, imported_at)
+   ↓  close project → reopen project
+   ↓  list_assets / get_asset / load_asset(asset_id)
+   ↓
+canonical DbcDocument
+```
+
+模块边界（`import cantools` 仍然只允许出现在一个模块里）：
+
+```text
+runtime/canx/dbc/
+├── __init__.py        包导出（canonical model + asset model + typed errors），不导入 cantools
+├── model.py           CAN-X canonical DBC 内容模型（V0.3-02，本轮未改动）
+├── asset.py           项目资产身份 + 路径契约 + path containment（不依赖 SQLite / cantools）
+├── errors.py          typed 错误（V0.3-02 的 6 类 + 本轮新增 6 类）
+├── parser.py          唯一 cantools 边界（V0.3-02，本轮未改动）
+├── service.py         只读 import（V0.3-02）+ load_bytes（同一 codec / parser 路径，去掉文件系统步骤）
+├── repository.py      SQLite rows ↕ DbcAsset（短连接；不 parse DBC；不碰文件系统）
+└── project_service.py ProjectDbcService：文件 + registry 编排
+```
+
+职责划分与既有域一致：`canx.project.storage` 拥有表存在性与版本戳，`canx.dbc.repository`
+只拥有行——和 `canx.data` 对 `data_sessions` / `data_segments` 的分工相同。两个仓储互不依赖，
+各自持有自己的短连接与事务 helper。
+
+SQLite schema V3：
+
+```text
+DATABASE_SCHEMA_VERSION         2 → 3
+LEGACY_DATABASE_SCHEMA_VERSION  1（仍支持原地升级的最老版本）
+
+CREATE TABLE dbc_assets (
+    asset_id      TEXT PRIMARY KEY CHECK (length(asset_id) = 36),
+    project_id    TEXT NOT NULL CHECK (length(project_id) = 36),
+    source_name   TEXT NOT NULL CHECK (source_name <> ''),
+    relative_path TEXT NOT NULL UNIQUE CHECK (relative_path <> ''),
+    sha256        TEXT NOT NULL CHECK (length(sha256) = 64),
+    size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+    encoding      TEXT NOT NULL CHECK (encoding <> ''),
+    imported_at   TEXT NOT NULL
+)
+```
+
+不建 dbc_messages / dbc_signals / dbc_choices / dbc_nodes / active_dbc / channel_binding：
+canonical DBC 内容继续只有一个事实来源（`.dbc` 文件），SQLite 只保存 asset registry /
+provenance / integrity metadata。把 message 与 signal 再拆一遍会立刻产生第二个 DBC 事实来源。
+
+迁移链（每次 open 在同一事务内完成）：
+
+```text
+source 1 → 应用 V2 语句 + V3 语句 → PRAGMA user_version = 3 → COMMIT
+source 2 → 应用 V3 语句            → PRAGMA user_version = 3 → COMMIT
+source 3 → 正常打开
+source 4+ → project.unsupported_schema_version（拒绝，不部分读取）
+source 0（无版本戳的外来库）→ project.database_schema_invalid
+任一步失败 → ROLLBACK：V1 项目仍是完整 V1，V2 项目仍是完整 V2
+```
+
+迁移步骤按"从哪个版本升级"索引，并通过函数晚绑定解析，因此失败注入测试可以只破坏最后一步
+而不触碰真实 schema。新建数据库使用所有步骤语句的并集，所以"新建的 V3"与"从 V1 升级来的 V3"
+不会漂移。
+
+schema 验证（`PRAGMA user_version` 只是声明，不是证据）：
+
+```text
+project_metadata · data_sessions · data_segments · dbc_assets
++ 每张表的必需列（逐列检查）
+缺失 / 列不全 → project.database_schema_invalid（open 时拒绝，不留到第一次数据或 DBC 操作才崩）
+```
+
+DbcAsset 契约：
+
+```text
+asset_id       canonical UUID（str(UUID(v)) 归一化）
+project_id     canonical UUID；必须与 project_metadata.project_id 一致
+source_name    只保存 basename；含路径分隔符 / "." / ".." 一律拒绝
+               外部绝对路径（C:\Users\...、D:\Customer\...、/home/...）不落库
+relative_path  project-relative POSIX 路径；必须形如 dbc/<name>.dbc
+               拒绝绝对路径、反斜杠、.. 穿越、其它目录、嵌套目录
+sha256         小写 64 位十六进制
+size_bytes     >= 0
+encoding       非空白 codec 名（真实 import 使用的 codec）
+imported_at    timezone-aware（UTC 存储）
+```
+
+`relative_path` 由 `asset_relative_path(asset_id)` 生成，因此 project-owned 文件名永远是
+`<asset_id>.dbc`，而不是用户导入的文件名：两个都叫 `network.dbc` 的源文件可以同时存在于
+一个项目，且用户文件名永远不会成为路径片段。
+
+文件系统提交顺序（跨存储一致性，诚实记录）：
+
+```text
+validate project → validate + hash source → re-read + 比对 → staging → 原子提升 → registry INSERT
+```
+
+因此不会出现"registry 行指向一个从未落盘的文件"。反向（文件已落盘、行未提交）在两步之间
+崩溃时可能发生，见 Known limitations。registry INSERT 失败时，新建的资产文件会被
+best-effort 删除，然后抛出 typed registry 错误。
+
+load 的完整性顺序（先证明完整性，再解析）：
+
+```text
+get registry row → project_id 一致性 → relative_path 归属 dbc/（resolve 后判断，
+含 dbc/ 本身是外链的情况）→ 文件存在 → size → SHA-256 → 用登记的 encoding 解码 → parse
+```
+
+因此篡改或丢失不会被误报成普通解析失败；而 hash 已通过时的解码/解析失败，会被报告为
+"registry 行与文件不再自洽"，而不是"文档损坏"。
+
+typed 错误（`source = "dbc"`，五字段契约与既有域一致）：
+
+```text
+dbc.invalid_asset          资产记录无法描述合法资产                recoverable=false
+dbc.asset_not_found        该 asset_id 在本项目未注册              recoverable=false
+dbc.asset_storage_failed   project-owned 副本写入 / 提升失败       recoverable=true
+dbc.asset_registry_failed  registry 行提交 / 读取失败              recoverable=true
+dbc.asset_integrity_failed 已登记资产与其 registry 行矛盾          recoverable=false
+dbc.source_changed         源文件在验证与持久化之间改变            recoverable=true
+```
+
+项目本身无效时保持 `ProjectError`（`source = "project"`），不包装成 `dbc.*`：事实是项目不可用，
+不是 DBC 操作出错。
+
+Tests added（实测收集数）：
+
+```text
+tests/unit/project/test_storage_v3.py             13  新库 V3 / V1→V3 / V2→V3 / 失败回滚
+                                                       （V1 保持 V1、V2 保持 V2）/ 残缺 V3 拒绝 /
+                                                       registry CHECK 约束
+tests/unit/dbc/test_dbc_asset.py                  54  DbcAsset 全部不变式、UUID 归一化、
+                                                      source_name 非路径、relative_path 防御、
+                                                      digest / size / encoding / aware 时间戳、
+                                                      resolve_asset_path 逃逸拒绝
+tests/unit/dbc/test_dbc_asset_registry.py         16  insert / get / list / 未知 / 多行 /
+                                                      稳定顺序 / 字段往返 / 连接关闭 /
+                                                      缺库缺表 / 重复 id / 损坏行
+tests/unit/dbc/test_dbc_project_service.py        30  import 全流程、精确字节、同名不冲突、
+                                                      无 staging 残留、源文件不被修改、TOCTOU、
+                                                      staging 失败、提升失败、registry 失败清理、
+                                                      无效项目先失败、相同字节两次导入产生两个资产
+tests/unit/dbc/test_dbc_service.py                30  （+7）load_bytes 与 _with_source 合并方向
+tests/unit/dbc/test_dbc_errors.py                 19  （+6）新错误类进入五字段契约与 code 唯一性
+tests/integration/test_dbc_project_assets.py      15  reopen / 项目移动 / 多资产内容互不串 /
+                                                      同名文件 / 篡改 / 截断 / 删除 / 恶意路径 /
+                                                      换 digest / 跨项目行 / 手工投放文件不被注册
+tests/integration/test_project_schema_upgrade.py   8  （+1）V1→V3 与 V2→V3，含真实 DataSession
+                                                      与 Parquet segment 在升级后逐字段可读
+tests/unit/project/test_storage_migration.py      16  已更新：版本断言与测试名对齐本轮语义
+tests/integration/test_data_session_persistence.py     已更新：重开项目的 schema 断言为 V3
+```
+
+本机验证（2026-09-16，V0.3-03 实现完成时，全部为实际执行结果）：
+
+```text
+full pytest                          1153 passed, 1 skipped（本增量前 1011 passed）
+  · tests/unit/project                65 passed
+  · tests/unit/dbc                   269 passed, 1 skipped
+  · tests/integration（DBC）          35 passed（test_dbc_import + test_dbc_project_assets）
+  · tests/integration（Project/Data） 29 passed（schema upgrade + lifecycle + data persistence）
+ruff check runtime tests             exit 0（All checks passed!）
+mypy runtime                         exit 0（60 source files，strict）
+scripts\package-windows.cmd          exit 0
+  · runtime build + staged sidecar    PASS
+  · packaged-runtime smoke            3 passed in 13.08s
+  · Tauri MSI build + artifact check  PASS（CAN-X_0.1.0_x64_en-US.msi）
+build\runtime-dist\canx-runtime.exe  59,554,835 bytes（V0.3-02: 59,551,374）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi  62,377,984 bytes（V0.3-02: 62,373,888）
+```
+
+packaged runtime scope（诚实说明）：本阶段**不主张** packaged runtime 提供 DBC 资产能力。
+`canx.dbc` 仍未出现在 runtime 入口的 import graph 中——exe 的模块目录里 `cantools` /
+`textparser` / `bitstruct` 出现次数均为 0，`duckdb` 仍为 13。这与本阶段没有 HTTP API、
+没有组合根接线的 scope 一致。打包回归的通过只证明一件事：schema 迁移与 DBC 持久化代码
+**没有破坏**既有 runtime build / packaged smoke / Tauri package。
+
+一次必须记录的打包前观察：本轮第一次全量回归时，`tests/integration/test_packaged_runtime_smoke.py`
+的 2 个用例失败，原因是它们用当前源码创建 V3 项目、再交给 **V0.3-02 构建的旧 exe** 打开，
+旧 exe 按设计返回 `project.unsupported_schema_version`。这不是缺陷，而是 schema 升级真实生效的
+证据：新项目 + 旧运行时 = fail-closed 拒绝。按本阶段要求运行 `scripts\package-windows.cmd`
+重建 exe 后，全量回归 1153 passed。
+
+Schema / 依赖变化：
+
+```text
+SQLite project schema   V2 → V3（新增 dbc_assets）
+project.json schema     未改（manifest 仍只有 format / schema_version / project_id）
+Parquet schema          未改（FRAME_PARQUET_SCHEMA_VERSION 仍为 1）
+Frame schema            未改
+HTTP schema             未改（本阶段未新增任何 endpoint，未改 canx.api.*）
+WebSocket schema        未改
+DBC canonical schema    未改（V0.3-02 的 DbcDatabase / DbcMessage / DbcSignal / DbcChoice /
+                             multiplexing / encoding 契约原样保留）
+新增依赖                none（仅标准库：sqlite3 · hashlib · os.replace · uuid · pathlib）
+```
+
+Known limitations（诚实记录）：
+
+```text
+1  filesystem 与 SQLite 无法形成真正的单事务。当前顺序保证"不会有 registry 行指向从未落盘
+   的文件"，但进程若恰好崩在"资产文件已落盘、registry 行尚未提交"之间，理论上会留下
+   unregistered orphan file。registry 状态是权威事实；project/dbc 下未注册的文件不被信任。
+2  本阶段不实现 orphan 自动清理，也不扫描 dbc/ 自动注册——那会绕过 validation 与 provenance。
+   若将来需要，应作为显式的 repair / audit 功能设计。
+3  不实现 delete。SQLite 行删除与文件删除同样存在跨存储一致性语义，留待资产管理阶段。
+4  不实现 rename / replace / update / revision。asset_id 当前代表"一次确定的不可变导入资产"；
+   同一字节的重复导入会产生新的 asset_id（本轮刻意不做 content deduplication，也不引入
+   UNIQUE(sha256)，以免锁死未来的 alias / revision 语义）。
+5  不定义全局 active DBC（active_dbc_id / current_dbc / selected_dbc）。一个 Project 可以拥有
+   0..N 个 DBC 资产；未来 decode 必须显式决定使用哪个 asset_id / asset_set / binding。
+6  不实现 decode、不实现 HTTP API、不实现前端、不实现 Agent tool。
+7  dbc/ 本身为外链（symlink）时的拒绝用例在本机被 skip：Windows 需要额外权限才能创建目录
+   链接（WinError 1314）。路径逃逸的确定性证据来自恶意 relative_path 用例，而非链接用例。
+8  source_name 只做"是文件名而不是路径"的校验；带空格的合法文件名会被接受。
+```
+
+Deferred（明确留给后续 coherent increment，本阶段一行都没做）：
+
+```text
+DBC decode（Frame → Signal，physical values，batch / live / historical decode）
+DBC HTTP API（POST /dbc/import · GET /dbc/assets · GET /dbc/{id} · POST /dbc/{id}/decode）
+DBC delete / rename / replace / revision
+DBC Editor UI / React / Dockview / Monaco
+Trace decoded columns / Plot signal binding
+Agent dbc.* tools
+asset deduplication / alias / 显式 channel ↔ asset 绑定
+orphan 审计与显式修复
+```
+
+状态：
+
+```text
+V0.3-03 DBC Project Registry & Persistence Foundation
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做了实现 + 本机自验证。**不自行宣布 V0.3-03 Acceptance PASS**；
+最终验收由项目负责人独立执行。若通过，下一推荐 coherent increment 是
+**V0.3-04 — DBC Decode Foundation**（本轮不得开始）。
+
 ---
 
 ## V0.3 — Professional Trace & DBC Foundation
