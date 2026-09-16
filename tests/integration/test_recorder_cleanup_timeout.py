@@ -36,8 +36,12 @@ from canx.project.service import ProjectHandle, ProjectService
 from canx.project.storage import DATABASE_FILENAME
 from canx.runtime.errors import CaptureConfigurationError
 from canx.runtime.service import CaptureSessionState, RuntimeService
+from httpx import ASGITransport, AsyncClient
 
 CLEANUP_TIMEOUT = 0.8
+#: A wider stop budget for the concurrent status test: the status read has to
+#: land while a real stop is still in progress, so the window must not be tight.
+STOP_WINDOW_SECONDS = 2.0
 #: Small enough that the archive drain finishes well inside CLEANUP_TIMEOUT, so
 #: the deadline lands on the *finalize* rather than on the drain.
 SEGMENT_LIMIT = 64
@@ -542,3 +546,134 @@ async def test_shutdown_while_a_finalization_is_pending_is_bounded(
         stored = DataSessionService(handle.root).get_session(session_id)
         assert stored.state is DataSessionState.COMPLETED
         assert service.failure is None
+
+
+# ---------------------------------------------------------------------------
+# V0.2-04-FINAL-3 — a stop in flight is ``finalizing``, never a failure with no
+# verdict behind it.
+#
+# V0.2-04-FINAL-2 stopped the runtime from *pre-judging* an in-flight terminal
+# commit, but a narrower lie survived: ``RuntimeService.capture_state`` inferred
+# ``FAILED`` from ``has_session and not capture_active`` — a pair that is true
+# for the whole span between the pipeline stopping and the runtime releasing its
+# session reference. During a perfectly normal stop, ``GET /runtime/status``
+# therefore reported ``capture_state=failed`` with ``failure=None``: a verdict
+# with no diagnostic grounding it. ``FAILED`` is a verdict the runtime may only
+# publish when a real failure exists, so a stop declares ``FINALIZING``
+# explicitly and stops inferring failure from pipeline activity.
+# ---------------------------------------------------------------------------
+
+
+async def test_status_reports_finalizing_while_a_real_stop_is_in_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tests A/B/C: a stop in flight is observable as ``finalizing``, never failed.
+
+    ``GET /runtime/status`` is a read-only observation and must answer while
+    ``stop_capture()`` is still running — not wait on the lifecycle lock for it to
+    finish. Across the whole span of the stop it has to report the honest
+    lifecycle: ``finalizing`` while the terminal commit is in flight in SQLite,
+    still ``finalizing`` when the bounded stop returns without a verdict, and
+    ``idle`` once the worker settles the recording ``COMPLETED``. ``failure``
+    stays ``None`` throughout, because no failure exists.
+    """
+    with project(tmp_path) as handle:
+        service = RuntimeService(
+            project_max_frames_per_segment=SEGMENT_LIMIT,
+            recorder_cleanup_timeout_seconds=STOP_WINDOW_SECONDS,
+        )
+        app = create_app(runtime_service=service)
+        seam = FlushCompletedSeam(monkeypatch)
+        session_id = await capture_into(service, handle)
+        recorder = service._last_project_recorder
+        assert recorder is not None
+        lock = SqliteWriteLock(handle.root)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            try:
+                stop_task = asyncio.create_task(service.stop_capture())
+                await seam.wait_flushed()
+                lock.acquire()
+                seam.terminal_unblocked.set()
+                # Wait for the worker to genuinely enter its terminal SQLite
+                # transaction, so the deadline lands on an in-flight commit
+                # rather than at a patched seam.
+                async with asyncio.timeout(5):
+                    while not recorder._terminal_lock.locked():
+                        await asyncio.sleep(0.005)
+
+                # stop_capture() is still in progress here.
+                assert not stop_task.done()
+                during = (await client.get("/runtime/status")).json()
+                assert during["capture_state"] == "finalizing", during
+                assert during["capture_active"] is False, during
+                assert during["failure"] is None, during
+
+                # The bounded stop returns without a verdict — the terminal
+                # commit is still blocked in SQLite — and must still report
+                # finalizing, not a guessed failure.
+                await asyncio.wait_for(stop_task, timeout=20)
+                pending = (await client.get("/runtime/status")).json()
+                assert pending["capture_state"] == "finalizing", pending
+                assert pending["failure"] is None, pending
+            finally:
+                lock.release()
+            monkeypatch.undo()
+
+            # With the writer lock released the worker resumes and settles the
+            # recording COMPLETED; only then may the runtime report idle.
+            await asyncio.wait_for(service.wait_for_finalization_settlement(), timeout=25)
+            settled = (await client.get("/runtime/status")).json()
+            assert settled["capture_state"] == "idle", settled
+            assert settled["failure"] is None, settled
+
+        stored = DataSessionService(handle.root).get_session(session_id)
+        assert stored.state is DataSessionState.COMPLETED
+
+
+async def test_a_public_failed_state_always_carries_a_failure_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test E: ``capture_state == failed`` always names a real failure verdict.
+
+    ``failed`` is a verdict, not a description of an inactive pipeline. This is
+    the observable contract the whole fix rests on: at no point of a capture's
+    life may a status read see ``failed`` with ``failure`` None.
+    """
+    with project(tmp_path) as handle:
+        service = RuntimeService(
+            project_max_frames_per_segment=SEGMENT_LIMIT,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT,
+        )
+
+        def assert_consistent(label: str) -> None:
+            if service.capture_state is CaptureSessionState.FAILED:
+                assert service.failure is not None, (
+                    f"{label}: capture_state=failed but failure is None"
+                )
+
+        assert_consistent("idle")
+        assert service.capture_state is CaptureSessionState.IDLE
+
+        block = BlockingFinalize(monkeypatch)
+        await _run_capture_until_blocked(service, handle, block)
+        assert service.capture_state is CaptureSessionState.RUNNING
+        assert_consistent("running")
+
+        stop_task = asyncio.create_task(service.stop_capture())
+        await block.wait_entered()
+        # Ingress has stopped, but no verdict exists yet: the state must be an
+        # honest finalizing, not a failed that names nothing.
+        assert service.capture_state is CaptureSessionState.FINALIZING
+        assert_consistent("stop in progress")
+
+        await asyncio.wait_for(stop_task, timeout=10)
+        assert service.capture_state is CaptureSessionState.FAILED
+        assert_consistent("after cleanup timeout")
+
+        block.release.set()
+        await block.wait_finished()
+        monkeypatch.undo()
+        await asyncio.wait_for(asyncio.to_thread(service.wait_for_finalization, 10), timeout=15)
+        assert_consistent("settled")

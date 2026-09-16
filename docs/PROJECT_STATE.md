@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04-FINAL-2 Terminal Commit / Cleanup Timeout Atomicity
+> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04-FINAL-3 Runtime Status Truthfulness During Finalization
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -1237,6 +1237,7 @@ Final remediation completed（V0.2-04-FINAL，见下）
 Final Acceptance: NOT PASS
 Remaining P1: terminal SQLite commit in-flight race
 FINAL-2 remediation completed（V0.2-04-FINAL-2，见下）
+FINAL-3 remediation completed（V0.2-04-FINAL-3，见下）
 ```
 
 ### Step V0.2-04-FINAL — Recorder Cleanup Timeout Lifecycle Consistency
@@ -1579,6 +1580,127 @@ DataSessionService.recover_incomplete_sessions() 变成 INTERRUPTED —— 允�
 
 ```text
 V0.2-04-FINAL-2 remediation complete
+Awaiting final independent acceptance
+```
+
+本轮只做了实现 + 自验证。**不自行宣布 Final Acceptance: PASS**；
+最终独立验收由 ChatGPT / 项目负责人执行。
+
+---
+
+### Step V0.2-04-FINAL-3 — Runtime Status Truthfulness During Finalization
+
+V0.2-04-FINAL-2 的核心修复（terminal commit 已 in-flight 时不再猜测 terminal verdict）
+独立验收判定为 **PASS**，但该轮 V0.2-04 Final Acceptance 仍为 **NOT PASS**，剩余唯一阻塞项：
+
+```text
+P1 — transient false FAILED runtime status during stop / finalization
+    正常或 pending 停止期间，Runtime 会短暂对外暴露
+    capture_state = FAILED 且 failure = null
+    —— 一个没有任何 failure verdict 支撑的失败判定。
+```
+
+根因：
+
+```text
+RuntimeService.capture_state 旧实现是一个推导属性：
+
+    if self.has_session and not self.capture_active:
+        return CaptureSessionState.FAILED
+    return self._capture_state
+
+正常 stop 的流程是 pipeline.stop() → ingress 停止，但 _pipeline 在整个
+finalization / cleanup 结束之前仍被 Runtime 持有：
+
+    capture_active = False   （pipeline 已不再 is_running）
+    has_session    = True    （_pipeline 仍非 None）
+
+于是 stop 全程 property 都返回 FAILED，而此时 _failure 仍为 None：
+    capture_state = failed
+    failure       = null
+
+该窗口覆盖了「ingress 已停、会话尚未释放」的整个区间（drain + recorder.close +
+finalization settle），并发 GET /runtime/status 能真实读到它。RED 已确定性复现：
+{'capture_state': 'failed', 'failure': None}。
+```
+
+修复（只改 Runtime lifecycle 可观察性，不触碰持久化协议）：
+
+```text
+1  _stop_capture()：在有 active session、开始停止 ingress 之前，若尚无 failure，
+   显式声明 capture_state = FINALIZING。此前 pipeline 一变成非 active 就会暴露
+   FAILED，现在从 stop 一开始就是诚实的 finalizing；已有 failure 时保持既有
+   DEGRADED/FAILED，由 stop 末尾 settle。
+
+2  capture_state property：删除 has_session && !capture_active ⇒ FAILED 的隐式推导，
+   直接返回 _capture_state。状态机只由 lifecycle owner 在每次跃迁时显式写入，
+   绝不再从「pipeline 是否在跑」反推失败。
+
+不改动的边界：
+  · ProjectRecorder 的终态协议（COMPLETED / FAILED / PENDING）
+  · terminal commit gate / SQLite 仲裁 / DataSessionWriter finalization（未触碰）
+  · capture_active 语义（ingress 是否在跑）：finalizing 期间它保持 False，合法
+  · has_session 语义（Runtime 是否仍持有 session）：未与 capture_active 强行合并
+  · /capture/stop 的 finalization_pending 语义与 RuntimeStatusResponse 字段
+```
+
+可观察不变量（本轮固定为契约）：
+
+```text
+capture_state == FAILED  ⇒  failure != None
+  FAILED 是 verdict，不是「pipeline 停了」的描述；只有真实 failure diagnostic
+  存在时才可发布。
+FAILED + failure        = 真实 failure verdict（backpressure / write / gap / cleanup）
+FINALIZING + failure    = None（终态未知，绝不猜）
+IDLE                    = failure 为 None，会话已释放
+RUNNING                 = failure 为 None，ingress 在跑
+```
+
+Concurrent status（真实 SQLite contention，非 patched seam）：
+
+```text
+setup                          第二个连接 hold project.db 写锁；worker 真实阻塞在
+                               terminal commit_completed 的 BEGIN IMMEDIATE
+status while stop in progress  GET /runtime/status 在 stop_capture() 运行期间返回
+                               capture_state=finalizing / failure=null
+                               （修复前：failed / null —— RED 已复现）
+status while commit pending    bounded stop 返回后 finalization_pending=true 且
+                               capture_state=finalizing / failure=null
+status after settlement        释放写锁 → settle → capture_state=idle / failure=null /
+                               DataSession=COMPLETED
+```
+
+真实 failure 回归：cleanup deadline 在终态写入开始之前到期 → gate 关闭 → durable
+FAILED → capture_state=failed 且 failure.code=recorder.cleanup_timeout（既有测试保持）。
+
+本机验证（2026-09-16，V0.2-04-FINAL-3）：
+
+```text
+full pytest                          648 passed
+  （本增量前 646；新增 2 例）
+  tests/integration/test_recorder_cleanup_timeout.py      11 passed
+    · 新增：真实 contention 下 stop 进行中 / bounded 返回后 status=finalizing
+      （Test A/B/C，走真实 GET /runtime/status）
+    · 新增：FAILED ⇒ failure != None 生命周期不变量（Test E）
+    · 保留：FINAL-2 全部真实 SQLite contention 测试
+ruff check runtime tests tools       exit 0
+mypy runtime                         exit 0 (50 source files)
+scripts\package-windows.cmd          exit 0
+  · runtime build + staged sidecar     PASS
+  · packaged-runtime smoke             2 passed（含 project-backed Parquet + query readback）
+  · Tauri MSI build + artifact check   PASS（CAN-X_0.1.0_x64_en-US.msi）
+in-suite project soak               generated 16333 / captured 16333 /
+                                    persisted 16333 / 0 gaps / 0 failures /
+                                    state completed（无回退）
+```
+
+未改动：terminal commit protocol / SQLite arbitration / DataSessionWriter
+finalization；Frame / Parquet / SQLite schema 均未变；未新增依赖。
+
+状态：
+
+```text
+V0.2-04-FINAL-3 remediation complete
 Awaiting final independent acceptance
 ```
 
@@ -2097,8 +2219,11 @@ V0.2-04 Project-Backed Capture Persistence Integration 已完成实现与本机�
 lifecycle race）。定向修复 V0.2-04-FINAL 已完成；该轮最终独立验收为
 **V0.2-04 Final Acceptance: NOT PASS**，剩余唯一阻塞项是
 **P1 — terminal SQLite commit may already be in-flight**，已由 V0.2-04-FINAL-2
-定向修复（见 §18 Step V0.2-04-FINAL-2）：**V0.2-04-FINAL-2 remediation complete /
-Awaiting final independent acceptance**。
+定向修复（见 §18 Step V0.2-04-FINAL-2）：**V0.2-04-FINAL-2 core remediation: PASS**。
+该轮最终独立验收仍为 **V0.2-04 Final Acceptance: NOT PASS**，剩余唯一阻塞项是
+stop/finalization 期间短暂发布 `capture_state=failed` 且 `failure=null` 的错误状态；
+已由 V0.2-04-FINAL-3 定向修复（见 §18 Step V0.2-04-FINAL-3）：
+**V0.2-04-FINAL-3 remediation complete / Awaiting final independent acceptance**。
 本阶段把实时 Capture 正式接入 Project → DataSession → Parquet 持久化链路，并让
 runtime 的可观察终态始终与 SQLite 的真实持久化终态一致：cleanup timeout 只在
 durable verdict 确实落定时才被声明；终态写入已在执行中时 runtime 进入 finalizing
@@ -2135,7 +2260,9 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-04-FINAL remediation        ✅ done
 ├── V0.2-04 final acceptance         ❌ NOT PASS (1 P1)
 ├── V0.2-04-FINAL-2 remediation      ✅ done
-└── V0.2-04 final acceptance (2nd)   ⏳ awaiting
+├── V0.2-04 final acceptance (2nd)   ❌ NOT PASS (1 P1)
+├── V0.2-04-FINAL-3 remediation      ✅ done
+└── V0.2-04 final acceptance (3rd)   ⏳ awaiting
 ```
 
 ---
