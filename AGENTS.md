@@ -49,6 +49,7 @@ CAN-Space 已冻结。
 1. AGENTS.md
 2. PRD.md
 3. SPEC.md
+4. docs/PROJECT_STATE.md（需要项目当前状态时）
 ```
 
 如果存在：
