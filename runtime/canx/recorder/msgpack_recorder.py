@@ -52,6 +52,15 @@ class MsgpackRecorder:
             self.failure = RecorderFailure(code, message, recoverable, dict(context))
         self.state = RecorderState.FAILED
 
+    def reset_session(self) -> None:
+        """Begin a non-recording capture session without stale recorder diagnostics."""
+        if self.state is RecorderState.RECORDING:
+            raise RuntimeError("cannot reset an active recorder")
+        self.state = RecorderState.IDLE
+        self.recorded_frames = 0
+        self.failure = None
+        self._stream_id = None
+
     async def start(self, path: Path, *, stream_id: str) -> None:
         """Open a new recording without creating missing parent directories."""
         if self.state is RecorderState.RECORDING:

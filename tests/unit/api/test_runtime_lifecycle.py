@@ -229,3 +229,32 @@ async def test_disabled_archive_settles_before_backpressure_callback(tmp_path: P
     assert service.failure is not None
     assert service.failure.code == "recorder.backpressure"
     assert service.metrics_snapshot().recorder_failures == 1
+
+
+async def test_unrecorded_session_does_not_inherit_a_previous_recorder_failure(
+    tmp_path: Path,
+) -> None:
+    from canx.devices.virtual import VirtualAdapterConfig
+
+    service = RuntimeService()
+    with pytest.raises(OSError):
+        await service.start_capture(
+            VirtualAdapterConfig(), recording_path=tmp_path / "missing" / "capture.canxmsg"
+        )
+
+    stream_id = await service.start_capture(VirtualAdapterConfig(), batch_size=1)
+    try:
+        assert service.capture_state == "running"
+        assert service.failure is None
+        assert service._recorder.state == "idle"
+        assert service._recorder.failure is None
+
+        service._handle_subscriber_failure(
+            SubscriberFailure("subscriber.backpressure", "archive", "queue full", False, 1000, 7, 99)
+        )
+
+        assert service.failure is not None
+        assert service.failure.code == "recorder.backpressure"
+        assert service.failure.context["stream_id"] == stream_id
+    finally:
+        await service.stop_capture()

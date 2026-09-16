@@ -136,6 +136,8 @@ class RuntimeService:
         try:
             if recording_path is not None:
                 await self._recorder.start(recording_path, stream_id=self._stream_id)
+            else:
+                self._recorder.reset_session()
             self._archive_task = asyncio.create_task(
                 self._run_consumer(
                     archive_subscriber,
