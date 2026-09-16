@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from canx.api.app import create_app
+from canx.data.model import DataSessionState
 from canx.data.session import DataSessionService
 from canx.domain.batch import FrameBatch
 from canx.domain.frame import Direction, Frame, TimestampQuality
@@ -616,6 +617,39 @@ async def test_an_interrupted_session_still_serves_its_committed_frames(
         )
         session_id = writer.session_id
         service.recover_incomplete_sessions()
+
+    async with _client() as client:
+        response = await client.post("/trace/query", json=_body(root, session_id))
+
+    assert response.status_code == 200
+    assert [item["sequence"] for item in response.json()["frames"]] == list(
+        range(FRAMES_PER_SEGMENT)
+    )
+
+
+async def test_a_failed_session_still_serves_its_committed_frames(tmp_path: Path) -> None:
+    """A failed capture is still engineering evidence.
+
+    Frames that reached disk before the failure keep their analytic value, so the
+    Trace surface must serve them without requiring the session to have
+    completed. Only the unflushed tail disappears — it was never committed, so it
+    is correctly invisible rather than silently missing.
+    """
+    root = tmp_path / "failed.canx"
+    with ProjectService().create(root, display_name="Failed") as handle:
+        service = DataSessionService(handle.root, max_frames_per_segment=FRAMES_PER_SEGMENT)
+        writer = service.start(stream_id=STREAM_ID)
+        writer.append(
+            FrameBatch.create(
+                stream_id=STREAM_ID, frames=list(SOURCE_FRAMES[:FRAMES_PER_SEGMENT])
+            )
+        )
+        session_id = writer.session_id
+        assert writer.fail() is True
+
+        stored = service.get_session(session_id)
+        assert stored.state is DataSessionState.FAILED
+        assert stored.frame_count == FRAMES_PER_SEGMENT
 
     async with _client() as client:
         response = await client.post("/trace/query", json=_body(root, session_id))

@@ -331,7 +331,12 @@ async def test_packaged_runtime_answers_a_trace_query_from_persisted_parquet(
 
             empty = await client.post(
                 "/trace/query",
-                json=body(filters={"arbitration_id_start": 0x1FFFFFF0, "arbitration_id_end": 0x1FFFFFFF}),
+                json=body(
+                    filters={
+                        "arbitration_id_start": 0x1FFFFFF0,
+                        "arbitration_id_end": 0x1FFFFFFF,
+                    }
+                ),
             )
 
             shutdown = await client.post(
