@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-01-FINAL HTTP Request Validation Envelope Closure
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-02 DBC Domain Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -2080,10 +2080,20 @@ Local verification complete
 Awaiting independent acceptance
 ```
 
-本轮只做了实现 + 自验证。**不自行宣布 V0.3-01 Final Acceptance: PASS**；
-最终 PASS 由 ChatGPT / 项目负责人独立验收。
+本轮只做了实现 + 自验证，**未自行宣布 PASS**。
 
-**Do not enter V0.3-02 (DBC Domain Foundation) until independent acceptance.**
+独立验收由 ChatGPT / 项目负责人执行，结论如下（该结论由项目负责人给出，
+不属于 Agent 自行验收）：
+
+```text
+V0.3-01 Trace Query & Filtering Foundation
+Final Acceptance: PASS
+Status: CLOSED
+```
+
+V0.3-01-FINAL HTTP Request Validation Envelope Closure 的独立验收结论同样为 PASS，
+V0.3-01 阶段（含 FINAL）自此关闭。项目负责人已正式批准从 V0.3-01 进入
+**V0.3-02 — DBC Domain Foundation**。
 
 ---
 
@@ -2611,6 +2621,13 @@ Parquet 写入路径（**Packaged Parquet execution path: VERIFIED**）。该轮
 Packaged DuckDB query path 仍为 NOT VERIFIED —— 已由 V0.3-01 关闭
 （见 §18 Step V0.3-01：**Packaged DuckDB query path: VERIFIED**）。
 
+V0.3-01 Trace Query & Filtering Foundation 已完成实现、本机验证、提交推送与独立验收：
+**V0.3-01 Final Acceptance: PASS**。其最终缺口 V0.3-01-FINAL HTTP Request Validation
+Envelope Closure 的独立验收结论同样为 **PASS**（见 §18 Step V0.3-01 /
+V0.3-01-FINAL）。V0.3-01 阶段自此关闭。
+
+V0.3-02 DBC Domain Foundation 已获项目负责人独立批准并开始实现（见 §18 Step V0.3-02）。
+
 状态：
 
 ```text
@@ -2642,7 +2659,16 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-04-FINAL-2 remediation      ✅ done
 ├── V0.2-04 final acceptance (2nd)   ❌ NOT PASS (1 P1)
 ├── V0.2-04-FINAL-3 remediation      ✅ done
-└── V0.2-04 final acceptance (3rd)   ⏳ awaiting
+├── V0.2-04 final acceptance (3rd)   ✅ PASS
+↓
+V0.3 — Professional Trace & DBC Foundation
+├── V0.3-01 implementation           ✅ done
+├── V0.3-01 local verification       ✅ done
+├── V0.3-01 independent acceptance   ✅ PASS
+├── V0.3-01-FINAL implementation     ✅ done
+├── V0.3-01-FINAL independent accept ✅ PASS
+├── V0.3-02 implementation           ⏳ in progress
+└── V0.3-02 independent acceptance   ⏳ awaiting
 ```
 
 ---
