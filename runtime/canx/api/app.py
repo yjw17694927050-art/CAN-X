@@ -47,7 +47,7 @@ class RuntimeStatusResponse(BaseModel):
 
     state: Literal["ready", "failed"]
     capture_active: bool
-    capture_state: Literal["idle", "running", "degraded", "failed"]
+    capture_state: Literal["idle", "running", "degraded", "finalizing", "failed"]
     failure: ErrorResponse | None
 
 
@@ -81,8 +81,17 @@ class CaptureStartResponse(BaseModel):
 
 
 class CaptureStopResponse(BaseModel):
+    """Acknowledged stop, plus whether a project recording is still settling.
+
+    ``status`` reports that capture ingress stopped; ``finalization_pending``
+    says whether the recording's durable terminal state is still being resolved.
+    The two are different facts and a caller that needs the data must wait for
+    the latter.
+    """
+
     model_config = ConfigDict(frozen=True)
     status: Literal["stopped"] = "stopped"
+    finalization_pending: bool = False
 
 
 class ToolExecuteRequest(BaseModel):
@@ -136,7 +145,9 @@ def create_app(
         try:
             yield
         finally:
-            await service.stop_capture()
+            # Bounded: a project recording whose terminal commit is still in
+            # flight is settled or abandoned, never guessed at, on the way out.
+            await service.aclose()
 
     app = FastAPI(title="CAN-X Runtime", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
@@ -245,9 +256,14 @@ def create_app(
 
     @app.post("/capture/stop", response_model=CaptureStopResponse)
     async def capture_stop() -> CaptureStopResponse:
-        """Idempotently stop and flush the active capture session."""
+        """Idempotently stop and flush the active capture session.
+
+        Bounded: a project-backed recording whose terminal commit is already in
+        flight is left to settle in the background, and this reports that with
+        ``finalization_pending`` instead of guessing a terminal verdict.
+        """
         await service.stop_capture()
-        return CaptureStopResponse()
+        return CaptureStopResponse(finalization_pending=service.finalization_pending)
 
     @app.get("/metrics", response_model=MetricsSnapshot)
     async def metrics() -> MetricsSnapshot:

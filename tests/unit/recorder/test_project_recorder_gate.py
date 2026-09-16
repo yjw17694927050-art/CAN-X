@@ -14,7 +14,9 @@ session the owner has already condemned:
 """
 
 import asyncio
+import sqlite3
 import threading
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -23,8 +25,9 @@ from canx.data.session import DataSessionService, DataSessionWriter
 from canx.domain.batch import FrameBatch
 from canx.domain.frame import Direction, Frame, TimestampQuality
 from canx.project.service import ProjectHandle, ProjectService
+from canx.project.storage import DATABASE_FILENAME
 from canx.recorder.msgpack_recorder import RecorderState
-from canx.recorder.project_recorder import ProjectRecorder
+from canx.recorder.project_recorder import FinalizationOutcome, ProjectRecorder
 
 STREAM_ID = "project-recorder-gate-stream"
 
@@ -124,7 +127,7 @@ async def test_closing_the_gate_reports_an_already_completed_session(tmp_path: P
                 recoverable=False,
                 context={},
             )
-            is True
+            is FinalizationOutcome.COMPLETED
         )
         assert recorder.failure is None
 
@@ -144,7 +147,7 @@ async def test_closing_the_gate_durably_fails_the_session(tmp_path: Path) -> Non
                 recoverable=False,
                 context={"operation": "close"},
             )
-            is False
+            is FinalizationOutcome.FAILED
         )
         assert recorder.failure is not None
         assert recorder.failure.code == "recorder.cleanup_timeout"
@@ -189,3 +192,70 @@ async def test_finalization_pending_tracks_the_abandoned_worker(
         assert await asyncio.to_thread(recorder.wait_for_finalization, 5) is True
         assert recorder.finalization_pending is False
         assert recorder.completed is True
+
+
+async def test_a_deadline_landing_inside_the_terminal_commit_reports_pending(
+    tmp_path: Path,
+) -> None:
+    """Real SQLite contention on the decisive write, not a patched seam.
+
+    A second connection holds the writer lock, so the worker's
+    ``commit_completed`` blocks *inside* SQLite's ``BEGIN IMMEDIATE``. A deadline
+    that expires there cannot revoke the transaction, so the recorder must
+    report ``PENDING`` and keep its failure clear; once the lock is released the
+    session must land ``COMPLETED`` and the recorder must never have claimed a
+    failure for it.
+    """
+    with project(tmp_path) as handle:
+        recorder = ProjectRecorder(max_frames_per_segment=4)
+        await recorder.start(handle.root, stream_id=STREAM_ID)
+        session_id = recorder.data_session_id
+        assert session_id is not None
+        # Exactly fills one segment: the buffer is empty, so the flush that
+        # follows stop() touches no SQLite and the *terminal* commit is the first
+        # write to contend for the lock.
+        await recorder.append(batch(0, 4))
+        recorder.arm_stop_deadline(0.5)
+
+        connection = sqlite3.connect(
+            str(handle.root / DATABASE_FILENAME), isolation_level=None, timeout=30.0
+        )
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            stop_task = asyncio.create_task(recorder.stop())
+            async with asyncio.timeout(10):
+                while not recorder._terminal_lock.locked():
+                    await asyncio.sleep(0.005)
+
+            outcome = await asyncio.wait_for(
+                asyncio.to_thread(
+                    recorder.close_finalization_gate,
+                    code="recorder.cleanup_timeout",
+                    message="missed",
+                    recoverable=False,
+                    context={"operation": "close"},
+                ),
+                timeout=10,
+            )
+
+            assert recorder.failure is None, (
+                "a deadline inside an in-flight terminal commit must not declare a failure"
+            )
+            assert recorder.completed is False
+            from canx.recorder.project_recorder import FinalizationOutcome
+
+            assert outcome is FinalizationOutcome.PENDING
+        finally:
+            with suppress(sqlite3.Error):
+                connection.execute("ROLLBACK")
+            connection.close()
+
+        await asyncio.wait_for(stop_task, timeout=10)
+        assert await asyncio.to_thread(recorder.wait_for_finalization, 10) is True
+
+        from canx.recorder.project_recorder import FinalizationOutcome
+
+        assert recorder.finalization_outcome is FinalizationOutcome.COMPLETED
+        assert recorder.failure is None
+        stored = DataSessionService(handle.root).get_session(session_id)
+        assert stored.state is DataSessionState.COMPLETED

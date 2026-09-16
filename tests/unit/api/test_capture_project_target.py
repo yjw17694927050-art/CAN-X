@@ -53,6 +53,33 @@ async def test_a_project_capture_reports_the_data_session_it_created(tmp_path: P
         assert stored.segment_count > 0
 
 
+async def test_a_healthy_stop_reports_no_pending_finalization(tmp_path: Path) -> None:
+    """A settled stop must not leave a caller waiting for an outcome that exists.
+
+    ``status`` says ingress stopped; ``finalization_pending`` says whether the
+    durable terminal state is still being resolved. On a healthy capture the two
+    must agree that nothing is outstanding, and the status endpoint must report
+    the settled capture state right after.
+    """
+    with project(tmp_path) as handle:
+        app = create_app(runtime_service=RuntimeService(project_max_frames_per_segment=16))
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            await client.post(
+                "/capture/start",
+                json={"rate_hz": 1_000, "batch_size": 10, "project_path": str(handle.root)},
+            )
+            await asyncio.sleep(0.05)
+            stopped = await client.post("/capture/stop")
+            status = (await client.get("/runtime/status")).json()
+
+        assert stopped.status_code == 200
+        assert stopped.json() == {"status": "stopped", "finalization_pending": False}
+        assert status["capture_state"] == "idle"
+        assert status["failure"] is None
+
+
 async def test_a_capture_without_a_project_reports_a_null_data_session() -> None:
     app = create_app(runtime_service=RuntimeService())
     async with AsyncClient(

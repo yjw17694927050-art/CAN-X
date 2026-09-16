@@ -37,13 +37,18 @@ session when it resumes. The gate check and the decisive write are held under a
 separate terminal lock, so the owner's deadline declaration cannot interleave
 between them.
 
-The residual boundary, stated honestly: if the worker is *inside* that short
-terminal section when the deadline is declared, this module waits a bounded
-moment for the decision to land before reporting a verdict, and if even that
-expires (a write blocked for longer than the grace) it declares the failure
-while the decision may still land afterwards. Closing that last sliver would
-require a durable arbiter on the event loop, which would mean blocking SQLite IO
-on the realtime loop — a worse trade than the window it removes.
+**No verdict without a durable fact.** The owner can only decide the outcome
+while it holds that terminal lock: there it closes the gate, and a worker that
+has not yet taken the decision is then guaranteed to terminate ``FAILED``. Once
+the worker holds the lock instead, its decisive write is already in flight and
+nothing in-process can revoke it — ``asyncio`` cannot cancel the thread and
+SQLite cannot abort a transaction owned by another connection. The owner
+therefore reports :attr:`FinalizationOutcome.PENDING` rather than a failure it
+cannot back, and waits for the worker's real result. This is why a cleanup
+deadline expiration is *not* by itself a recorder failure: it is a failure only
+once the gate has actually been closed, or the worker has actually failed. A
+bounded stop is still bounded — it returns control without a verdict — but the
+runtime's observable terminal state can never contradict the database's.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from enum import StrEnum
 from math import isfinite
 from pathlib import Path
 
@@ -69,6 +75,20 @@ from canx.recorder.msgpack_recorder import RecorderFailure, RecorderState
 #: comparison plus one small SQLite statement, so this is generous by orders of
 #: magnitude; it is bounded so that shutdown stays bounded.
 TERMINAL_GRACE_SECONDS = 0.25
+
+
+class FinalizationOutcome(StrEnum):
+    """What is actually known about a recorder's terminal state.
+
+    Reported instead of a boolean so a caller can tell a settled verdict from an
+    unknown one. ``PENDING`` is not a deferral of a decision: it means the
+    decisive write has already begun and no in-process owner can revoke it, so
+    assuming either verdict would be inventing one.
+    """
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PENDING = "pending"
 
 
 class RecorderContinuityError(RuntimeError):
@@ -113,6 +133,7 @@ class ProjectRecorder:
         self._deadline: float | None = None
         self._completed = False
         self._finalization_in_flight = False
+        self._finalization_started = False
         self._finalization_settled = threading.Event()
         self._finalization_settled.set()
 
@@ -137,6 +158,21 @@ class ProjectRecorder:
         """
         return self._finalization_in_flight and not self._finalization_settled.is_set()
 
+    @property
+    def finalization_outcome(self) -> FinalizationOutcome:
+        """Return the terminal result of finalization, or ``PENDING`` if unknown.
+
+        Only meaningful once :meth:`stop` has been attempted; before that — and
+        while the worker still runs — the answer is ``PENDING`` rather than a
+        default verdict, so a caller can never mistake "not known yet" for
+        "failed".
+        """
+        if self._finalization_in_flight or not self._finalization_started:
+            return FinalizationOutcome.PENDING
+        if self._completed:
+            return FinalizationOutcome.COMPLETED
+        return FinalizationOutcome.FAILED
+
     def wait_for_finalization(self, timeout: float | None = None) -> bool:
         """Block until the finalization worker has settled; return whether it did.
 
@@ -150,8 +186,8 @@ class ProjectRecorder:
 
         The recorder — not the owner — decides whether a terminal transition
         still fits inside that budget, so a deadline that expires while the
-        finalization worker is blocked in disk IO prevents the session from ever
-        being committed as ``COMPLETED``, even though the worker later resumes.
+        finalization worker is blocked in disk IO keeps the decisive write from
+        ever being *started*, even though the worker later resumes.
 
         Raises:
             ValueError: If ``seconds`` is not finite and positive.
@@ -168,42 +204,54 @@ class ProjectRecorder:
         recoverable: bool,
         context: dict[str, object],
         grace_seconds: float = TERMINAL_GRACE_SECONDS,
-    ) -> bool:
-        """Declare the owner's deadline expired and settle who won.
+    ) -> FinalizationOutcome:
+        """Declare the owner's deadline expired and report what is actually known.
 
-        The gate is closed under the terminal lock, so this call cannot
-        interleave with the finalization worker's decisive write. Either the
-        worker already committed the session — in which case the deadline was a
-        reporting artifact and the caller must not invent a failure — or the gate
-        closes first and the worker is guaranteed to terminate ``FAILED``.
+        The only moment the owner can decide the outcome is while it holds the
+        terminal lock: there it can close the deadline face of the gate, and any
+        worker that has not yet taken the decision is then guaranteed to refuse
+        ``COMPLETED``. Three mechanisms cooperate, in this order: the terminal
+        lock orders this call against an in-flight decision; the deadline face of
+        the gate makes the worker refuse to complete; and a conditional
+        ``ACTIVE`` → ``FAILED`` update lets the database referee even a worker
+        blocked inside its own completion, because that completion then finds the
+        row already decided.
 
-        Three mechanisms cooperate, in this order: the terminal lock orders this
-        call against an in-flight decision; the deadline face of the gate makes
-        the worker refuse to complete; and a conditional ``ACTIVE`` → ``FAILED``
-        update lets the database referee even a worker that is blocked *inside*
-        its own completion, because that completion then finds the row decided.
+        What no in-process owner can do is revoke a decision already taken. Once
+        the worker holds the terminal lock, it has passed its gate check and its
+        decisive write is in flight; ``asyncio`` cannot cancel the thread and
+        SQLite cannot abort a transaction another thread owns. Closing the gate
+        then would be a lie — the worker may be about to commit — so this call
+        reports :attr:`FinalizationOutcome.PENDING` instead and leaves the gate
+        open for the worker to settle truthfully. The owner must then wait for
+        that worker rather than publish a verdict.
 
         Returns:
-            ``True`` when the session is ``COMPLETED`` (nothing is wrong),
-            ``False`` when the gate is closed and the session terminates
-            ``FAILED``.
+            :attr:`FinalizationOutcome.COMPLETED` when the session is durably
+            ``COMPLETED``; :attr:`FinalizationOutcome.FAILED` when the gate is
+            closed and a durable ``FAILED`` has won; and
+            :attr:`FinalizationOutcome.PENDING` when the decisive write has
+            already begun and cannot be revoked.
         """
-        acquired = self._terminal_lock.acquire(timeout=grace_seconds)
+        if not self._terminal_lock.acquire(timeout=grace_seconds):
+            # The worker is inside the protected section: its gate check has
+            # already run, so its outcome is in flight and irrevocable. Refusing
+            # to guess is the only truthful answer.
+            return FinalizationOutcome.PENDING
         try:
             if self._completed:
-                return True
+                return FinalizationOutcome.COMPLETED
             # Close the gate while the terminal lock is held, so the worker
             # cannot slip a completion in between deciding and being refused.
             self._close_gate()
         finally:
-            if acquired:
-                self._terminal_lock.release()
+            self._terminal_lock.release()
 
         state = self._settle_durable_state(grace_seconds)
         if state is DataSessionState.COMPLETED:
-            return True
+            return FinalizationOutcome.COMPLETED
         self.fail(code=code, message=message, recoverable=recoverable, context=dict(context))
-        return False
+        return FinalizationOutcome.FAILED
 
     def fail(
         self, *, code: str, message: str, recoverable: bool, context: dict[str, object]
@@ -225,6 +273,7 @@ class ProjectRecorder:
         self._deadline = None
         self._completed = False
         self._finalization_in_flight = False
+        self._finalization_started = False
         self._finalization_settled.set()
 
     async def start(self, project_root: Path, *, stream_id: str) -> None:
@@ -254,6 +303,7 @@ class ProjectRecorder:
         self._deadline = None
         self._completed = False
         self._finalization_in_flight = False
+        self._finalization_started = False
         self._finalization_settled.set()
         self.state = RecorderState.RECORDING
 
@@ -282,11 +332,14 @@ class ProjectRecorder:
     async def stop(self) -> None:
         """Flush and take the gated terminal decision for the session.
 
-        A healthy session finalizes to ``COMPLETED``; any recorded failure — or a
-        deadline that expired while the worker was still running — turns it into
-        ``FAILED`` with the committed segments left untouched, because presenting
-        a lossy recording as ``COMPLETED`` would misrepresent the data as
-        evidence.
+        A healthy session finalizes to ``COMPLETED``; a recorded failure — or a
+        deadline that expired before the decisive write was started — turns it
+        into ``FAILED`` with the committed segments left untouched, because
+        presenting a lossy recording as ``COMPLETED`` would misrepresent the data
+        as evidence. A deadline that expires *while* the decisive write is in
+        flight is not a verdict at all: see
+        :meth:`close_finalization_gate` and
+        :attr:`finalization_outcome`.
 
         When the owner's deadline cancels this coroutine, the worker keeps
         running (``asyncio`` cannot stop a thread) and :attr:`finalization_pending`
@@ -296,6 +349,7 @@ class ProjectRecorder:
         writer = self._writer
         if writer is None:
             return
+        self._finalization_started = True
         self._finalization_in_flight = True
         self._finalization_settled.clear()
         try:

@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04-FINAL Recorder Cleanup Timeout Lifecycle Consistency
+> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04-FINAL-2 Terminal Commit / Cleanup Timeout Atomicity
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -1202,9 +1202,11 @@ source 侧读回（由 .exe 进程产出的文件；帧数随运行时序而异�
 ```text
 1  archive path 是无损的，因此 sequence gap 只可能出现在已经可观测的失败之后；
    recorder 仍显式拒绝 gap（recorder.sequence_gap），不会把不完整录制呈现为完整。
-2  cleanup timeout 是一次 recorder failure：一旦声明，该 DataSession 就再也不可能
-   变成 COMPLETED。已经 committed 的 Parquet segment 仍然有效可查，而 session 以
-   FAILED 终止。（V0.2-04 独立验收曾在此发现 P1；见 V0.2-04-FINAL。）
+2  cleanup timeout 只在「终态判定确实已落定」时才算一次 recorder failure：gate 关闭
+   后该 DataSession 再也不可能变成 COMPLETED，已经 committed 的 Parquet segment 仍然
+   有效可查，session 以 FAILED 终止。若 deadline 到期时终态写入已经不可撤销地执行中，
+   runtime 不再猜测结论，而是进入 finalizing 并等待 worker 的真实结果。
+   （V0.2-04 独立验收曾在此发现 P1；见 V0.2-04-FINAL 与 V0.2-04-FINAL-2。）
 3  DataSessionWriter.fail() 的落库是 best-effort：内存状态在该 writer 生命周期内是
    权威；未落库的 FAILED 只能被显式 recovery 变成 INTERRUPTED。
 4  data_session_id 只在 recorder 仍持有活动 session 时非空（即 start 之后、stop 之前）。
@@ -1232,6 +1234,9 @@ Implementation complete
 Local verification complete
 Independent acceptance: Conditional PASS（一项 P1）
 Final remediation completed（V0.2-04-FINAL，见下）
+Final Acceptance: NOT PASS
+Remaining P1: terminal SQLite commit in-flight race
+FINAL-2 remediation completed（V0.2-04-FINAL-2，见下）
 ```
 
 ### Step V0.2-04-FINAL — Recorder Cleanup Timeout Lifecycle Consistency
@@ -1279,28 +1284,44 @@ ProjectRecorder
   终态决策                     gate = failure flag + armed deadline + 剩余预算；
                                只在 gate 打开且预算足够时提交 COMPLETED
   终态锁                       声明 deadline 与决策互斥，不会交错
-  close_finalization_gate()    有序裁定：已 COMPLETED 则返回 True（不报失败）；
-                               否则关闭 gate 并做一次条件式 ACTIVE → FAILED 仲裁
+  close_finalization_gate()    有序裁定，返回三态（V0.2-04-FINAL-2 加入第三态）：
+                               · 已 COMPLETED → COMPLETED（不报失败）
+                               · 取得终态锁 → 关闭 gate + 一次条件式 ACTIVE → FAILED
+                                 仲裁 → FAILED（此时 FAILED 已真正赢下）
+                               · 拿不到终态锁（终态写入已不可撤销地执行中）→ PENDING，
+                                 不发布任何 terminal verdict
+  finalization_outcome         COMPLETED / FAILED / PENDING：唯一的终态事实来源
   finalization_pending / wait_for_finalization  证明被放弃的 worker 是否真的退出
 
 RuntimeService
   _cleanup_recorder           stop() 前 arm_stop_deadline
-  _handle_recorder_timeout    由 recorder 裁定；只有确实未完成才上报
-                              recorder.cleanup_timeout
-  start_capture               旧 persistence worker 未退出时拒绝新 project capture
+  _handle_recorder_timeout    由 recorder 裁定：COMPLETED → 不上报；FAILED → 上报
+                              recorder.cleanup_timeout；PENDING → 进入 finalizing
+  _begin_pending_finalization 启动唯一一个 owned settlement task（每 capture 至多一个，
+                              不是 fire-and-forget）
+  _settle_pending_finalization 等 worker 真正退出 → 读 finalization_outcome：
+                              COMPLETED 则 settle 成 idle；否则才发布 cleanup_timeout
+  start_capture               上一 capture 终态未落定时拒绝新 project capture
                               （capture.finalization_pending，recoverable）
+  aclose                       shutdown：bounded 等待 settlement，超时取消并留给
+                              worker / 显式 recovery，绝不猜结论
 ```
 
-固定语义（修复后）：
+固定语义：
 
 ```text
 healthy stop        flush → 预算内提交 → COMPLETED，runtime failure = None
 recorder failure    backpressure / 写盘失败 / sequence gap → FAILED
-cleanup timeout     → FAILED（无论被放弃的 worker 之后是否恢复）
-                    已经 committed 的 segment 全部保留且可查
-worker 在超时后恢复  仍不能提交 COMPLETED：内存 gate 拒绝，数据库终态仲裁兜底
+cleanup timeout     → deadline 到期时若终态判定尚未开始：FAILED（durable，worker 之后
+                      恢复也无法翻盘，已 committed 的 segment 全部保留且可查）
+                    → deadline 到期时若终态写入已不可撤销地执行中：不发布 verdict，
+                      进入 finalizing，等 worker 的真实结果（V0.2-04-FINAL-2 修正：
+                      此时「deadline 到期 ⇒ FAILED」并不成立，见下）
+worker 在超时后恢复  在 gate 已关闭的路径上仍不能提交 COMPLETED：内存 gate 拒绝，
+                      数据库终态仲裁兜底
 repeated stop       幂等、有界，不会把 FAILED 改回 COMPLETED
-timeout 的意义      未改变（仍是 bounded stop 的 observability/safety 机制）
+timeout 的意义      未改变（仍是 bounded stop 的 observability/safety 机制）；
+                      bounded stop 可以返回 finalizing，而不是伪造一个终态
 ```
 
 本机验证（2026-09-16，V0.2-04-FINAL）：
@@ -1329,16 +1350,235 @@ in-suite project soak                       generated 15,998 / persisted 15,998 
 
 ```text
 抢在 deadline 之前就已提交的 COMPLETED 是真实结果，不会被事后改写成 FAILED；
-此时 runtime 不报 cleanup_timeout（由 close_finalization_gate 的裁定保证，
-不存在 “Runtime FAILED + DataSession COMPLETED” 的矛盾态）。
+此时 runtime 不报 cleanup_timeout，不存在 “Runtime FAILED + DataSession COMPLETED”
+的矛盾态。
 被放弃的 worker 若永久挂死在磁盘 IO 上，session 可能保持 ACTIVE 而无法及时落成
 FAILED；但它同样永远不可能变成 COMPLETED，且可被显式 recovery 变成 INTERRUPTED。
+（本增量当时的 close_finalization_gate 只有两态，在 “终态写入已执行中” 的窗口里
+会发布一个尚未被持久化事实支撑的 verdict；V0.2-04-FINAL-2 用第三态修正，见下。）
 ```
 
 状态：
 
 ```text
 V0.2-04-FINAL remediation complete
+Awaiting final independent acceptance
+→ 该轮独立验收：V0.2-04 Final Acceptance: NOT PASS
+  剩余唯一阻塞项：P1 — terminal SQLite commit may already be in-flight
+  定向修复见 V0.2-04-FINAL-2
+```
+
+本轮只做了实现 + 自验证。**不自行宣布 Final Acceptance: PASS**；
+最终独立验收由 ChatGPT / 项目负责人执行。
+
+---
+
+### Step V0.2-04-FINAL-2 — Terminal Commit / Cleanup Timeout Atomicity
+
+V0.2-04 的最终独立验收结论为 **NOT PASS**，剩余唯一阻塞项：
+
+```text
+P1 — terminal SQLite commit may already be in-flight
+     when Runtime declares recorder.cleanup_timeout
+```
+
+根因：
+
+```text
+V0.2-04-FINAL 的 gate 把「owner 的 deadline 声明」与「worker 的终态决策」互斥起来，
+但只把 owner 拿得到终态锁的情形处理完整。剩余窗口：
+
+ProjectRecorder worker
+  → _gate_open() == True（在决定之前就已经通过 gate 判定）
+  → 取得 _terminal_lock → 进入 writer.commit_completed()
+  → SQLite BEGIN IMMEDIATE 真正阻塞（另一个连接持有写锁）
+同时 Runtime cleanup deadline 到期
+  → close_finalization_gate 拿不到终态锁
+  → 旧实现仍继续 _settle_durable_state 并（写锁拿不到、仲裁 join 超时后）发布
+    recorder.cleanup_timeout
+  → 之后 external lock 释放，worker 的 COMPLETED 事务完全可能先 commit
+
+结果：Runtime 已说 FAILED，数据库说 COMPLETED —— 仍是同一个矛盾。
+旧测试 test_a_worker_blocked_inside_its_own_completion_still_loses 把整个
+commit_completed 包起来、在进入真实函数之前阻塞，构造的其实是
+blocked BEFORE terminal SQLite transaction，没有覆盖这个窗口。
+```
+
+可行性结论（先回答，再改代码；方法论：deadline 到期只说明 bounded stop 必须返回，
+不说明必须伪造一个 terminal verdict）：
+
+```text
+Question A  已在另一个不可取消 Python 线程里执行的 SQLite 终态事务，能否在
+            bounded deadline 内被 owner 强制阻止提交？
+Answer A    No。asyncio 无法取消线程；该 connection 属于 worker 线程，owner 既无
+            句柄也无撤销语义；BEGIN IMMEDIATE 发出后，release 时谁先拿到写锁
+            由 SQLite 决定，不受 owner 控制。不存在「保证 timeout 声明先赢」的实现。
+
+Question B  能否在不阻塞 realtime event loop 的前提下引入真正可撤销的 durable
+            commit protocol？
+Answer B    No（可行但换不回正确性）。任何 fence 都要先写库，owner 写 fence 与
+            worker 写 COMPLETED 争同一把 SQLite 写锁，同样无法在 bounded 时间内
+            保证顺序；改文件 sentinel 则 worker 可在检查之后、COMMIT 之前越过，
+            仍需要一个不可撤销的仲裁点。结论：本架构内无法证明
+            「once timeout published, COMPLETED can never win」。
+
+Question C  Runtime 是否应在终态事务已 in-flight 时不再宣布 cleanup_timeout，
+            改为 pending 直到 durable 终态已知？
+Answer C    Yes —— 本轮采用（Option A：pending finalization semantics）。
+```
+
+采用的 lifecycle 语义：
+
+```text
+ProjectRecorder.close_finalization_gate() 返回三态 FinalizationOutcome：
+  COMPLETED  已 durably COMPLETED（deadline 只是报表晚了，不报失败）
+  FAILED     owner 取得了终态锁 → 关闭 gate + 条件式 ACTIVE → FAILED 仲裁：
+             此时 FAILED 已经真正赢下，worker 之后恢复也无法提交 COMPLETED
+  PENDING    owner 拿不到终态锁 → 终态写入已不可撤销地执行中 →
+             不发布任何 terminal verdict，也不碰数据库
+
+ProjectRecorder.finalization_outcome（新）：COMPLETED / FAILED / PENDING
+  唯一的终态事实来源；未 finalize 或 worker 未退出时返回 PENDING，
+  绝不 default 成 FAILED。
+
+RuntimeService（新增 CaptureSessionState.FINALIZING）
+  PENDING → _begin_pending_finalization()：
+    启动唯一一个 owned settlement task（每 capture 至多一个），
+    capture_state = finalizing，failure 保持 None
+  _settle_pending_finalization()：
+    await worker 真正退出 → 读 finalization_outcome
+      COMPLETED → settle 成 idle，failure 保持 None
+      否则      → 此时 gate 已关、durable 已是 FAILED → 才发布 cleanup_timeout
+
+不允许的路径：先发布 FAILED、后 DataSession COMPLETED（本轮消灭）。
+```
+
+正常 / 失败 / 四种 timeout 情形：
+
+```text
+healthy stop        RUNNING → stop → FINALIZING → 预算内 COMPLETED → IDLE
+recorder failure    RUNNING → backpressure / 写盘失败 / sequence gap → FAILED
+deadline 在终态事务开始之前到期（worker 仍在 flush）
+                    gate 关闭 → durable FAILED → 发布 recorder.cleanup_timeout
+deadline 在终态事务已不可撤销地执行中到期
+                    不发布 terminal failure → 返回 bounded control → finalizing
+                    background finalization settle
+                      ├─ COMPLETED → idle（failure 始终为 None）
+                      └─ FAILED    → FAILED + diagnostic
+```
+
+bounded stop / next capture / shutdown：
+
+```text
+bounded stop     stop_capture() 仍有界：终态未确定时返回 finalizing，而不是
+                 await persistence forever，也不伪造终态。
+                 /capture/stop 现在返回
+                 {"status": "stopped", "finalization_pending": <bool>}
+                 「stopped」仍表示 capture ingress 已停止；finalization_pending
+                 单独表达 durable 终态是否已落定。
+
+next capture     finalization 未落定期间拒绝一切新 capture（project-backed 与
+                 realtime-only 都拒绝，capture.finalization_pending，recoverable）。
+                 原因：settlement task 会写 _capture_state / _failure，新 capture
+                 若在其下启动会被晚到的 settle 覆盖。settle 之后新 capture 正常。
+
+repeated stop    幂等、有界；不会 spawn 第二个 settlement task，也不改变结论。
+
+shutdown         FastAPI lifespan 改为 service.aclose()：bounded 等待 settlement，
+                 超预算则取消该 owned task，把 durable 行留给 worker 或显式
+                 recovery（ACTIVE → INTERRUPTED）。进程退出不制造矛盾态，也不留
+                 未处理的 task 异常。settlement task 始终 owned（保存引用、显式
+                 await/cancel），不是 fire-and-forget。
+```
+
+真实 SQLite contention 测试（本轮硬要求）：
+
+```text
+不 monkeypatch commit_completed 的入口来伪造阻塞。
+用第二个真实 SQLite connection 持有 writer lock：
+    sqlite3.connect(project.db, isolation_level=None) → BEGIN IMMEDIATE
+让 worker 真正阻塞在 SQLite 的锁竞争点。
+
+· tests/unit/recorder/test_project_recorder_gate.py
+    test_a_deadline_landing_inside_the_terminal_commit_reports_pending
+    buffer 为空（正好填满一个 segment）→ flush 不碰库 → 轮询到
+    recorder._terminal_lock.locked() 证明 worker 已在终态临界区 →
+    close_finalization_gate → PENDING 且 failure 仍为 None →
+    释放锁 → finalization_outcome == COMPLETED，DataSession == COMPLETED
+· tests/integration/test_recorder_cleanup_timeout.py
+    test_a_terminal_commit_already_in_flight_is_never_pre_judged_failed
+    Runtime 级：stop 返回时 failure 必须为 None、capture_state == finalizing；
+    释放锁 → settle → failure 仍为 None、capture_state == idle、
+    DataSession == COMPLETED
+```
+
+RED → GREEN 证据：
+
+```text
+修复前（同一真实 contention 测试）：
+  tests/integration/test_recorder_cleanup_timeout.py:418
+  AssertionError: assert RecorderFailure(code='recorder.cleanup_timeout', ...) is None
+即：终态尚不可知时 Runtime 已经发布了 terminal failure。
+修复后：全部通过（见下）。
+```
+
+本机验证（2026-09-16，V0.2-04-FINAL-2）：
+
+```text
+full pytest                          646 passed
+  （本增量前 641；净增 5 例）
+  tests/integration/test_recorder_cleanup_timeout.py
+    · 新增：真实 SQLite contention 下不预判失败（Test A）
+    · 新增：pending 阻塞新 capture（project-backed + realtime-only）/ 重复 stop
+      幂等且不产生重复 settlement（Test D/E）
+    · 新增：pending 时 shutdown 有界且不制造矛盾（Test F）
+    · 改写：worker 越过 gate 判定后被 settle 而非被 condemn
+      （原 test_a_worker_blocked_inside_its_own_completion_still_loses）
+    · 保留：timeout 在终态事务开始前到期 → FAILED（Test B）
+  tests/unit/recorder/test_project_recorder_gate.py
+    · 新增：真实锁竞争下 PENDING → 释锁后 COMPLETED
+    · 更新：close_finalization_gate 三态断言
+  tests/unit/data/test_session_writer_failure.py（未改）
+    · 保留：completion_refused 数据层仲裁（Test C）
+  tests/unit/api/test_capture_project_target.py
+    · 新增：健康 stop 返回 {"status": "stopped", "finalization_pending": false}
+ruff check runtime tests tools       exit 0
+mypy runtime                         exit 0 (50 source files)
+scripts\package-windows.cmd          exit 0
+  · packaged-runtime smoke           2 passed
+  · packaged project-backed smoke    COMPLETED + Parquet + query readback
+  · build\runtime-dist\canx-runtime.exe   46,502,727 bytes
+  · MSI                              CAN-X_0.1.0_x64_en-US.msi
+in-suite project soak               generated 14913 / captured 14913 /
+                                    persisted 14913 / 0 gaps / 0 failures /
+                                    state completed（无回退）
+```
+
+Data semantics（未改变）：
+
+```text
+committed Parquet segments survive
+frame_count 只反映已注册 segment
+FAILED 不伪造 ended_at；COMPLETED 必有 ended_at
+ACTIVE 仍可由显式 recovery 变成 INTERRUPTED
+Frame / Parquet / SQLite schema 均未改变；user_version 未升级；未新增依赖
+```
+
+已知限制（诚实记录）：
+
+```text
+被放弃的 worker 若永久挂死在磁盘 IO 上，session 会保持 ACTIVE，runtime 停留在
+finalizing；此时新 capture 被持续拒绝（capture.finalization_pending），直到
+worker 退出，或进程退出后由显式 recovery 把它变成 INTERRUPTED。
+这是设计选择：终态未知时保持 pending，而不是编造一个 verdict。
+若进程在 finalizing 中退出，durable 行可能是 ACTIVE，由显式
+DataSessionService.recover_incomplete_sessions() 变成 INTERRUPTED —— 允许，且已记录。
+```
+
+状态：
+
+```text
+V0.2-04-FINAL-2 remediation complete
 Awaiting final independent acceptance
 ```
 
@@ -1854,13 +2094,17 @@ V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service 已完成实�
 
 V0.2-04 Project-Backed Capture Persistence Integration 已完成实现与本机验证，
 独立验收结论 **Conditional PASS**（唯一阻塞项：P1 recorder cleanup timeout
-lifecycle race）。定向修复 V0.2-04-FINAL 已完成（见 §18 Step V0.2-04-FINAL）：
-**V0.2-04-FINAL remediation complete / Awaiting final independent acceptance**。
+lifecycle race）。定向修复 V0.2-04-FINAL 已完成；该轮最终独立验收为
+**V0.2-04 Final Acceptance: NOT PASS**，剩余唯一阻塞项是
+**P1 — terminal SQLite commit may already be in-flight**，已由 V0.2-04-FINAL-2
+定向修复（见 §18 Step V0.2-04-FINAL-2）：**V0.2-04-FINAL-2 remediation complete /
+Awaiting final independent acceptance**。
 本阶段把实时 Capture 正式接入 Project → DataSession → Parquet 持久化链路，并让
-runtime 一旦声明 recorder cleanup timeout，该 DataSession 就再也不可能变成
-COMPLETED；packaged `canx-runtime.exe` 真正执行了 Parquet 写入路径
-（**Packaged Parquet execution path: VERIFIED**，Packaged DuckDB query path 仍为
-NOT VERIFIED）。
+runtime 的可观察终态始终与 SQLite 的真实持久化终态一致：cleanup timeout 只在
+durable verdict 确实落定时才被声明；终态写入已在执行中时 runtime 进入 finalizing
+并等待 worker 的真实结果，而不是猜测结论。packaged `canx-runtime.exe` 真正执行了
+Parquet 写入路径（**Packaged Parquet execution path: VERIFIED**，
+Packaged DuckDB query path 仍为 NOT VERIFIED）。
 
 状态：
 
@@ -1889,7 +2133,9 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-04 local verification       ✅ done
 ├── V0.2-04 independent acceptance   ✅ Conditional PASS (1 P1)
 ├── V0.2-04-FINAL remediation        ✅ done
-└── V0.2-04 final acceptance         ⏳ awaiting
+├── V0.2-04 final acceptance         ❌ NOT PASS (1 P1)
+├── V0.2-04-FINAL-2 remediation      ✅ done
+└── V0.2-04 final acceptance (2nd)   ⏳ awaiting
 ```
 
 ---

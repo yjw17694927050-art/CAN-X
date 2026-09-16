@@ -21,17 +21,25 @@ from canx.metrics.models import MetricsSnapshot
 from canx.project.errors import ProjectError
 from canx.project.service import ProjectService
 from canx.recorder.msgpack_recorder import MsgpackRecorder, RecorderFailure, RecorderState
-from canx.recorder.project_recorder import ProjectRecorder
+from canx.recorder.project_recorder import FinalizationOutcome, ProjectRecorder
 from canx.runtime.errors import CaptureConfigurationError
 from canx.transport.broker import BatchBroker
 
 
 class CaptureSessionState(StrEnum):
-    """Capture outcome, independent of control-plane process readiness."""
+    """Capture outcome, independent of control-plane process readiness.
+
+    ``FINALIZING`` is deliberately distinct from ``FAILED``: capture ingress has
+    stopped and the runtime no longer holds a session, but a project-backed
+    recording's terminal state is not yet durably known because its decisive
+    write was already in flight. Reporting that as a failure would be a verdict
+    the database may later contradict.
+    """
 
     IDLE = "idle"
     RUNNING = "running"
     DEGRADED = "degraded"
+    FINALIZING = "finalizing"
     FAILED = "failed"
 
 
@@ -98,6 +106,7 @@ class RuntimeService:
         self._project_recorder_factory = project_recorder_factory
         self._last_project_recorder: ProjectRecorder | None = None
         self._last_project_session_id: str | None = None
+        self._finalization_settlement_task: asyncio.Task[None] | None = None
         self._active_channels = 0
         self._generated_total = 0
         self._captured_total = 0
@@ -136,12 +145,24 @@ class RuntimeService:
         return None
 
     @property
-    def _pending_finalization(self) -> ProjectRecorder | None:
-        """Return the recorder whose abandoned persistence worker is still running."""
+    def _finalization_outstanding(self) -> bool:
+        """Return whether a project finalization has not fully settled yet.
+
+        Two things can be outstanding: the abandoned persistence worker itself,
+        and the single task that waits for it and then settles the runtime. Both
+        must clear before the project can be recorded again, otherwise a new
+        capture would race the old worker's terminal write and then have its
+        state clobbered by that worker's late settlement.
+        """
+        if self._finalization_settlement_task is not None:
+            return True
         recorder = self._last_project_recorder
-        if recorder is not None and recorder.finalization_pending:
-            return recorder
-        return None
+        return recorder is not None and recorder.finalization_pending
+
+    @property
+    def finalization_pending(self) -> bool:
+        """Return whether a project recording's terminal state is unsettled."""
+        return self._finalization_outstanding
 
     def wait_for_finalization(self, timeout: float | None = None) -> bool:
         """Block until an outstanding project persistence worker has exited.
@@ -155,6 +176,48 @@ class RuntimeService:
         if recorder is None:
             return True
         return recorder.wait_for_finalization(timeout)
+
+    async def wait_for_finalization_settlement(self) -> None:
+        """Await the one owned task that resolves a pending finalization.
+
+        A cleanup deadline that landed while a decisive terminal write was
+        already in flight returns bounded control while the outcome is still
+        unknown. This awaits the task that settles it; it is a no-op when nothing
+        is pending.
+        """
+        task = self._finalization_settlement_task
+        if task is None:
+            return
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise
+
+    async def aclose(self) -> None:
+        """Stop capture and settle or abandon a pending finalization, bounded.
+
+        Shutdown must not wait indefinitely for a persistence worker SQLite is
+        still holding: the settlement task is cancelled once the cleanup budget
+        is spent, and the durable row is left for the worker — or, if the process
+        exits first, for explicit recovery to ``INTERRUPTED``. What is forbidden
+        is guessing: no failure is ever published for a finalization that has not
+        settled, so shutdown can leave ``FINALIZING`` but never a contradiction.
+        """
+        await self.stop_capture()
+        task = self._finalization_settlement_task
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=self._recorder_cleanup_timeout_seconds
+            )
+            return
+        except TimeoutError:
+            pass
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     @property
     def _consumer_tasks(self) -> tuple[asyncio.Task[None], ...]:
@@ -226,10 +289,13 @@ class RuntimeService:
         # Validated before anything is created: a rejected target must not leave a
         # pipeline, a session row or a directory behind.
         project_root = None if project_path is None else self._require_project(project_path)
-        if project_root is not None and self._pending_finalization is not None:
+        # A pending finalization owns the shared capture state until it settles —
+        # it writes ``_capture_state`` and ``_failure`` from a background task. No
+        # new capture, project-backed or realtime-only, may start underneath it.
+        if self._finalization_outstanding:
             raise CaptureConfigurationError(
                 "The previous capture's persistence worker has not finished yet;"
-                " the project cannot be recorded again until it exits.",
+                " no new capture can start until its outcome is settled.",
                 code="capture.finalization_pending",
                 details={"data_session_id": self._last_project_session_id},
                 recoverable=True,
@@ -424,9 +490,16 @@ class RuntimeService:
         self._active_channels = 0
         for queue_metric in ("ingress_queue_depth", "recorder_queue_depth", "stream_queue_depth"):
             self.metrics.observe_queue(queue_metric, 0)
-        self._capture_state = (
-            CaptureSessionState.FAILED if self._failure is not None else CaptureSessionState.IDLE
-        )
+        if self._failure is not None:
+            # A verdict is already grounded durably, even if the abandoned worker
+            # has not exited yet — that lingering thread is not an unknown outcome.
+            self._capture_state = CaptureSessionState.FAILED
+        elif self._finalization_outstanding:
+            # Bounded stop returned without a terminal verdict: the recording's
+            # durable outcome is still being settled by its own worker.
+            self._capture_state = CaptureSessionState.FINALIZING
+        else:
+            self._capture_state = CaptureSessionState.IDLE
 
     def _handle_subscriber_failure(self, failure: SubscriberFailure) -> None:
         if failure.subscriber != "archive":
@@ -519,27 +592,93 @@ class RuntimeService:
             )
 
     def _handle_recorder_timeout(self, recorder: MsgpackRecorder | ProjectRecorder) -> None:
-        """Record a missed recorder deadline, unless the recorder beat it.
+        """Record a missed recorder deadline only when a verdict is actually known.
 
         A project-backed recorder settles the outcome itself — the session is
         either durably ``FAILED``, or it completed inside the budget and only its
-        reporting was late. In the latter case there is no failure to declare: a
-        completed recording must not be reported as a failed one.
+        reporting was late, or its decisive write was already in flight and no
+        verdict exists yet. Only the first of those is a failure to declare: a
+        completed recording must never be reported as failed, and a recording
+        whose terminal state is still unknown must not be guessed at either.
         """
         if isinstance(recorder, ProjectRecorder):
-            committed = recorder.close_finalization_gate(
+            outcome = recorder.close_finalization_gate(
                 code="recorder.cleanup_timeout",
                 message="Recorder close exceeded its cleanup deadline",
                 recoverable=False,
                 context={"stream_id": self._stream_id, "operation": "close"},
             )
-            if committed:
+            if outcome is FinalizationOutcome.COMPLETED:
+                return
+            if outcome is FinalizationOutcome.PENDING:
+                self._begin_pending_finalization(recorder)
                 return
         self._handle_recorder_failure(
             code="recorder.cleanup_timeout",
             message="Recorder close exceeded its cleanup deadline",
             context={"stream_id": self._stream_id, "operation": "close"},
         )
+
+    def _begin_pending_finalization(self, recorder: ProjectRecorder) -> None:
+        """Own the single settlement of a finalization whose outcome is unknown.
+
+        The deadline returned bounded control without a verdict, so exactly one
+        owned task — never a fire-and-forget coroutine — waits for the worker and
+        then settles the runtime from the durable result. Repeated ownership is a
+        no-op: one settlement task per capture.
+        """
+        self._capture_state = CaptureSessionState.FINALIZING
+        if self._finalization_settlement_task is not None:
+            return
+        self._finalization_settlement_task = asyncio.create_task(
+            self._settle_pending_finalization(recorder),
+            name="canx-finalization-settlement",
+        )
+
+    async def _settle_pending_finalization(self, recorder: ProjectRecorder) -> None:
+        """Wait for the abandoned worker, then settle the runtime from its result.
+
+        The recorder is the only source of truth here: reading the durable
+        session directly would race the very worker being waited for. A worker
+        that ends ``COMPLETED`` settles the capture as a success; anything else
+        — including a worker that failed on its own — settles it as the failure
+        the durable row already reflects.
+        """
+        outcome = FinalizationOutcome.PENDING
+        try:
+            await asyncio.to_thread(recorder.wait_for_finalization)
+            outcome = recorder.finalization_outcome
+        finally:
+            self._finalization_settlement_task = None
+        if outcome is FinalizationOutcome.COMPLETED:
+            if self._failure is None:
+                self._capture_state = CaptureSessionState.IDLE
+            return
+        self._publish_pending_finalization_failure()
+
+    def _publish_pending_finalization_failure(self) -> None:
+        """Publish the missed deadline only once the worker has settled.
+
+        By the time this runs the gate is closed and the durable row is
+        ``FAILED``, so the runtime's verdict can no longer be contradicted by a
+        later ``COMPLETED``.
+        """
+        if self._failure is not None:
+            self._capture_state = CaptureSessionState.FAILED
+            return
+        recorder = self._last_project_recorder or self._recorder
+        context: dict[str, object] = {"stream_id": self._stream_id, "operation": "finalize"}
+        if self._last_project_session_id is not None:
+            context["data_session_id"] = self._last_project_session_id
+        recorder.fail(
+            code="recorder.cleanup_timeout",
+            message="Recorder close exceeded its cleanup deadline",
+            recoverable=False,
+            context=context,
+        )
+        self._failure = recorder.failure
+        self.metrics.increment("recorder_failures")
+        self._capture_state = CaptureSessionState.FAILED
 
     async def _run_consumer(
         self,
