@@ -9,6 +9,7 @@ description = "Headless CAN runtime for CAN-X"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+  "cantools==44.0.0",
   "duckdb==1.5.5",
   "fastapi==0.141.1",
   "msgpack==1.2.2",
