@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-15  
-> **Current Phase**: V0.1 completed → V0.1.1 Acceptance Hardening pending  
+> **Current Phase**: V0.1.1 Acceptance Hardening implemented → independent acceptance pending  
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -709,16 +709,17 @@ Benchmark
 重点：
 
 ```text
-Recorder backpressure P0
-Shared frontend realtime stream
-Recorder saturation tests
-Recorder soak tests
-Packaged Python runtime proof
-Desktop smoke test
-Performance instrumentation
-Documentation consistency
+Recorder backpressure P0            ✅
+Shared frontend realtime stream     ✅
+Recorder saturation tests           ✅
+Recorder soak tests                 ✅
+Packaged Python runtime proof       ✅
+Desktop smoke test                  ◑ runtime verified; window NOT VERIFIED
+Performance instrumentation         ◑ worker decode measured; UI/runtime latency NOT VERIFIED
+Documentation consistency           ✅
 ```
 
+V0.1.1 implementation is complete; see `docs/V0.1.1_ACCEPTANCE_REPORT.md` for evidence.
 完成后重新验收。
 
 只有 PASS / acceptable Conditional PASS 才进入 V0.2。
@@ -1004,9 +1005,11 @@ Private AI deployment
 
 ---
 
-# 25. Current P0 Issue
+# 25. P0 — Recorder Backpressure Saturation
 
-当前需要优先关闭：
+**Status: RESOLVED in V0.1.1.** Normative decision in `docs/ADR/0001-recorder-pressure-policy.md`. Capture now continues after a recorder pressure or write failure while the session becomes `degraded`; the archive enqueue has a finite deadline, loss is explicit and observable, and stop stays bounded. Evidence: `tests/unit/capture/test_pipeline.py`, `tests/integration/test_recorder_independence.py` (saturation + slow-disk soak), and the API lifecycle tests. See `docs/V0.1.1_ACCEPTANCE_REPORT.md`.
+
+> Historical V0.1 issue description below.
 
 # Recorder Backpressure Saturation
 
@@ -1037,22 +1040,20 @@ archive queue full
 
 ---
 
-# 26. Other Current Gaps
+# 26. Current Gaps
 
-当前还需要逐步解决：
+V0.1.1 status (evidence in `docs/V0.1.1_ACCEPTANCE_REPORT.md`):
 
 ```text
-AGENTS.md naming consistency
-shared frontend stream
-packaged Python runtime
-Tauri self-contained distribution
-desktop launch smoke test
-end-to-end stream latency
-Trace latency
-Plot latency
-UI pressure performance
-real CAN hardware
-macOS validation
+RESOLVED      AGENTS.md naming consistency
+RESOLVED      shared frontend realtime stream (single store; Trace + Plot)
+RESOLVED      packaged Python runtime proof (canx-runtime.exe)
+RESOLVED      Tauri distribution proof (MSI bundle includes the sidecar)
+PARTIAL       desktop smoke test — runtime half verified, window NOT VERIFIED
+PARTIAL       realtime/UI latency — worker decode measured, UI/runtime latency NOT VERIFIED
+DEFERRED      UI pressure performance
+NOT VERIFIED  real CAN hardware
+NOT VERIFIED  macOS validation
 ```
 
 其中：
@@ -1249,16 +1250,16 @@ Result recorded
 
 # 32. Immediate Next Action
 
-当前禁止直接进入 V0.2。
+V0.1.1 实现已完成（见 `docs/V0.1.1_ACCEPTANCE_REPORT.md`）。当前禁止直接进入 V0.2。
 
 下一任务：
 
 # CAN-X V0.1.1 Acceptance Hardening
 
-完成后：
+状态：
 
 ```text
-Harness implementation
+Harness implementation              ✅ done
 ↓
 push GitHub
 ↓
