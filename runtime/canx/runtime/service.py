@@ -5,6 +5,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from enum import StrEnum
+from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
@@ -36,10 +37,20 @@ class RuntimeService:
         *,
         history_capacity: int = 100_000,
         recorder: MsgpackRecorder | None = None,
+        archive_capacity: int | None = None,
         archive_publish_timeout_seconds: float = 1.0,
+        recorder_cleanup_timeout_seconds: float = 1.0,
     ) -> None:
         if history_capacity <= 0:
             raise ValueError("history_capacity must be positive")
+        if archive_capacity is not None and archive_capacity <= 0:
+            raise ValueError("archive_capacity must be positive")
+        for name, timeout in (
+            ("archive_publish_timeout_seconds", archive_publish_timeout_seconds),
+            ("recorder_cleanup_timeout_seconds", recorder_cleanup_timeout_seconds),
+        ):
+            if not isfinite(timeout) or timeout <= 0:
+                raise ValueError(f"{name} must be finite and positive")
         self.broker = BatchBroker()
         self.metrics = MetricsCollector()
         self._history: deque[Frame] = deque(maxlen=history_capacity)
@@ -48,8 +59,11 @@ class RuntimeService:
         self._stream_subscriber: FrameSubscriber | None = None
         self._archive_task: asyncio.Task[None] | None = None
         self._stream_task: asyncio.Task[None] | None = None
+        self._recorder_cleanup_task: asyncio.Task[None] | None = None
         self._archive_pending_frames = 0
+        self._archive_capacity = archive_capacity
         self._archive_publish_timeout_seconds = archive_publish_timeout_seconds
+        self._recorder_cleanup_timeout_seconds = recorder_cleanup_timeout_seconds
         self._capture_state = CaptureSessionState.IDLE
         self._failure: RecorderFailure | None = None
         self._stop_event = asyncio.Event()
@@ -122,7 +136,11 @@ class RuntimeService:
         pipeline = CapturePipeline(VirtualAdapter(config), self._handle_subscriber_failure)
         archive_subscriber = pipeline.subscribe(
             "archive",
-            capacity=max(batch_size * 4, 1_000),
+            capacity=(
+                max(batch_size * 4, 1_000)
+                if self._archive_capacity is None
+                else self._archive_capacity
+            ),
             lossy=False,
             publish_timeout_seconds=self._archive_publish_timeout_seconds,
         )
@@ -177,8 +195,8 @@ class RuntimeService:
             self._stream_subscriber = None
             self._active_channels = 0
             self._capture_state = CaptureSessionState.FAILED
-            with suppress(OSError):
-                await self._recorder.stop()
+            await self._ensure_recorder_cleanup()
+            self._recorder_cleanup_task = None
             raise
         self._failure = None
         self._capture_state = CaptureSessionState.RUNNING
@@ -201,21 +219,30 @@ class RuntimeService:
         if self._stream_subscriber is not None:
             self._subscriber_drops_total += self._stream_subscriber.dropped_frames
         self._stop_event.set()
-        await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
-        try:
-            await self._recorder.stop()
-        except Exception as error:
-            self._handle_recorder_failure(
-                code="recorder.flush_failed",
-                message=str(error),
-                context={"stream_id": self._stream_id},
-            )
+        live_tasks = tuple(task for task in self._consumer_tasks if not task.done())
+        if live_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*live_tasks, return_exceptions=True),
+                    timeout=self._recorder_cleanup_timeout_seconds,
+                )
+            except TimeoutError:
+                self._handle_recorder_failure(
+                    code="recorder.cleanup_timeout",
+                    message="Archive drain exceeded its cleanup deadline",
+                    context={"stream_id": self._stream_id, "operation": "drain"},
+                )
+        await self._ensure_recorder_cleanup()
+        self._recorder_cleanup_task = None
+        self._archive_pending_frames = 0
         self._archive_task = None
         self._stream_task = None
         self._pipeline = None
         self._archive_subscriber = None
         self._stream_subscriber = None
         self._active_channels = 0
+        for queue_metric in ("ingress_queue_depth", "recorder_queue_depth", "stream_queue_depth"):
+            self.metrics.observe_queue(queue_metric, 0)
         self._capture_state = (
             CaptureSessionState.FAILED if self._failure is not None else CaptureSessionState.IDLE
         )
@@ -223,6 +250,9 @@ class RuntimeService:
     def _handle_subscriber_failure(self, failure: SubscriberFailure) -> None:
         if failure.subscriber != "archive":
             return
+        # The subscriber disables its queue before invoking the owner. Preserve
+        # the actual saturation depth from its pre-disable failure snapshot.
+        self.metrics.observe_queue("recorder_queue_depth", failure.queue_depth)
         self._handle_recorder_failure(
             code="recorder.backpressure",
             message=failure.message,
@@ -269,6 +299,37 @@ class RuntimeService:
         task = self._archive_task
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
+        self._ensure_recorder_cleanup()
+
+    def _ensure_recorder_cleanup(self) -> asyncio.Task[None]:
+        if self._recorder_cleanup_task is None:
+            self._recorder_cleanup_task = asyncio.create_task(
+                self._cleanup_recorder(), name="canx-recorder-cleanup"
+            )
+        return self._recorder_cleanup_task
+
+    async def _cleanup_recorder(self) -> None:
+        """Join cancelled archive work and close the recorder under a deadline."""
+        archive_task = self._archive_task
+        if archive_task is not None:
+            await asyncio.gather(archive_task, return_exceptions=True)
+        self._archive_pending_frames = 0
+        try:
+            await asyncio.wait_for(
+                self._recorder.stop(), timeout=self._recorder_cleanup_timeout_seconds
+            )
+        except TimeoutError:
+            self._handle_recorder_failure(
+                code="recorder.cleanup_timeout",
+                message="Recorder close exceeded its cleanup deadline",
+                context={"stream_id": self._stream_id, "operation": "close"},
+            )
+        except Exception as error:
+            self._handle_recorder_failure(
+                code="recorder.flush_failed",
+                message=str(error),
+                context={"stream_id": self._stream_id},
+            )
 
     async def _run_consumer(
         self,
