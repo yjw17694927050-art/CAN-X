@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -22,8 +22,12 @@ from canx.agent.tools import (
     UnknownToolError,
 )
 from canx.agent.trace_summary import TraceSummaryInput, TraceSummaryOutput, summarize_frames
+from canx.api.errors import ErrorResponse, error_envelope, status_for
+from canx.api.trace import create_trace_router
 from canx.devices.virtual import VirtualAdapterConfig
 from canx.metrics.models import MetricsSnapshot
+from canx.project.errors import ProjectError
+from canx.query.errors import QueryError
 from canx.runtime.errors import CaptureConfigurationError
 from canx.runtime.service import RuntimeService
 from canx.transport.broker import BatchBroker
@@ -118,18 +122,6 @@ class ShutdownResponse(BaseModel):
     status: Literal["stopping"] = "stopping"
 
 
-class ErrorResponse(BaseModel):
-    """Diagnostic error shared by control-plane boundaries."""
-
-    model_config = ConfigDict(frozen=True)
-
-    code: str
-    message: str
-    details: dict[str, object]
-    recoverable: bool
-    source: str
-
-
 def create_app(
     *,
     session_token: str | None = None,
@@ -160,6 +152,34 @@ def create_app(
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type"],
     )
+
+    @app.exception_handler(QueryError)
+    async def _query_failure(_request: Request, error: QueryError) -> JSONResponse:
+        """Report a typed query failure as the shared envelope.
+
+        A domain failure is a diagnosis, not an incident: it already carries the
+        code, message, details, recoverability and source the contract asks for,
+        so the boundary only has to pick an honest status for it.
+        """
+        return JSONResponse(
+            status_code=status_for(error), content=error_envelope(error).model_dump()
+        )
+
+    @app.exception_handler(ProjectError)
+    async def _project_failure(_request: Request, error: ProjectError) -> JSONResponse:
+        """Report a typed project failure the same way.
+
+        A request that names a directory which is not a readable CAN-X project is
+        a bad request; it must not reach the caller as an opaque server error.
+        """
+        return JSONResponse(
+            status_code=status_for(error), content=error_envelope(error).model_dump()
+        )
+
+    # The historical Trace surface reads persisted data and shares no state with
+    # the capture lifecycle, so it is mounted as its own router.
+    app.include_router(create_trace_router())
+
     broker = batch_broker if batch_broker is not None else service.broker
     registry = ToolRegistry()
 

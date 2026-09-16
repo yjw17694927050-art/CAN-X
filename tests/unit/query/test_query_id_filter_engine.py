@@ -112,7 +112,9 @@ def test_an_id_range_is_inclusive_at_both_ends(tmp_path: Path) -> None:
     frames = [frame(index, arbitration_id=value) for index, value in enumerate(RANGE_IDS)]
     path = _segment(tmp_path, frames)
 
-    returned = _query(path, arbitration_id_start=RANGE_WINDOW[0], arbitration_id_end=RANGE_WINDOW[1])
+    returned = _query(
+        path, arbitration_id_start=RANGE_WINDOW[0], arbitration_id_end=RANGE_WINDOW[1]
+    )
 
     assert [item.arbitration_id for item in returned] == list(EXPECTED_IN_WINDOW)
     assert [item.sequence for item in returned] == [1, 2, 3, 4]
@@ -124,7 +126,9 @@ def test_the_id_range_expectation_matches_an_independent_selection(tmp_path: Pat
     frames = [frame(index, arbitration_id=value) for index, value in enumerate(RANGE_IDS)]
     path = _segment(tmp_path, frames)
 
-    returned = _query(path, arbitration_id_start=RANGE_WINDOW[0], arbitration_id_end=RANGE_WINDOW[1])
+    returned = _query(
+        path, arbitration_id_start=RANGE_WINDOW[0], arbitration_id_end=RANGE_WINDOW[1]
+    )
 
     expected = _ids(frames, start=RANGE_WINDOW[0], end=RANGE_WINDOW[1])
     assert expected == list(EXPECTED_IN_WINDOW)
@@ -164,7 +168,9 @@ def test_every_range_shape_selects_the_expected_ids(
 
     assert [item.arbitration_id for item in returned] == expected_ids
     assert [item.arbitration_id for item in returned] == _ids(
-        frames, **({} if start is None else {"start": start}), **({} if end is None else {"end": end})
+        frames,
+        **({} if start is None else {"start": start}),
+        **({} if end is None else {"end": end}),
     )
 
 
