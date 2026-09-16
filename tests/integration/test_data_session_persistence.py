@@ -121,7 +121,7 @@ def test_a_reopened_project_restores_a_multi_segment_session(tmp_path: Path) -> 
         reopened.close()
 
 
-def test_the_reopened_project_database_is_at_schema_v2(tmp_path: Path) -> None:
+def test_the_reopened_project_database_is_at_the_current_schema(tmp_path: Path) -> None:
     root = tmp_path / "vehicle.canx"
     handle = ProjectService().create(root, display_name="Vehicle A")
     writer = DataSessionService(handle.root, max_frames_per_segment=MAX_FRAMES_PER_SEGMENT).start(
@@ -142,8 +142,8 @@ def test_the_reopened_project_database_is_at_schema_v2(tmp_path: Path) -> None:
         connection.close()
 
     assert version is not None
-    assert version[0] == DATABASE_SCHEMA_VERSION == 2
-    assert {"project_metadata", "data_sessions", "data_segments"} <= tables
+    assert version[0] == DATABASE_SCHEMA_VERSION == 3
+    assert {"project_metadata", "data_sessions", "data_segments", "dbc_assets"} <= tables
 
 
 def test_segment_files_carry_the_canx_format_metadata_on_disk(tmp_path: Path) -> None:

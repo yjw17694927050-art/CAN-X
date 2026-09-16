@@ -8,10 +8,17 @@ Schema history:
 
 * ``1`` — V0.2-01: ``project_metadata`` only.
 * ``2`` — V0.2-02: adds ``data_sessions`` and ``data_segments`` so a project
-  can hold persisted data sessions. A ``1`` database is migrated in place.
+  can hold persisted data sessions.
+* ``3`` — V0.3-03: adds ``dbc_assets`` so a project can own imported DBC files.
+
+A database of any supported older version is upgraded in place — V1 to V3 and
+V2 to V3 alike — inside one transaction, before it is handed back to a caller.
+The project layer owns table existence and the version stamp; domain
+repositories own the rows.
 """
 
 import sqlite3
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +27,9 @@ from canx.project.errors import InvalidProjectError, UnsupportedProjectVersionEr
 from canx.project.model import ProjectMetadata, normalize_project_id
 
 DATABASE_FILENAME = "project.db"
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
+
+#: The oldest schema this runtime can still open and upgrade in place.
 LEGACY_DATABASE_SCHEMA_VERSION = 1
 
 _METADATA_TABLE = "project_metadata"
@@ -60,10 +69,27 @@ _DATA_SEGMENTS_COLUMNS = (
     "created_at",
 )
 
+_DBC_ASSETS_TABLE = "dbc_assets"
+
+#: Asset metadata only. A DBC's canonical content stays in the ``.dbc`` file the
+#: project owns under ``dbc/``; nothing here relationalizes messages, signals or
+#: choices, which would immediately create a second source of DBC truth.
+_DBC_ASSETS_COLUMNS = (
+    "asset_id",
+    "project_id",
+    "source_name",
+    "relative_path",
+    "sha256",
+    "size_bytes",
+    "encoding",
+    "imported_at",
+)
+
 #: Every table the current schema version must provide, with its required columns.
-_DATA_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
+_SCHEMA_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (_DATA_SESSIONS_TABLE, _DATA_SESSIONS_COLUMNS),
     (_DATA_SEGMENTS_TABLE, _DATA_SEGMENTS_COLUMNS),
+    (_DBC_ASSETS_TABLE, _DBC_ASSETS_COLUMNS),
 )
 
 _CREATE_METADATA_TABLE = f"""
@@ -125,6 +151,65 @@ def _v2_ddl_statements() -> tuple[str, ...]:
     return (_CREATE_DATA_SESSIONS_TABLE, _CREATE_DATA_SEGMENTS_TABLE)
 
 
+# The V0.3-03 registry table. The project layer owns its schema and migration;
+# the ``canx.dbc`` repository owns writing and reading the rows.
+_CREATE_DBC_ASSETS_TABLE = f"""
+CREATE TABLE {_DBC_ASSETS_TABLE} (
+    asset_id TEXT PRIMARY KEY CHECK (length(asset_id) = 36),
+    project_id TEXT NOT NULL CHECK (length(project_id) = 36),
+    source_name TEXT NOT NULL CHECK (source_name <> ''),
+    relative_path TEXT NOT NULL UNIQUE CHECK (relative_path <> ''),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+    encoding TEXT NOT NULL CHECK (encoding <> ''),
+    imported_at TEXT NOT NULL
+)
+"""
+
+
+def _v3_ddl_statements() -> tuple[str, ...]:
+    """Return the V3 table DDL in creation order.
+
+    Behind a function for the same reason as :func:`_v2_ddl_statements`: a
+    migration-failure test must be able to break the *last* step of a V1 → V3
+    upgrade without touching the real schema.
+    """
+    return (_CREATE_DBC_ASSETS_TABLE,)
+
+
+def _migration_steps() -> tuple[tuple[int, Callable[[], tuple[str, ...]]], ...]:
+    """Return each migration step keyed by the version it upgrades *from*.
+
+    Resolved through a function — rather than a module-level constant — so the
+    step references stay late-bound and a test can substitute a broken step.
+    """
+    return ((1, _v2_ddl_statements), (2, _v3_ddl_statements))
+
+
+def _migration_statements(source_version: int) -> tuple[str, ...]:
+    """Return the ordered DDL needed to upgrade a database from ``source_version``.
+
+    A V1 database therefore gets the V2 step and then the V3 step, while a V2
+    database gets only the V3 step.
+    """
+    return tuple(
+        statement
+        for step_version, ddl in _migration_steps()
+        if step_version >= source_version
+        for statement in ddl()
+    )
+
+
+def _current_schema_statements() -> tuple[str, ...]:
+    """Return every table DDL the current schema version requires.
+
+    Used to create a brand-new database directly at the current version. The
+    union of the migration steps is exactly the current schema, so a database
+    created today and one upgraded from V1 cannot drift apart.
+    """
+    return _migration_statements(LEGACY_DATABASE_SCHEMA_VERSION)
+
+
 def create_database(path: Path, metadata: ProjectMetadata) -> sqlite3.Connection:
     """Create the current-version schema and return the owned connection.
 
@@ -136,7 +221,7 @@ def create_database(path: Path, metadata: ProjectMetadata) -> sqlite3.Connection
         connection = _connect(path)
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(_CREATE_METADATA_TABLE)
-        for statement in _v2_ddl_statements():
+        for statement in _current_schema_statements():
             connection.execute(statement)
         connection.execute(
             f"INSERT INTO {_METADATA_TABLE}"
@@ -153,7 +238,7 @@ def create_database(path: Path, metadata: ProjectMetadata) -> sqlite3.Connection
         connection.execute("COMMIT")
         # Creation self-checks its own output instead of trusting the DDL.
         _verify_metadata_columns(connection, path)
-        _verify_data_tables(connection, path)
+        _verify_schema_tables(connection, path)
     except sqlite3.Error as error:
         _rollback_quietly(connection)
         close_quietly(connection)
@@ -169,11 +254,11 @@ def create_database(path: Path, metadata: ProjectMetadata) -> sqlite3.Connection
 
 
 def open_database(path: Path) -> sqlite3.Connection:
-    """Open an existing database, migrating a V1 project to the current schema.
+    """Open an existing database, migrating an older project to the current schema.
 
-    A database stamped with the legacy schema version is upgraded in place,
-    inside one transaction, before it is handed back. Anything newer is refused
-    rather than read partially.
+    A database stamped with any supported older schema version is upgraded in
+    place, inside one transaction, before it is handed back. Anything newer is
+    refused rather than read partially.
 
     Raises:
         InvalidProjectError: If the file is not a readable CAN-X project
@@ -195,19 +280,19 @@ def open_database(path: Path) -> sqlite3.Connection:
                     "supported_schema_version": DATABASE_SCHEMA_VERSION,
                 },
             )
-        if version == LEGACY_DATABASE_SCHEMA_VERSION:
-            # Only a database that really carries project identity may migrate;
-            # a bare version stamp on a foreign file is rejected instead.
-            _verify_metadata_columns(connection, path)
-            migrate_database(connection, path)
-        elif version != DATABASE_SCHEMA_VERSION:
+        if version < LEGACY_DATABASE_SCHEMA_VERSION:
             raise InvalidProjectError(
                 "The file is not a versioned CAN-X project database.",
                 code="project.database_schema_invalid",
                 details={"path": str(path), "schema_version": version},
             )
+        if version < DATABASE_SCHEMA_VERSION:
+            # Only a database that really carries project identity may migrate;
+            # a bare version stamp on a foreign file is rejected instead.
+            _verify_metadata_columns(connection, path)
+            migrate_database(connection, path)
         _verify_metadata_columns(connection, path)
-        _verify_data_tables(connection, path)
+        _verify_schema_tables(connection, path)
     except BaseException:
         close_quietly(connection)
         raise
@@ -215,11 +300,13 @@ def open_database(path: Path) -> sqlite3.Connection:
 
 
 def migrate_database(connection: sqlite3.Connection, path: Path) -> None:
-    """Upgrade a legacy database to the current schema version.
+    """Upgrade a database of any supported older version to the current schema.
 
-    The upgrade and the version stamp commit together. If any statement fails
-    the transaction is rolled back, so the caller keeps a readable previous-version
-    database rather than a half-migrated one that looks valid.
+    Every step from the stored version up to the current one runs inside one
+    transaction, and the version stamp commits with it. If any statement fails
+    the transaction is rolled back, so the caller keeps a *complete*
+    previous-version database — a V1 database stays fully V1, a V2 database stays
+    fully V2 — rather than a half-migrated one that merely looks valid.
 
     Raises:
         InvalidProjectError: If the migration cannot be committed.
@@ -229,7 +316,7 @@ def migrate_database(connection: sqlite3.Connection, path: Path) -> None:
         return
     try:
         connection.execute("BEGIN IMMEDIATE")
-        for statement in _v2_ddl_statements():
+        for statement in _migration_statements(source_version):
             connection.execute(statement)
         connection.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
         connection.execute("COMMIT")
@@ -364,12 +451,13 @@ def _verify_metadata_columns(connection: sqlite3.Connection, path: Path) -> None
         )
 
 
-def _verify_data_tables(connection: sqlite3.Connection, path: Path) -> None:
-    """Verify that the current version's data tables and columns exist.
+def _verify_schema_tables(connection: sqlite3.Connection, path: Path) -> None:
+    """Verify that the current version's tables and columns exist.
 
     A ``user_version`` stamp is a claim, not evidence: a database that says it is
-    V2 but lacks ``data_sessions`` or ``data_segments`` (or one of their columns)
-    must be refused at open, not midway through a later data operation.
+    V3 but lacks ``data_sessions``, ``data_segments`` or ``dbc_assets`` (or one of
+    their columns) must be refused at open, not midway through a later data or DBC
+    operation.
 
     Raises:
         InvalidProjectError: If a required table or column is missing.
@@ -383,14 +471,14 @@ def _verify_data_tables(connection: sqlite3.Connection, path: Path) -> None:
             details={"path": str(path)},
         ) from error
     present = {str(row[0]) for row in rows}
-    missing_tables = [name for name, _ in _DATA_TABLES if name not in present]
+    missing_tables = [name for name, _ in _SCHEMA_TABLES if name not in present]
     if missing_tables:
         raise InvalidProjectError(
-            "The project database is missing data tables required by its schema version.",
+            "The project database is missing tables required by its schema version.",
             code="project.database_schema_invalid",
             details={"path": str(path), "missing_tables": missing_tables},
         )
-    for table, required_columns in _DATA_TABLES:
+    for table, required_columns in _SCHEMA_TABLES:
         try:
             info = connection.execute(f"PRAGMA table_info({table})").fetchall()
         except sqlite3.Error as error:

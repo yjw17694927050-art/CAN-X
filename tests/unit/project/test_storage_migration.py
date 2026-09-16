@@ -1,8 +1,12 @@
-"""Behavior tests for the V1 → V2 project database migration.
+"""Behavior tests for the project database migration from V1 to the current schema.
 
-V0.2-01 shipped a metadata-only database stamped ``user_version = 1``. V0.2-02
-adds the data-session/segment tables, so every existing project must migrate in
-place without losing its identity or its metadata.
+V0.2-01 shipped a metadata-only database stamped ``user_version = 1``. Later
+increments add the data-session/segment tables (V2) and the DBC asset registry
+(V3), so every existing project must migrate in place — in one transaction —
+without losing its identity or its metadata.
+
+The V2 → V3 path and the schema-completeness checks live in
+``test_storage_v3.py``.
 """
 
 import sqlite3
@@ -75,13 +79,15 @@ def _table_names(connection: sqlite3.Connection) -> set[str]:
     }
 
 
-def test_the_schema_version_advanced_to_two() -> None:
-    """V0.2-02 owns schema version 2 and still recognizes version 1 as legacy."""
-    assert DATABASE_SCHEMA_VERSION == 2
+def test_the_schema_version_advanced_and_version_one_is_still_legacy() -> None:
+    """V0.3-03 owns schema version 3 and still recognizes version 1 as the oldest."""
+    assert DATABASE_SCHEMA_VERSION == 3
     assert LEGACY_DATABASE_SCHEMA_VERSION == 1
 
 
-def test_v1_database_migrates_to_v2_and_preserves_project_identity(tmp_path: Path) -> None:
+def test_v1_database_migrates_to_the_current_schema_and_preserves_project_identity(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / DATABASE_FILENAME
     _write_v1_database(path)
 
@@ -124,7 +130,9 @@ def test_migrated_v1_database_keeps_its_original_timestamps(tmp_path: Path) -> N
     assert metadata == _metadata()
 
 
-def test_new_database_is_created_directly_at_v2_with_the_data_tables(tmp_path: Path) -> None:
+def test_new_database_is_created_directly_at_the_current_version_with_every_table(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / DATABASE_FILENAME
 
     connection = create_database(path, _metadata())
