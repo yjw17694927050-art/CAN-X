@@ -12,6 +12,7 @@ dependencies = [
   "fastapi==0.141.1",
   "msgpack==1.2.2",
   "psutil==7.2.2",
+  "pyarrow==21.0.0",
   "pydantic==2.13.5",
   "python-can==4.6.1",
   "uvicorn[standard]==0.53.0",
@@ -50,4 +51,12 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 python_version = "3.13"
 strict = true
 mypy_path = "runtime"
+
+# pyarrow ships no PEP 561 stubs. The CAN-X data layer still validates the
+# Arrow boundary itself (typed models, explicit schemas), so the untyped
+# third-party surface is contained to the two adapter modules rather than
+# weakening type checking for CAN-X's own code.
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
 
