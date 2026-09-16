@@ -1,19 +1,27 @@
 """The typed failure contract every DBC caller sees.
 
 A caller must never have to catch ``FileNotFoundError``, ``UnicodeDecodeError``,
-a ``cantools`` exception, a bare ``ValueError`` or a ``textparser`` error. Each
-of those becomes one of these, carrying the same five structured fields SPEC §38
-requires of every diagnosable boundary failure.
+a ``cantools`` exception, a bare ``ValueError``, a ``sqlite3`` error or a
+``textparser`` error. Each of those becomes one of these, carrying the same five
+structured fields SPEC §38 requires of every diagnosable boundary failure. The
+project-asset failures (``dbc.asset_*``, ``dbc.source_changed``) extend that
+envelope to the project-owned DBC registry.
 """
 
 import pytest
 from canx.dbc.errors import (
+    DbcAssetIntegrityError,
+    DbcAssetNotFoundError,
+    DbcAssetRegistryError,
+    DbcAssetStorageError,
+    DbcAssetValidationError,
     DbcDecodeError,
     DbcError,
     DbcFileNotFoundError,
     DbcModelError,
     DbcParseError,
     DbcReadError,
+    DbcSourceChangedError,
     DbcUnsupportedFormatError,
 )
 
@@ -24,6 +32,12 @@ CONCRETE_ERRORS = (
     (DbcDecodeError, "dbc.decode_failed", False),
     (DbcParseError, "dbc.parse_failed", False),
     (DbcModelError, "dbc.invalid_model", False),
+    (DbcAssetValidationError, "dbc.invalid_asset", False),
+    (DbcAssetNotFoundError, "dbc.asset_not_found", False),
+    (DbcAssetStorageError, "dbc.asset_storage_failed", True),
+    (DbcAssetRegistryError, "dbc.asset_registry_failed", True),
+    (DbcAssetIntegrityError, "dbc.asset_integrity_failed", False),
+    (DbcSourceChangedError, "dbc.source_changed", True),
 )
 
 
@@ -77,6 +91,12 @@ def test_every_concrete_failure_is_distinguishable_by_code() -> None:
         "dbc.decode_failed",
         "dbc.parse_failed",
         "dbc.invalid_model",
+        "dbc.invalid_asset",
+        "dbc.asset_not_found",
+        "dbc.asset_storage_failed",
+        "dbc.asset_registry_failed",
+        "dbc.asset_integrity_failed",
+        "dbc.source_changed",
     }
 
 
@@ -98,3 +118,14 @@ def test_the_human_message_carries_no_code_or_source_noise() -> None:
     assert isinstance(error, Exception)
     assert str(error) == "The DBC document contradicts the CAN-X model."
     assert "dbc." not in str(error)
+
+
+def test_the_asset_failures_judge_recoverability_the_same_way() -> None:
+    """Retrying helps only where the environment can actually change."""
+    assert DbcAssetStorageError("disk full").recoverable is True
+    assert DbcAssetRegistryError("database is locked").recoverable is True
+    assert DbcSourceChangedError("source changed").recoverable is True
+
+    assert DbcAssetValidationError("bad record").recoverable is False
+    assert DbcAssetNotFoundError("unknown asset").recoverable is False
+    assert DbcAssetIntegrityError("tampered file").recoverable is False

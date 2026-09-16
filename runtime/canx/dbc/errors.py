@@ -15,6 +15,13 @@ Which failures are recoverable is a deliberate judgement, not a default:
   become readable, and the identical import can then succeed;
 * a *decode*, *parse* or *model* failure is not — the bytes will not become
   different bytes by trying again.
+
+The project-asset failures follow the same rule. A *storage* or *registry*
+failure is recoverable, because the environment may settle. A *validation* or
+*integrity* failure is not: a registry row that contradicts the file it points
+at will not become consistent by retrying, and CAN-X never repairs it silently.
+A *source changed* failure is recoverable, because re-running the import
+validates the file's current content from scratch.
 """
 
 from __future__ import annotations
@@ -125,3 +132,106 @@ class DbcModelError(DbcError):
         details: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcAssetValidationError(DbcError):
+    """Raised when a record cannot describe a valid project-owned DBC asset.
+
+    Raised by the asset model itself, so a hand-edited registry row or a
+    malformed identifier is refused at the boundary rather than turning into a
+    confusing path or hash failure later.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.invalid_asset",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcAssetNotFoundError(DbcError):
+    """Raised when an asset id is not registered in this project."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.asset_not_found",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcAssetStorageError(DbcError):
+    """Raised when the project-owned copy of a DBC file could not be written.
+
+    Recoverable on purpose: the cause is the environment (a full disk, a locked
+    or read-only directory), not the request, so the identical import may succeed
+    once the environment settles.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.asset_storage_failed",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=True)
+
+
+class DbcAssetRegistryError(DbcError):
+    """Raised when a registered asset row could not be committed or read.
+
+    Recoverable on purpose, for the same reason as
+    :class:`DbcAssetStorageError`: a locked database is an environment problem,
+    and the same operation may succeed later.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.asset_registry_failed",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=True)
+
+
+class DbcAssetIntegrityError(DbcError):
+    """Raised when a registered project asset contradicts its registry row.
+
+    Never repaired automatically: CAN-X does not re-hash, re-register or
+    substitute another file for an asset whose bytes, size, path or owning
+    project no longer match what was registered.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.asset_integrity_failed",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=False)
+
+
+class DbcSourceChangedError(DbcError):
+    """Raised when the source file changed between validation and persistence.
+
+    The import validated one set of bytes and would otherwise persist another.
+    Recoverable on purpose: re-running the import validates the file's current
+    content from scratch, so the caller has a real path forward.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "dbc.source_changed",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, details=details, recoverable=True)
