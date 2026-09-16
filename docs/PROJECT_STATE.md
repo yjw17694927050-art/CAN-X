@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-01 Project Foundation
+> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-02 Data Session & Parquet Segment Persistence
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -772,7 +772,77 @@ Final remediation completed
 Awaiting final acceptance
 ```
 
-未实现（刻意留在 V0.2 后续增量）：Parquet、DuckDB、Query Service、Data Session、UI。
+未实现（刻意留在 V0.2 后续增量）：DuckDB、Query Service、Data Session、UI。
+
+---
+
+### Step V0.2-02 — Data Session & Parquet Segment Persistence
+
+建立了正式的数据会话与 Parquet 分段持久化基础：
+
+```text
+SQLite schema v2                ✅ project.db: data_sessions + data_segments
+v1 → v2 migration               ✅ in place, transactional, identity preserved
+Data domain model               ✅ runtime/canx/data/{errors,model}.py
+Session lifecycle               ✅ start / append / finalize / reopen
+Bounded segment writer          ✅ max_frames_per_segment flush, bounded working set
+Atomic segment commit           ✅ *.parquet.tmp → successful close → os.replace
+SQLite-after-file ordering      ✅ registration failure advances no counter
+Canonical Frame Parquet         ✅ FRAME_PARQUET_SCHEMA_VERSION = 1 + canx.* metadata
+Explicit recovery               ✅ ACTIVE → INTERRUPTED, never on project open
+Integrity inspection            ✅ temporary / orphan / missing / size mismatch
+Relative paths only             ✅ project-relative, path-escape guarded
+```
+
+固定语义：
+
+```text
+frame_count / segment_count     只统计已落盘 segment；缓冲中的帧不计
+empty session                   允许：start → 无帧 → finalize → COMPLETED，计数为 0
+sequence 完整性                 跨 batch 必须严格递增；回退/重叠 → DataIntegrityError
+timestamp 完整性                跨 batch 归一化时间戳不得倒退；批量内首 <= 尾
+max_frames_per_segment          默认 65536（foundation 常量，不是 SPEC 值）
+integrity inspection            只检测与报告，从不自动修复或删除
+recovery                        必须显式触发；ProjectService.open() 不改动 session
+published segment name          只可能出现在成功 os.replace 之后
+```
+
+新增直接依赖：
+
+```text
+pyarrow == 21.0.0
+  · cp313 win_amd64 wheel 已在本机 .venv 实测安装并读写通过
+  · 单一 Parquet 引擎；未引入 pandas / Polars / fastparquet
+  · 打包 runtime 尚未引用数据模块 → Parquet 打包执行路径 NOT VERIFIED（见下）
+```
+
+本机验证（2026-09-16，Windows）：
+
+```text
+focused pytest (unit/project + unit/data + integration)   237 passed
+full pytest                                               322 passed
+ruff check runtime tests tools                            exit 0
+mypy runtime                                              exit 0 (42 source files)
+Parquet smoke                                             50,000 frames / 10 segments / clean
+scripts\package-windows.cmd                               exit 0
+  · runtime build + staged sidecar                         PASS
+  · packaged-runtime smoke (canx-runtime.exe)              PASS (1 passed)
+  · Tauri MSI build + artifact check                       PASS (CAN-X_0.1.0_x64_en-US.msi)
+Packaged Parquet execution path                           NOT VERIFIED
+  (canx.data 不在打包 import graph 内；PYZ TOC 中 pyarrow 出现 0 次)
+```
+
+状态：
+
+```text
+V0.2-02 Data Session & Parquet Segment Persistence
+Implementation complete
+Awaiting independent acceptance
+```
+
+本阶段刻意未进入：DuckDB、Query Service、SQL query API、Trace/Plot historical
+query、Recorder capture-pipeline migration、WebSocket / frontend 改动、
+50GB benchmark。
 
 主要目标：
 
@@ -1302,7 +1372,11 @@ Result recorded
 V0.1.1 独立验收返回 **Conditional PASS**，已批准进入 V0.2。
 
 V0.2-01 Project Foundation 已完成实现、独立验收（Conditional PASS）与定向修复
-（见 §18 Step V0.2-01）。当前等待 **V0.2-01 Final Acceptance**。
+（见 §18 Step V0.2-01），当前等待 **V0.2-01 Final Acceptance**。
+
+V0.2-02 Data Session & Parquet Segment Persistence 已完成实现与本机验证
+（见 §18 Step V0.2-02），提交并推送 GitHub，当前等待 **V0.2-02 Independent Acceptance**。
+尚未开始 V0.2-03。
 
 状态：
 
@@ -1317,7 +1391,10 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-01 independent acceptance   ◑ Conditional PASS (2 P1)
 ├── V0.2-01 final remediation        ✅ done
 ├── V0.2-01 final acceptance         ⏳ awaiting
-└── V0.2-02 (next coherent increment) pending
+├── V0.2-02 implementation           ✅ done
+├── V0.2-02 local verification       ✅ done
+├── V0.2-02 independent acceptance   ⏳ awaiting
+└── V0.2-03 (next coherent increment) not started
 ```
 
 ---
