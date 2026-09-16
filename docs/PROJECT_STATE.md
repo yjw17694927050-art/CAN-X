@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-02 Data Session & Parquet Segment Persistence
+> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -870,7 +870,7 @@ V0.2-02 Data Session & Parquet Segment Persistence
 Implementation complete
 Independent acceptance: Conditional PASS
 Final remediation completed
-Awaiting final acceptance
+V0.2-02 Final Acceptance: PASS
 ```
 
 本阶段刻意未进入：DuckDB、Query Service、SQL query API、Trace/Plot historical
@@ -907,6 +907,105 @@ long-running capture data organization
 ```
 
 V0.2 不急于开发大量协议功能。
+
+---
+
+### Step V0.2-03 — DuckDB Query Foundation & Bounded Historical Query Service
+
+建立了 CAN-X 第一版正式历史数据 Query Foundation：
+
+```text
+Project
+→ Data Session
+→ registered Parquet segments
+→ DuckDB
+→ structured bounded query
+→ typed Frame results / aggregate results
+```
+
+实现清单：
+
+```text
+DuckDB direct dependency          ✅ duckdb == 1.5.5（cp313 win_amd64 wheel 本机实测）
+Query domain models               ✅ runtime/canx/query/model.py
+                                    不 import duckdb / sqlite3 / pyarrow / FastAPI
+Query error contract              ✅ QueryError + 5 子类（code/message/details/recoverable/source）
+Structured query only             ✅ 无 arbitrary SQL 公共 API
+Frame filters                     ✅ sequence / normalized_timestamp / channel /
+                                    arbitration_id / direction / is_extended / is_fd
+Segment planning & pruning        ✅ 复用 DataSegment 元数据裁剪候选 segment
+DuckDB execution                  ✅ 列名·操作符·ORDER BY 全为 code-owned 常量 + 值参数绑定
+Bounded pagination                ✅ FETCH limit + 1 → has_more；sequence cursor；无 OFFSET
+Frame summary                     ✅ count / min / max 在 DuckDB 内聚合
+Arbitration-id counts             ✅ GROUP BY 在 DuckDB 内，top_n 有界（默认 100 / 硬上限 1000）
+Lightweight footer validation     ✅ canx.data.parquet.validate_segment_header（只读 footer）
+Path safety                       ✅ 复用 resolve_within_root；DuckDB glob 元字符转义
+Integrity rejection               ✅ missing / foreign / wrong identity / unsupported schema /
+                                    corrupt / path escape 全部 mapped 到 typed Query error
+Empty session                     ✅ 空页 + count = 0 + bounds = None
+Lifecycle independence            ✅ ACTIVE / INTERRUPTED / FAILED 只要 committed segment 存在即可查询
+DuckDB connection ownership       ✅ 每次操作 short-lived in-memory connection
+No whole-dataset materialization  ✅ 只取回 limit + 1 行；无 pandas，无整段 Arrow 结果
+```
+
+固定语义（snapshot boundary）：
+
+```text
+Query 看到的是 committed segments 的 metadata snapshot。
+未落盘的缓冲帧不可见。
+snapshot 之后新落盘的 segment 只在下一次 query 出现。
+Query scope 限定单个 Data Session（一个 session 已横跨多个 Parquet segment）。
+```
+
+新增直接依赖：
+
+```text
+duckdb == 1.5.5
+  · duckdb-1.5.5-cp313-cp313-win_amd64.whl 在本机 .venv 实测安装并读写通过
+  · MIT；无强制传递依赖（pandas / numpy / pyarrow 仅出现在包的 `all` extra，未使用）
+  · 未引入第二个 query engine；未引入 pandas / Polars
+```
+
+本机验证（2026-09-16，V0.2-03 实现完成时）：
+
+```text
+focused pytest (unit/query + test_parquet_header + 4 个 query integration)
+                                                          210 passed
+full pytest                                               552 passed
+ruff check runtime tests tools                            exit 0
+mypy runtime                                              exit 0 (48 source files)
+100k-frame multi-segment query smoke                      PASS (100,000 frames / 20 segments)
+scripts\package-windows.cmd                               exit 0
+  · runtime build + staged sidecar                         PASS
+  · packaged-runtime smoke (canx-runtime.exe)              PASS (1 passed)
+  · Tauri MSI build + artifact check                       PASS (CAN-X_0.1.0_x64_en-US.msi)
+Packaged DuckDB query execution path                      NOT VERIFIED
+  (canx.query 与 duckdb 均不在打包 import graph 内；PYZ TOC 中 duckdb 出现 0 次)
+```
+
+Query smoke 记录（timing 仅供信息，不是性能门槛）：
+
+```text
+total frames                 100,000
+segments                     20（每段 5,000 帧）
+write                        ~1.0 s（informational）
+unbounded limit=1000         returned 1,000 rows / has_more / 0.217 s
+arbitration_id=0x103         matched 12,500 / returned 1,000 / candidate 20/20 / 0.149 s
+sequence window 40000-40099  returned 100 / candidate 1/20 / 0.025 s
+10-50 GB target              NOT VERIFIED
+```
+
+状态：
+
+```text
+V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service
+Implementation complete
+Awaiting independent acceptance
+```
+
+本阶段刻意未进入：FastAPI query endpoint、Trace / Plot historical UI、
+frontend store / Worker / WebSocket 改动、Agent query tool、自然语言查询、
+arbitrary SQL console、Recorder capture-pipeline migration。
 
 ---
 
@@ -1407,9 +1506,13 @@ V0.1.1 独立验收返回 **Conditional PASS**，已批准进入 V0.2。
 V0.2-01 Project Foundation 已完成实现、独立验收（Conditional PASS）、定向修复与
 最终验收（见 §18 Step V0.2-01）：**V0.2-01 Final Acceptance: PASS**。
 
-V0.2-02 Data Session & Parquet Segment Persistence 已完成实现、本机验证与提交推送，
-独立验收返回 **Conditional PASS**（见 §18 Step V0.2-02）。定向修复 V0.2-02-FINAL
-已完成，当前等待 **V0.2-02 Final Acceptance**。尚未开始 V0.2-03。
+V0.2-02 Data Session & Parquet Segment Persistence 已完成实现、本机验证、提交推送、
+独立验收（Conditional PASS）与定向修复（见 §18 Step V0.2-02）：
+**V0.2-02 Final Acceptance: PASS**。
+
+V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service 已完成实现与本机验证
+（见 §18 Step V0.2-03），当前等待 **V0.2-03 Independent Acceptance**。
+尚未开始 V0.2-04。
 
 状态：
 
@@ -1428,8 +1531,11 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-02 local verification       ✅ done
 ├── V0.2-02 independent acceptance   ✅ Conditional PASS
 ├── V0.2-02 final remediation        ✅ done
-├── V0.2-02 final acceptance         ⏳ awaiting
-└── V0.2-03 (next coherent increment) not started
+├── V0.2-02 final acceptance         ✅ PASS
+├── V0.2-03 implementation           ✅ done
+├── V0.2-03 local verification       ✅ done
+├── V0.2-03 independent acceptance   ⏳ awaiting
+└── V0.2-04 (next coherent increment) not started
 ```
 
 ---
