@@ -9,6 +9,7 @@ from collections.abc import Callable
 import psutil  # type: ignore[import-untyped]
 
 from canx.metrics.models import MetricsSnapshot
+from canx.recorder.msgpack_recorder import RecorderFailure
 
 _COUNTERS = {
     "generated_frames",
@@ -18,6 +19,9 @@ _COUNTERS = {
     "sequence_gaps",
     "dropped_frames",
     "dropped_stream_frames",
+    "recorder_backpressure_events",
+    "recorder_failures",
+    "recorder_uncommitted_frames",
 }
 _QUEUES = {"ingress_queue_depth", "recorder_queue_depth", "stream_queue_depth"}
 
@@ -95,7 +99,13 @@ class MetricsCollector:
             self._queues[name] = depth
             self._peaks[name] = max(self._peaks[name], depth)
 
-    def snapshot(self, *, active_channels: int, recorder_state: str) -> MetricsSnapshot:
+    def snapshot(
+        self,
+        *,
+        active_channels: int,
+        recorder_state: str,
+        recorder_failure: RecorderFailure | None = None,
+    ) -> MetricsSnapshot:
         """Return an internally consistent typed metrics snapshot."""
         uptime = max(0.0, self._clock() - self._started)
         probe = self._system_probe()
@@ -126,4 +136,10 @@ class MetricsCollector:
             uptime_seconds=uptime,
             active_channels=active_channels,
             recorder_state=recorder_state,
+            recorder_failure_code=None if recorder_failure is None else recorder_failure.code,
+            recorder_failure_message=None if recorder_failure is None else recorder_failure.message,
+            recorder_failure_recoverable=(
+                None if recorder_failure is None else recorder_failure.recoverable
+            ),
+            recorder_failure_context=None if recorder_failure is None else recorder_failure.context,
         )

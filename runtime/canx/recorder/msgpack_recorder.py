@@ -2,6 +2,8 @@
 
 import asyncio
 import struct
+from contextlib import suppress
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import BinaryIO
@@ -10,6 +12,16 @@ from canx.domain.batch import FrameBatch
 from canx.transport.msgpack_codec import decode_batch, encode_batch
 
 _MAGIC = b"CANXMSG1"
+
+
+@dataclass(frozen=True, slots=True)
+class RecorderFailure:
+    """First failure of a recording session, retained through cleanup."""
+
+    code: str
+    message: str
+    recoverable: bool
+    context: dict[str, object]
 
 
 class RecorderState(StrEnum):
@@ -27,22 +39,51 @@ class MsgpackRecorder:
     def __init__(self) -> None:
         self.state = RecorderState.IDLE
         self.recorded_frames = 0
+        self.failure: RecorderFailure | None = None
         self._stream_id: str | None = None
         self._file: BinaryIO | None = None
+        self._write_task: asyncio.Task[None] | None = None
+
+    def fail(
+        self, *, code: str, message: str, recoverable: bool, context: dict[str, object]
+    ) -> None:
+        """Retain the first diagnostic, even when cleanup also fails."""
+        if self.failure is None:
+            self.failure = RecorderFailure(code, message, recoverable, dict(context))
+        self.state = RecorderState.FAILED
+
+    def reset_session(self) -> None:
+        """Begin a non-recording capture session without stale recorder diagnostics."""
+        if self.state is RecorderState.RECORDING:
+            raise RuntimeError("cannot reset an active recorder")
+        self.state = RecorderState.IDLE
+        self.recorded_frames = 0
+        self.failure = None
+        self._stream_id = None
 
     async def start(self, path: Path, *, stream_id: str) -> None:
         """Open a new recording without creating missing parent directories."""
         if self.state is RecorderState.RECORDING:
             raise RuntimeError("recorder is already running")
+        file: BinaryIO | None = None
         try:
             file = await asyncio.to_thread(path.open, "xb")
             await asyncio.to_thread(file.write, _MAGIC)
-        except OSError:
-            self.state = RecorderState.FAILED
+        except OSError as error:
+            self.fail(
+                code="recorder.open_failed",
+                message=str(error),
+                recoverable=False,
+                context={"path": str(path), "stream_id": stream_id},
+            )
+            if file is not None:
+                with suppress(OSError):
+                    await asyncio.to_thread(file.close)
             raise
         self._file = file
         self._stream_id = stream_id
         self.recorded_frames = 0
+        self.failure = None
         self.state = RecorderState.RECORDING
 
     async def append(self, batch: FrameBatch) -> None:
@@ -53,27 +94,66 @@ class MsgpackRecorder:
             raise ValueError("batch stream_id differs from recorder session")
         payload = encode_batch(batch)
         chunk = struct.pack(">I", len(payload)) + payload
+        self._write_task = asyncio.create_task(self._write_chunk(self._file, chunk, batch))
         try:
-            await asyncio.to_thread(self._file.write, chunk)
-        except OSError:
-            self.state = RecorderState.FAILED
-            raise
+            await asyncio.shield(self._write_task)
+        finally:
+            if self._write_task.done():
+                self._write_task = None
         self.recorded_frames += batch.frame_count
+
+    async def _write_chunk(self, file: BinaryIO, chunk: bytes, batch: FrameBatch) -> None:
+        try:
+            await asyncio.to_thread(file.write, chunk)
+        except OSError as error:
+            self.fail(
+                code="recorder.write_failed",
+                message=str(error),
+                recoverable=False,
+                context={
+                    "stream_id": batch.stream_id,
+                    "first_sequence": batch.first_sequence,
+                    "last_sequence": batch.last_sequence,
+                    "frame_count": batch.frame_count,
+                },
+            )
+            raise
 
     async def stop(self) -> None:
         """Flush and close the owned file before reporting stopped."""
         file = self._file
         if file is None:
             return
+        # Cancelling the archive task cannot cancel a disk thread. Join it
+        # before flush/close; a cancelled append remains uncommitted.
+        if self._write_task is not None:
+            with suppress(OSError):
+                await self._write_task
+            self._write_task = None
         was_failed = self.state is RecorderState.FAILED
         try:
             await asyncio.to_thread(file.flush)
-            await asyncio.to_thread(file.close)
-        except OSError:
-            self.state = RecorderState.FAILED
+        except OSError as error:
+            self.fail(
+                code="recorder.flush_failed",
+                message=str(error),
+                recoverable=False,
+                context={"stream_id": self._stream_id},
+            )
             raise
         finally:
-            self._file = None
+            try:
+                await asyncio.to_thread(file.close)
+            except OSError as error:
+                self.fail(
+                    code="recorder.flush_failed",
+                    message=str(error),
+                    recoverable=False,
+                    context={"stream_id": self._stream_id, "operation": "close"},
+                )
+                raise
+            finally:
+                self._file = None
         self.state = RecorderState.FAILED if was_failed else RecorderState.STOPPED
 
 

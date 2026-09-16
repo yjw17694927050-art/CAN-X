@@ -29,3 +29,10 @@ class MetricsSnapshot(BaseModel):
     uptime_seconds: float
     active_channels: int
     recorder_state: str
+    recorder_backpressure_events: int
+    recorder_failures: int
+    recorder_uncommitted_frames: int
+    recorder_failure_code: str | None
+    recorder_failure_message: str | None
+    recorder_failure_recoverable: bool | None
+    recorder_failure_context: dict[str, object] | None

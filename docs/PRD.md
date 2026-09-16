@@ -16,7 +16,7 @@
 > 3. 当前阶段做什么、不做什么？
 >
 > 具体技术实现以 `SPEC.md` 为准。  
-> AI/Codex 开发行为以 `AGENT.md` 为准。
+> AI/Codex 开发行为以 `AGENTS.md` 为准。
 
 ---
 
