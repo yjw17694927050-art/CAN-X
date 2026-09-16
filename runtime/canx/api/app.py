@@ -1,5 +1,7 @@
 """FastAPI application factory for the headless CAN-X runtime."""
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
@@ -43,6 +45,8 @@ class RuntimeStatusResponse(BaseModel):
 
     state: Literal["ready", "failed"]
     capture_active: bool
+    capture_state: Literal["idle", "running", "degraded", "failed"]
+    failure: ErrorResponse | None
 
 
 class CaptureStartRequest(BaseModel):
@@ -163,8 +167,18 @@ def create_app(
     async def runtime_status() -> RuntimeStatusResponse:
         """Report the lifecycle state without exposing process internals."""
         return RuntimeStatusResponse(
-            state="failed" if service.has_session and not service.capture_active else "ready",
+            state="ready",
             capture_active=service.capture_active,
+            capture_state=service.capture_state.value,
+            failure=None
+            if service.failure is None
+            else ErrorResponse(
+                code=service.failure.code,
+                message=service.failure.message,
+                details=service.failure.context,
+                recoverable=service.failure.recoverable,
+                source="recorder",
+            ),
         )
 
     @app.post("/capture/start", response_model=None, status_code=202)

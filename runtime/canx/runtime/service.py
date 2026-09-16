@@ -4,25 +4,39 @@ import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
 from canx.capture.pipeline import CapturePipeline
-from canx.capture.subscriber import FrameSubscriber
+from canx.capture.subscriber import FrameSubscriber, SubscriberDisabledError, SubscriberFailure
 from canx.devices.virtual import VirtualAdapter, VirtualAdapterConfig
 from canx.domain.batch import FrameBatch
 from canx.domain.frame import Frame
 from canx.metrics.collector import MetricsCollector
 from canx.metrics.models import MetricsSnapshot
-from canx.recorder.msgpack_recorder import MsgpackRecorder, RecorderState
+from canx.recorder.msgpack_recorder import MsgpackRecorder, RecorderFailure, RecorderState
 from canx.transport.broker import BatchBroker
+
+
+class CaptureSessionState(StrEnum):
+    """Capture outcome, independent of control-plane process readiness."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    DEGRADED = "degraded"
+    FAILED = "failed"
 
 
 class RuntimeService:
     """Coordinate independent runtime consumers without UI ownership."""
 
     def __init__(
-        self, *, history_capacity: int = 100_000, recorder: MsgpackRecorder | None = None
+        self,
+        *,
+        history_capacity: int = 100_000,
+        recorder: MsgpackRecorder | None = None,
+        archive_publish_timeout_seconds: float = 1.0,
     ) -> None:
         if history_capacity <= 0:
             raise ValueError("history_capacity must be positive")
@@ -32,7 +46,12 @@ class RuntimeService:
         self._pipeline: CapturePipeline | None = None
         self._archive_subscriber: FrameSubscriber | None = None
         self._stream_subscriber: FrameSubscriber | None = None
-        self._consumer_tasks: tuple[asyncio.Task[None], ...] = ()
+        self._archive_task: asyncio.Task[None] | None = None
+        self._stream_task: asyncio.Task[None] | None = None
+        self._archive_pending_frames = 0
+        self._archive_publish_timeout_seconds = archive_publish_timeout_seconds
+        self._capture_state = CaptureSessionState.IDLE
+        self._failure: RecorderFailure | None = None
         self._stop_event = asyncio.Event()
         self._lifecycle_lock = asyncio.Lock()
         self._batch_size = 250
@@ -48,8 +67,23 @@ class RuntimeService:
         return (
             self._pipeline is not None
             and self._pipeline.is_running
-            and all(not task.done() for task in self._consumer_tasks)
+            and self._stream_task is not None
+            and not self._stream_task.done()
         )
+
+    @property
+    def capture_state(self) -> CaptureSessionState:
+        if self.has_session and not self.capture_active:
+            return CaptureSessionState.FAILED
+        return self._capture_state
+
+    @property
+    def failure(self) -> RecorderFailure | None:
+        return self._failure
+
+    @property
+    def _consumer_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        return tuple(task for task in (self._archive_task, self._stream_task) if task is not None)
 
     @property
     def has_session(self) -> bool:
@@ -85,9 +119,12 @@ class RuntimeService:
         self._batch_size = batch_size
         self._active_channels = config.channel_count
         self._stop_event = asyncio.Event()
-        pipeline = CapturePipeline(VirtualAdapter(config))
+        pipeline = CapturePipeline(VirtualAdapter(config), self._handle_subscriber_failure)
         archive_subscriber = pipeline.subscribe(
-            "archive", capacity=max(batch_size * 4, 1_000), lossy=False
+            "archive",
+            capacity=max(batch_size * 4, 1_000),
+            lossy=False,
+            publish_timeout_seconds=self._archive_publish_timeout_seconds,
         )
         stream_subscriber = pipeline.subscribe(
             "stream", capacity=max(batch_size * 2, 500), lossy=True
@@ -95,43 +132,54 @@ class RuntimeService:
         self._pipeline = pipeline
         self._archive_subscriber = archive_subscriber
         self._stream_subscriber = stream_subscriber
-        if recording_path is not None:
-            await self._recorder.start(recording_path, stream_id=self._stream_id)
-        self._consumer_tasks = (
-            asyncio.create_task(
-                self._consume_subscriber(
+        self._archive_pending_frames = 0
+        try:
+            if recording_path is not None:
+                await self._recorder.start(recording_path, stream_id=self._stream_id)
+            self._archive_task = asyncio.create_task(
+                self._run_consumer(
                     archive_subscriber,
                     self._publish_archive,
                     "recorder_queue_depth",
                     track_gaps=False,
                 ),
                 name="canx-archive",
-            ),
-            asyncio.create_task(
-                self._consume_subscriber(
+            )
+            self._stream_task = asyncio.create_task(
+                self._run_consumer(
                     stream_subscriber,
                     self._publish_stream,
                     "stream_queue_depth",
                     track_gaps=True,
                 ),
                 name="canx-stream",
-            ),
-        )
-        try:
+            )
             await pipeline.start()
-        except BaseException:
+        except BaseException as error:
+            if isinstance(error, Exception):
+                self._handle_recorder_failure(
+                    code="recorder.open_failed",
+                    message=str(error),
+                    context={"stream_id": self._stream_id},
+                )
             self._stop_event.set()
             for task in self._consumer_tasks:
                 task.cancel()
             for task in self._consumer_tasks:
                 with suppress(asyncio.CancelledError):
                     await task
-            self._consumer_tasks = ()
+            self._archive_task = None
+            self._stream_task = None
             self._pipeline = None
             self._archive_subscriber = None
             self._stream_subscriber = None
-            await self._recorder.stop()
+            self._active_channels = 0
+            self._capture_state = CaptureSessionState.FAILED
+            with suppress(OSError):
+                await self._recorder.stop()
             raise
+        self._failure = None
+        self._capture_state = CaptureSessionState.RUNNING
         return self._stream_id
 
     async def stop_capture(self) -> None:
@@ -151,16 +199,100 @@ class RuntimeService:
         if self._stream_subscriber is not None:
             self._subscriber_drops_total += self._stream_subscriber.dropped_frames
         self._stop_event.set()
-        errors = await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
-        await self._recorder.stop()
-        self._consumer_tasks = ()
+        await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
+        try:
+            await self._recorder.stop()
+        except Exception as error:
+            self._handle_recorder_failure(
+                code="recorder.flush_failed",
+                message=str(error),
+                context={"stream_id": self._stream_id},
+            )
+        self._archive_task = None
+        self._stream_task = None
         self._pipeline = None
         self._archive_subscriber = None
         self._stream_subscriber = None
         self._active_channels = 0
-        for error in errors:
-            if isinstance(error, BaseException):
-                raise error
+        self._capture_state = (
+            CaptureSessionState.FAILED if self._failure is not None else CaptureSessionState.IDLE
+        )
+
+    def _handle_subscriber_failure(self, failure: SubscriberFailure) -> None:
+        if failure.subscriber != "archive":
+            return
+        self._handle_recorder_failure(
+            code="recorder.backpressure",
+            message=failure.message,
+            context={
+                "subscriber": failure.subscriber,
+                "capacity": failure.capacity,
+                "queue_depth": failure.queue_depth,
+                "frame_sequence": failure.frame_sequence,
+                "stream_id": self._stream_id,
+            },
+            queued_frames=failure.queue_depth,
+            rejected_frames=1,
+        )
+
+    def _handle_recorder_failure(
+        self,
+        *,
+        code: str,
+        message: str,
+        context: dict[str, object],
+        queued_frames: int | None = None,
+        rejected_frames: int = 0,
+    ) -> None:
+        if self._failure is not None:
+            return
+        subscriber = self._archive_subscriber
+        if queued_frames is None:
+            queued_frames = 0 if subscriber is None else subscriber.queue_depth
+        self._recorder.fail(code=code, message=message, recoverable=False, context=context)
+        self._failure = self._recorder.failure
+        self._capture_state = CaptureSessionState.DEGRADED
+        self.metrics.increment("recorder_failures")
+        if code == "recorder.backpressure":
+            self.metrics.increment("recorder_backpressure_events")
+        self.metrics.increment(
+            "recorder_uncommitted_frames",
+            queued_frames + self._archive_pending_frames + rejected_frames,
+        )
+        if self._pipeline is not None:
+            self._pipeline.unsubscribe("archive")
+        if subscriber is not None:
+            subscriber.disable()
+        self.metrics.observe_queue("recorder_queue_depth", 0)
+        task = self._archive_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    async def _run_consumer(
+        self,
+        subscriber: FrameSubscriber,
+        publish: Callable[[list[Frame]], Awaitable[None]],
+        queue_metric: str,
+        *,
+        track_gaps: bool,
+    ) -> None:
+        """Consume task exceptions at the owner boundary as soon as they occur."""
+        try:
+            await self._consume_subscriber(subscriber, publish, queue_metric, track_gaps=track_gaps)
+        except SubscriberDisabledError:
+            # Archive backpressure disables its queue before the capture
+            # pipeline invokes the failure callback.  That ordering is an
+            # expected shutdown path for this task, not a consumer failure.
+            if subscriber.name != "archive" and self._failure is None:
+                raise
+        except Exception as error:
+            self._handle_recorder_failure(
+                code="recorder.write_failed",
+                message=str(error),
+                context={"stream_id": self._stream_id, "subscriber": subscriber.name},
+            )
+            if track_gaps:
+                self._capture_state = CaptureSessionState.FAILED
 
     async def _consume_subscriber(
         self,
@@ -179,6 +311,8 @@ class RuntimeService:
                 if pending:
                     await publish(pending)
                     pending = []
+                    if not track_gaps:
+                        self._archive_pending_frames = 0
                 continue
             if last_sequence is not None and frame.sequence != last_sequence + 1:
                 gap = max(0, frame.sequence - last_sequence - 1)
@@ -189,13 +323,19 @@ class RuntimeService:
                     pending = []
             last_sequence = frame.sequence
             pending.append(frame)
+            if not track_gaps:
+                self._archive_pending_frames = len(pending)
             self.metrics.observe_queue("ingress_queue_depth", subscriber.queue_depth)
             self.metrics.observe_queue(queue_metric, subscriber.queue_depth)
             if len(pending) >= self._batch_size:
                 await publish(pending)
                 pending = []
+                if not track_gaps:
+                    self._archive_pending_frames = 0
         if pending:
             await publish(pending)
+        if not track_gaps:
+            self._archive_pending_frames = 0
 
     async def _publish_archive(self, frames: list[Frame]) -> None:
         batch = FrameBatch.create(stream_id=self._stream_id, frames=frames)
@@ -224,6 +364,7 @@ class RuntimeService:
         return self.metrics.snapshot(
             active_channels=self._active_channels,
             recorder_state=self._recorder.state.value,
+            recorder_failure=self._failure,
         )
 
     def _sync_capture_counters(self, pipeline: CapturePipeline) -> None:
