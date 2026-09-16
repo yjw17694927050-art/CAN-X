@@ -250,7 +250,9 @@ async def test_unrecorded_session_does_not_inherit_a_previous_recorder_failure(
         assert service._recorder.failure is None
 
         service._handle_subscriber_failure(
-            SubscriberFailure("subscriber.backpressure", "archive", "queue full", False, 1000, 7, 99)
+            SubscriberFailure(
+                "subscriber.backpressure", "archive", "queue full", False, 1000, 7, 99
+            )
         )
 
         assert service.failure is not None
