@@ -32,6 +32,7 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
-    "externalBin": ["binaries/canx-runtime"]
+    "externalBin": ["binaries/canx-runtime"],
+    "targets": ["msi"]
   }
 }
