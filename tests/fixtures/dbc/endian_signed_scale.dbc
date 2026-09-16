@@ -1,0 +1,11 @@
+VERSION "1.0"
+
+NS_ :
+
+BS_:
+
+BU_: Sensor Actuator
+
+BO_ 512 MixedEndian: 8 Sensor
+ SG_ LittleUnsigned : 0|16@1+ (2,1) [1|8191] "mV" Actuator
+ SG_ BigSigned : 39|16@0- (0.5,-100) [-1124|1947.5] "deg" Actuator

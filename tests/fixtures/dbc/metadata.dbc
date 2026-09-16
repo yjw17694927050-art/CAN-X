@@ -1,0 +1,18 @@
+VERSION "2.0"
+
+NS_ :
+
+BS_:
+
+BU_: Gateway Sensor Actuator
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 10000;
+
+BO_ 1280 StatusFrame: 8 Gateway
+ SG_ NodeId : 0|8@1+ (1,0) [0|255] "" Sensor,Actuator
+ SG_ Counter : 8|8@1+ (1,0) [0|255] "" Sensor
+
+CM_ BU_ Gateway "Gateway node comment";
+CM_ BO_ 1280 "Status frame comment";
+CM_ SG_ 1280 Counter "Rolling counter";
+BA_ "GenMsgCycleTime" BO_ 1280 50;

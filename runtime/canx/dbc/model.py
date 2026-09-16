@@ -17,6 +17,7 @@ repeated parse of the same text can be compared for equality directly.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
@@ -435,10 +436,10 @@ def _require_optionally_multiplexed(signal: DbcSignal) -> None:
         )
 
 
-def _require_unique(values: object, *, error: str) -> None:
+def _require_unique(values: Iterable[object], *, error: str) -> None:
     """Raise when an iterable repeats a value."""
     seen: set[object] = set()
-    for value in values:  # type: ignore[union-attr]
+    for value in values:
         if value in seen:
             raise ValueError(error)
         seen.add(value)

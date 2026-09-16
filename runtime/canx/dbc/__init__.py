@@ -6,6 +6,15 @@ Importing this package must never import the third-party DBC engine. Only
 checkable) without the dependency being present.
 """
 
+from canx.dbc.errors import (
+    DbcDecodeError,
+    DbcError,
+    DbcFileNotFoundError,
+    DbcModelError,
+    DbcParseError,
+    DbcReadError,
+    DbcUnsupportedFormatError,
+)
 from canx.dbc.model import (
     MAX_CLASSIC_PAYLOAD_LENGTH,
     MAX_EXTENDED_FRAME_ID,
@@ -29,9 +38,16 @@ __all__ = [
     "DbcByteOrder",
     "DbcChoice",
     "DbcDatabase",
+    "DbcDecodeError",
     "DbcDocument",
+    "DbcError",
+    "DbcFileNotFoundError",
     "DbcMessage",
+    "DbcModelError",
     "DbcNode",
+    "DbcParseError",
+    "DbcReadError",
     "DbcSignal",
     "DbcSource",
+    "DbcUnsupportedFormatError",
 ]
