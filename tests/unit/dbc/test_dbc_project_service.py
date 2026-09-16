@@ -16,17 +16,23 @@ from pathlib import Path
 
 import canx.dbc.project_service as project_service_module
 import pytest
+from canx.dbc.decode import DbcDecoder
 from canx.dbc.errors import (
     DbcAssetIntegrityError,
     DbcAssetNotFoundError,
     DbcAssetRegistryError,
     DbcAssetStorageError,
+    DbcDecodeError,
     DbcFileNotFoundError,
+    DbcModelError,
+    DbcParseError,
     DbcSourceChangedError,
+    DbcUnsupportedFormatError,
 )
 from canx.dbc.model import DbcDatabase
 from canx.dbc.project_service import ProjectDbcService
 from canx.dbc.service import DbcImportService
+from canx.domain.frame import Direction, Frame, TimestampQuality
 from canx.project.errors import InvalidProjectError
 from canx.project.service import ProjectService
 from canx.project.storage import DATABASE_FILENAME
@@ -595,4 +601,355 @@ def test_import_does_not_recreate_a_dbc_path_that_is_a_file(tmp_path: Path) -> N
         ProjectDbcService(root).import_asset(source)
 
     assert (root / "dbc").read_bytes() == b"not a directory"
+    assert ProjectDbcService(root).list_assets() == ()
+
+
+# --- importing content a trusted caller already holds ------------------------
+#
+# V0.3-06's entry point. The Runtime is handed content, never a location, so the
+# persistence body is shared with the path-based import above and the bytes that
+# reach the project are exactly the bytes the caller submitted.
+
+LEGACY_CP1252_DBC = (
+    'VERSION "1.0"\n'
+    "\n"
+    "BU_: N1\n"
+    "\n"
+    "BO_ 256 Demo: 8 N1\n"
+    ' SG_ Temp : 0|8@1+ (1,-40) [-40|215] "\xb0C" N1\n'
+)
+
+REVERSED_RANGE_DBC = (
+    'VERSION "1.0"\n'
+    "\n"
+    "BU_: N1\n"
+    "\n"
+    "BO_ 256 Demo: 8 N1\n"
+    ' SG_ Reversed : 0|8@1+ (1,0) [100|0] "" N1\n'
+)
+
+
+def demo_frame(data: bytes) -> Frame:
+    """Build one canonical frame addressed to ``BASIC_DBC``'s ``Demo`` (256)."""
+    return Frame(
+        sequence=1,
+        channel_id="can0",
+        arbitration_id=256,
+        is_extended=False,
+        is_fd=False,
+        bitrate_switch=False,
+        error_state_indicator=False,
+        dlc=len(data),
+        data=data,
+        direction=Direction.RX,
+        hardware_timestamp=12.5,
+        host_timestamp=100.25,
+        normalized_timestamp=0.25,
+        clock_domain="host.monotonic",
+        timestamp_quality=TimestampQuality.HARDWARE,
+        flags=0,
+    )
+
+
+def test_a_bytes_import_registers_one_asset(tmp_path: Path) -> None:
+    root, project_id = make_project(tmp_path)
+    raw = BASIC_DBC.encode("utf-8")
+
+    asset = ProjectDbcService(root).import_asset_bytes(raw, source_name="vehicle.dbc")
+
+    assert asset.project_id == project_id
+    assert asset.source_name == "vehicle.dbc"
+    assert asset.relative_path == f"dbc/{asset.asset_id}.dbc"
+    assert asset.sha256 == hashlib.sha256(raw).hexdigest()
+    assert asset.size_bytes == len(raw)
+    assert asset.encoding == "utf-8-sig"
+    assert asset.imported_at.tzinfo is not None
+
+
+def test_the_project_owned_bytes_are_exactly_the_submitted_bytes(tmp_path: Path) -> None:
+    """Not a re-rendered DBC: the stored digest is the digest of the payload."""
+    root, _ = make_project(tmp_path)
+    raw = BASIC_DBC.encode("utf-8")
+
+    asset = ProjectDbcService(root).import_asset_bytes(raw, source_name="vehicle.dbc")
+
+    owned = root / "dbc" / f"{asset.asset_id}.dbc"
+    assert owned.read_bytes() == raw
+    assert hashlib.sha256(owned.read_bytes()).hexdigest() == asset.sha256
+
+
+def test_a_bytes_import_preserves_a_byte_order_mark(tmp_path: Path) -> None:
+    """The BOM is part of the bytes the caller submitted, so it is part of the copy."""
+    root, _ = make_project(tmp_path)
+    raw = b"\xef\xbb\xbf" + BASIC_DBC.encode("utf-8")
+
+    asset = ProjectDbcService(root).import_asset_bytes(raw, source_name="bom.dbc")
+
+    assert (root / "dbc" / f"{asset.asset_id}.dbc").read_bytes() == raw
+    assert asset.size_bytes == len(raw)
+
+
+def test_a_bytes_import_leaves_no_staging_file_behind(tmp_path: Path) -> None:
+    root, _ = make_project(tmp_path)
+
+    asset = ProjectDbcService(root).import_asset_bytes(
+        BASIC_DBC.encode("utf-8"), source_name="vehicle.dbc"
+    )
+
+    assert stored_files(root) == [f"{asset.asset_id}.dbc"]
+
+
+def test_a_reopened_bytes_import_lists_loads_and_decodes(tmp_path: Path) -> None:
+    """The imported asset is immediately usable, not merely a row in a table."""
+    root, _ = make_project(tmp_path)
+    asset = ProjectDbcService(root).import_asset_bytes(
+        BASIC_DBC.encode("utf-8"), source_name="vehicle.dbc"
+    )
+
+    with ProjectService().open(root) as reopened:
+        service = ProjectDbcService(reopened.root)
+        assert [listed.asset_id for listed in service.list_assets()] == [asset.asset_id]
+        document = service.load_asset(asset.asset_id)
+
+    assert document.source.name == "vehicle.dbc"
+    assert document.source.path is None
+
+    decoded = DbcDecoder(document.database).decode_frame(
+        demo_frame(bytes([0x64, 0x00]) + bytes(6))
+    )
+
+    assert decoded.message_name == "Demo"
+    assert [signal.name for signal in decoded.signals] == ["Speed"]
+    assert decoded.signals[0].raw_value == 100
+    assert decoded.signals[0].physical_value == pytest.approx(40.0)
+    assert decoded.signals[0].unit == "km/h"
+
+
+def test_a_bytes_import_honours_a_declared_legacy_encoding(tmp_path: Path) -> None:
+    root, _ = make_project(tmp_path)
+    raw = LEGACY_CP1252_DBC.encode("cp1252")
+
+    asset = ProjectDbcService(root).import_asset_bytes(
+        raw, source_name="legacy.dbc", encoding="cp1252"
+    )
+
+    assert asset.encoding == "cp1252"
+    assert (root / "dbc" / f"{asset.asset_id}.dbc").read_bytes() == raw
+    assert (
+        ProjectDbcService(root)
+        .load_asset(asset.asset_id)
+        .database.messages[0]
+        .signals[0]
+        .unit
+        == "°C"
+    )
+
+
+def test_two_bytes_imports_of_identical_content_create_two_assets(tmp_path: Path) -> None:
+    """No content de-duplication: submitting the same bytes twice is two imports."""
+    root, _ = make_project(tmp_path)
+    service = ProjectDbcService(root)
+    raw = BASIC_DBC.encode("utf-8")
+
+    first = service.import_asset_bytes(raw, source_name="vehicle.dbc")
+    second = service.import_asset_bytes(raw, source_name="vehicle.dbc")
+
+    assert first.asset_id != second.asset_id
+    assert first.sha256 == second.sha256
+    assert len(stored_files(root)) == 2
+    assert len(service.list_assets()) == 2
+
+
+# --- what a bytes import must never do --------------------------------------
+
+
+def test_a_bytes_import_never_reads_a_file_that_happens_to_share_its_name(
+    tmp_path: Path,
+) -> None:
+    """The submitted bytes are the only content source, even when a decoy exists.
+
+    A file called ``secret.dbc`` holding a perfectly importable DBC sits outside the
+    project. The caller submits *different*, unparseable bytes under that same name.
+    If anything on this path opened a location instead of consuming its argument,
+    the decoy would be persisted and the import would succeed — so the failure is
+    the proof.
+    """
+    decoy_directory = tmp_path / "elsewhere"
+    decoy = write_source(decoy_directory, "secret.dbc", BASIC_DBC)
+    root, _ = make_project(tmp_path)
+    before = snapshot(decoy_directory)
+
+    with pytest.raises(DbcParseError) as info:
+        ProjectDbcService(root).import_asset_bytes(
+            b"this is not a DBC document at all\n", source_name="secret.dbc"
+        )
+
+    assert info.value.code == "dbc.parse_failed"
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
+    assert ProjectDbcService(root).list_assets() == ()
+    assert decoy.read_bytes() == BASIC_DBC.encode("utf-8")
+    assert snapshot(decoy_directory) == before
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    [
+        "",
+        "   ",
+        "\t",
+        ".",
+        "..",
+        "../vehicle.dbc",
+        "..\\vehicle.dbc",
+        "folder/vehicle.dbc",
+        "folder\\vehicle.dbc",
+        "/tmp/vehicle.dbc",
+        "\\tmp\\vehicle.dbc",
+        "C:\\temp\\vehicle.dbc",
+        "C:vehicle.dbc",
+        "vehicle.txt",
+        "vehicle",
+        "vehicle.dbc.txt",
+        " vehicle.dbc",
+        "vehicle.dbc ",
+    ],
+)
+def test_a_bytes_import_refuses_a_source_name_that_is_not_a_plain_dbc_name(
+    tmp_path: Path, source_name: str
+) -> None:
+    """The domain protects its own invariant, not only the HTTP adapter."""
+    root, _ = make_project(tmp_path)
+
+    with pytest.raises(DbcUnsupportedFormatError) as info:
+        ProjectDbcService(root).import_asset_bytes(
+            BASIC_DBC.encode("utf-8"), source_name=source_name
+        )
+
+    assert info.value.code == "dbc.unsupported_format"
+    assert info.value.source == "dbc"
+    assert info.value.recoverable is False
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
+    assert ProjectDbcService(root).list_assets() == ()
+
+
+def test_invalid_bytes_leave_no_trace_in_the_project(tmp_path: Path) -> None:
+    """Malformed grammar is refused before anything is staged or registered."""
+    root, _ = make_project(tmp_path)
+    before = snapshot(root)
+
+    with pytest.raises(DbcParseError):
+        ProjectDbcService(root).import_asset_bytes(
+            b'VERSION "1.0"\n\nBO_ nope M: 8 N1\n', source_name="broken.dbc"
+        )
+
+    assert snapshot(root) == before
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
+
+
+def test_a_canonical_invariant_violation_leaves_no_trace(tmp_path: Path) -> None:
+    root, _ = make_project(tmp_path)
+    before = snapshot(root)
+
+    with pytest.raises(DbcModelError) as info:
+        ProjectDbcService(root).import_asset_bytes(
+            REVERSED_RANGE_DBC.encode("utf-8"), source_name="reversed.dbc"
+        )
+
+    assert info.value.code == "dbc.invalid_model"
+    assert snapshot(root) == before
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
+
+
+def test_an_unknown_encoding_leaves_no_trace(tmp_path: Path) -> None:
+    root, _ = make_project(tmp_path)
+
+    with pytest.raises(DbcDecodeError) as info:
+        ProjectDbcService(root).import_asset_bytes(
+            BASIC_DBC.encode("utf-8"),
+            source_name="vehicle.dbc",
+            encoding="not-a-real-codec",
+        )
+
+    assert info.value.code == "dbc.decode_failed"
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
+
+
+def test_bytes_that_are_not_text_under_the_declared_encoding_leave_no_trace(
+    tmp_path: Path,
+) -> None:
+    root, _ = make_project(tmp_path)
+
+    with pytest.raises(DbcDecodeError):
+        ProjectDbcService(root).import_asset_bytes(
+            LEGACY_CP1252_DBC.encode("cp1252"), source_name="legacy.dbc"
+        )
+
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
+
+
+def test_a_bytes_import_into_an_invalid_project_is_a_project_failure(tmp_path: Path) -> None:
+    """The project domain decides what a project is; a rejected root creates nothing."""
+    empty = tmp_path / "not-a-project"
+    empty.mkdir()
+
+    with pytest.raises(InvalidProjectError) as info:
+        ProjectDbcService(empty).import_asset_bytes(
+            BASIC_DBC.encode("utf-8"), source_name="vehicle.dbc"
+        )
+
+    assert info.value.code == "project.manifest_missing"
+    assert info.value.source == "project"
+    assert list(empty.iterdir()) == []
+
+
+def test_a_storage_failure_during_a_bytes_import_leaves_nothing_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = make_project(tmp_path)
+
+    def refuse_promotion(source_path: object, destination: object) -> None:
+        raise OSError("the destination is locked by another process")
+
+    monkeypatch.setattr(project_service_module.os, "replace", refuse_promotion)
+
+    with pytest.raises(DbcAssetStorageError) as info:
+        ProjectDbcService(root).import_asset_bytes(
+            BASIC_DBC.encode("utf-8"), source_name="vehicle.dbc"
+        )
+
+    assert info.value.code == "dbc.asset_storage_failed"
+    assert info.value.recoverable is True
+
+    monkeypatch.undo()
+
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
+
+
+def test_a_registry_failure_during_a_bytes_import_removes_the_file_it_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unregistered file is not an asset, exactly as on the path-based import."""
+
+    def refuse_insert(connection: object, asset: object) -> None:
+        raise DbcAssetRegistryError("the registry is locked")
+
+    monkeypatch.setattr(project_service_module.repository, "insert_asset", refuse_insert)
+    root, _ = make_project(tmp_path)
+
+    with pytest.raises(DbcAssetRegistryError):
+        ProjectDbcService(root).import_asset_bytes(
+            BASIC_DBC.encode("utf-8"), source_name="vehicle.dbc"
+        )
+
+    monkeypatch.undo()
+
+    assert stored_files(root) == []
+    assert asset_rows(root) == []
     assert ProjectDbcService(root).list_assets() == ()

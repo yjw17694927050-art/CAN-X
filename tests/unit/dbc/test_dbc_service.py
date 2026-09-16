@@ -433,3 +433,154 @@ def test_the_service_source_name_wins_over_one_an_inner_failure_carried() -> Non
     assert attributed.code == "dbc.parse_failed"
     assert attributed.message == "could not parse"
     assert attributed.recoverable is False
+
+
+# --- importing bytes a trusted caller already holds --------------------------
+#
+# ``import_bytes`` is the boundary the HTTP content-import endpoint uses, and it
+# is deliberately *not* ``load_bytes``. A caller that submits content is making a
+# claim about what that content is, so the name it claims is validated here; a
+# project-owned asset loaded back from the registry has already had its identity
+# established by that registry and keeps the more permissive path.
+
+
+def test_importing_bytes_returns_the_same_document_as_importing_the_file(
+    tmp_path: Path,
+) -> None:
+    path = write(tmp_path / "basic.dbc", VALID_DBC)
+
+    imported = DbcImportService().import_file(path)
+    submitted = DbcImportService().import_bytes(path.read_bytes(), source_name="basic.dbc")
+
+    assert submitted.database == imported.database
+    assert submitted.source.sha256 == imported.source.sha256
+    assert submitted.source.size_bytes == imported.source.size_bytes
+    assert submitted.source.encoding == imported.source.encoding
+
+
+def test_imported_bytes_carry_no_external_path() -> None:
+    """The content came from the caller, so there is no external location to name."""
+    document = DbcImportService().import_bytes(
+        VALID_DBC.encode("utf-8"), source_name="basic.dbc"
+    )
+
+    assert document.source.name == "basic.dbc"
+    assert document.source.path is None
+
+
+def test_imported_bytes_record_the_exact_bytes_that_were_submitted() -> None:
+    """Including a byte-order mark: the digest covers the bytes, not a re-render."""
+    raw = b"\xef\xbb\xbf" + VALID_DBC.encode("utf-8")
+
+    document = DbcImportService().import_bytes(raw, source_name="bom.dbc")
+
+    assert document.source.size_bytes == len(raw)
+    assert document.source.sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_importing_bytes_honours_the_declared_encoding() -> None:
+    document = DbcImportService().import_bytes(
+        LEGACY_CP1252_DBC.encode("cp1252"), source_name="legacy.dbc", encoding="cp1252"
+    )
+
+    assert document.source.encoding == "cp1252"
+    assert document.database.messages[0].signals[0].unit == "°C"
+
+
+def test_importing_legacy_bytes_without_their_encoding_is_a_typed_decode_failure() -> None:
+    with pytest.raises(DbcDecodeError) as captured:
+        DbcImportService().import_bytes(
+            LEGACY_CP1252_DBC.encode("cp1252"), source_name="legacy.dbc"
+        )
+
+    assert captured.value.code == "dbc.decode_failed"
+    assert captured.value.details["source_name"] == "legacy.dbc"
+
+
+def test_importing_an_unknown_encoding_is_a_typed_decode_failure() -> None:
+    with pytest.raises(DbcDecodeError) as captured:
+        DbcImportService().import_bytes(
+            VALID_DBC.encode("utf-8"),
+            source_name="basic.dbc",
+            encoding="not-a-real-codec",
+        )
+
+    assert captured.value.code == "dbc.decode_failed"
+
+
+def test_importing_bytes_that_are_not_a_dbc_is_a_typed_parse_failure() -> None:
+    with pytest.raises(DbcParseError) as captured:
+        DbcImportService().import_bytes(
+            b'VERSION "1.0"\n\nBO_ not_a_number M: 8 N1\n', source_name="broken.dbc"
+        )
+
+    assert captured.value.code == "dbc.parse_failed"
+
+
+def test_importing_bytes_violating_a_canonical_invariant_is_a_typed_model_failure() -> None:
+    with pytest.raises(DbcModelError) as captured:
+        DbcImportService().import_bytes(
+            REVERSED_RANGE_DBC.encode("utf-8"), source_name="reversed.dbc"
+        )
+
+    assert captured.value.code == "dbc.invalid_model"
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    [
+        "",
+        "   ",
+        "\t\n",
+        ".",
+        "..",
+        "../vehicle.dbc",
+        "..\\vehicle.dbc",
+        "folder/vehicle.dbc",
+        "folder\\vehicle.dbc",
+        "/tmp/vehicle.dbc",
+        "\\tmp\\vehicle.dbc",
+        "C:\\temp\\vehicle.dbc",
+        "C:vehicle.dbc",
+        "vehicle.txt",
+        "vehicle",
+        "vehicle.dbc.txt",
+        ".dbc",
+        " vehicle.dbc",
+        "vehicle.dbc ",
+        "veh\x00icle.dbc",
+        42,
+        None,
+        b"vehicle.dbc",
+    ],
+)
+def test_an_external_import_refuses_a_source_name_that_is_not_a_plain_dbc_name(
+    source_name: object,
+) -> None:
+    """A provenance label is not a path, and the importer is where that is decided.
+
+    The rule lives here and not only in the HTTP adapter on purpose: a future
+    caller that reaches the domain directly — a desktop filesystem bridge — has to
+    inherit the same guarantee instead of restating it, and a second statement of
+    a rule is a second chance for the two to disagree.
+    """
+    with pytest.raises(DbcUnsupportedFormatError) as captured:
+        DbcImportService().import_bytes(
+            VALID_DBC.encode("utf-8"),
+            source_name=source_name,  # type: ignore[arg-type]
+        )
+
+    error = captured.value
+    assert error.code == "dbc.unsupported_format"
+    assert error.source == "dbc"
+    assert error.recoverable is False
+
+
+@pytest.mark.parametrize("source_name", ["BODY.DBC", "vehicle.Dbc", "a.b.c.dbc"])
+def test_an_external_import_accepts_a_dbc_suffix_in_any_case(source_name: str) -> None:
+    document = DbcImportService().import_bytes(
+        VALID_DBC.encode("utf-8"), source_name=source_name
+    )
+
+    assert document.source.name == source_name
+    assert document.database.messages[0].name == "Demo"

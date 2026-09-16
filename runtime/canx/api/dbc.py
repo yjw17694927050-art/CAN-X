@@ -1,9 +1,10 @@
 """DBC runtime HTTP surface — a thin adapter over the DBC and project domains.
 
-Five endpoints, and nothing else:
+Six endpoints, and nothing else:
 
 ```text
 GET  /dbc/assets?project_path=…                     list registered assets
+POST /dbc/assets                                    import one asset from content
 GET  /dbc/assets/{id}?project_path=…                one asset's metadata
 GET  /dbc/assets/{id}/database?project_path=…       the canonical DBC definition
 POST /dbc/assets/{id}/decode                        decode one frame
@@ -17,6 +18,18 @@ multiplexer, does not walk a project directory and does not open SQLite.
 truth for "what DBCs does this project own", :class:`~canx.dbc.decode.DbcDecoder`
 stays the one implementation of "what does this frame mean", and this file is
 only the wire between them.
+
+One endpoint is a write, and it is the one that carries a security boundary:
+
+* **Content, never a location.** ``POST /dbc/assets`` accepts the DBC bytes a
+  trusted caller already holds — Base64-encoded — together with a provenance file
+  name. There is no field for a path, no field that is quietly interpreted as one,
+  and no code path that would open one: a caller cannot make the Runtime browse a
+  filesystem. Turning a user's file choice into bytes belongs to the desktop
+  filesystem bridge, which does not exist yet; this endpoint is the Runtime half
+  that will receive its output. The name a caller claims is validated by the
+  *domain* (a plain ``.dbc`` file name), so a caller that reaches the domain
+  directly inherits the same rule instead of restating it.
 
 Four properties are load-bearing:
 
@@ -46,6 +59,8 @@ an honest status code (see :mod:`canx.api.errors`).
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from datetime import UTC
 from pathlib import Path
 from typing import Self
@@ -74,6 +89,17 @@ from canx.domain.frame import Frame
 #: HTTP one.
 MAX_BATCH_FRAMES = 1000
 
+#: The HTTP request guard on one content import. A bound on *this endpoint*, not a
+#: permanent limit of the DBC domain or of the importer: the same import service
+#: will parse a larger document handed to it by another trusted caller, and the
+#: project layer has no opinion about size at all.
+MAX_DBC_IMPORT_BYTES = 16 * 1024 * 1024
+
+#: The longest Base64 text that can still decode to at most
+#: :data:`MAX_DBC_IMPORT_BYTES` bytes. Checked before decoding, so an oversized
+#: request is refused without first materialising its content in memory.
+MAX_IMPORT_BASE64_CHARS = 4 * ((MAX_DBC_IMPORT_BYTES + 2) // 3)
+
 
 class DbcAssetResponse(BaseModel):
     """One registered project-owned DBC asset.
@@ -100,6 +126,91 @@ class DbcAssetListResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     assets: list[DbcAssetResponse]
+
+
+class DbcAssetImportRequest(BaseModel):
+    """One DBC document submitted for import as a project-owned asset.
+
+    Three things are contract here, and each is deliberate:
+
+    * ``content_base64`` carries the **exact original bytes**, encoded. A DBC file
+      is not reliably text: it may be ``utf-8-sig``, it may be a legacy codec, and
+      its comments and identifiers may be non-ASCII. Accepting "the decoded text"
+      would pick an encoding on the caller's behalf and make neither the
+      byte-for-byte copy nor its digest verifiable afterwards.
+    * ``source_name`` is provenance, not a location — the name the file had *for
+      the caller*. It is checked here as a string and validated as a plain ``.dbc``
+      file name by the domain, which is the layer that keeps the rule even when a
+      caller never passes through this adapter.
+    * ``extra="forbid"``. A caller that sends ``source_path`` — or any other field
+      this contract does not declare — gets a validation failure instead of being
+      quietly ignored. Being quietly ignored is exactly how a path-shaped field
+      would start to look accepted.
+
+    ``strict=True`` for the same reason the frame contract is strict: a JSON
+    payload has primitive categories, and a coerced ``"42"`` is not the ``42`` the
+    caller sent.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    project_path: str
+    source_name: str
+    content_base64: str
+    encoding: str | None = None
+
+    @model_validator(mode="after")
+    def _reject_unimportable_content(self) -> Self:
+        """Prove the payload is importable content before any project is opened.
+
+        The check is the same function the handler decodes with, so the two cannot
+        disagree about what "valid" means. That means an accepted request decodes
+        its payload twice: once here, once in the import. The duplicated work is
+        the price of one definition of the rule, and it is bounded — the decode is
+        of content already capped at :data:`MAX_DBC_IMPORT_BYTES`, while the work
+        that actually costs something (parse, fsync, registry insert) stays off the
+        event loop.
+        """
+        decode_import_content(self.content_base64)
+        return self
+
+
+def decode_import_content(content_base64: str) -> bytes:
+    """Decode one import payload strictly, refusing what the contract forbids.
+
+    Three refusals, all of them about the *request* rather than about DBC:
+
+    * text longer than the encoded form of :data:`MAX_DBC_IMPORT_BYTES`, checked
+      before decoding so an oversized body is never first materialised as bytes;
+    * text that is not canonical Base64 — ``validate=True``, so a lenient decoder's
+      tolerance for stray characters, missing padding or the URL-safe alphabet does
+      not quietly become part of the contract;
+    * a payload that decodes to nothing, or to more than the bound. "No document
+      was sent" is a request that does not match the contract; reporting it as a
+      parser failure would blame the DBC.
+
+    Args:
+        content_base64: The Base64 text as it arrived.
+
+    Returns:
+        The exact bytes the caller submitted.
+
+    Raises:
+        ValueError: Naming the rule that failed, and never quoting the payload. A
+            plain ``ValueError`` is what a Pydantic validator turns into its own
+            failure, which is what keeps this usable as the request-level check.
+    """
+    if len(content_base64) > MAX_IMPORT_BASE64_CHARS:
+        raise ValueError(f"The DBC content must be at most {MAX_DBC_IMPORT_BYTES} bytes.")
+    try:
+        raw = base64.b64decode(content_base64, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("The DBC content is not valid Base64.") from error
+    if not raw:
+        raise ValueError("The DBC content must not be empty.")
+    if len(raw) > MAX_DBC_IMPORT_BYTES:
+        raise ValueError(f"The DBC content must be at most {MAX_DBC_IMPORT_BYTES} bytes.")
+    return raw
 
 
 class DbcChoiceResponse(BaseModel):
@@ -320,6 +431,22 @@ def create_dbc_router() -> APIRouter:
     """
     router = APIRouter(tags=["dbc"], prefix="/dbc")
 
+    @router.post("/assets", response_model=DbcAssetResponse, status_code=201)
+    async def import_asset(request: DbcAssetImportRequest) -> DbcAssetResponse:
+        """Import DBC content a trusted caller already holds as a project asset.
+
+        The create half of the collection ``GET /dbc/assets`` lists, and the only
+        write on this surface. The response is the same :class:`DbcAssetResponse`
+        projection every other asset endpoint returns, so an imported asset is
+        immediately usable through the read and decode endpoints without a second
+        lookup format.
+
+        Nothing about the request is interpreted as a location: the content travels
+        as Base64 and the name travels as provenance.
+        """
+        asset = await asyncio.to_thread(_import_asset, request)
+        return _asset_payload(asset)
+
     @router.get("/assets", response_model=DbcAssetListResponse)
     async def list_assets(project_path: str) -> DbcAssetListResponse:
         """List the assets this project owns, in the domain's own order."""
@@ -357,6 +484,23 @@ def create_dbc_router() -> APIRouter:
         return _batch_payload(decoded)
 
     return router
+
+
+def _import_asset(request: DbcAssetImportRequest) -> DbcAsset:
+    """Import one submitted document as a project-owned asset. Blocking by design.
+
+    Everything expensive about the request happens here, off the event loop: the
+    Base64 decode, the DBC parse, the filesystem write and fsync, and the registry
+    insert. The payload is decoded into bytes and handed on **as bytes** — never
+    turned back into text on the way — because the bytes are what the project
+    owns, and the digest of what the caller sent has to be the digest of what is
+    stored.
+    """
+    return ProjectDbcService(Path(request.project_path)).import_asset_bytes(
+        decode_import_content(request.content_base64),
+        source_name=request.source_name,
+        encoding=request.encoding,
+    )
 
 
 def _list_assets(project_path: str) -> tuple[DbcAsset, ...]:

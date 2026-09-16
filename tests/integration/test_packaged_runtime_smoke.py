@@ -18,6 +18,8 @@ NOT VERIFIED in the acceptance report.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import os
 import socket
 import subprocess
@@ -583,3 +585,137 @@ async def test_packaged_runtime_loads_a_project_dbc_and_decodes_with_it(
         assert proc.returncode == 0
     finally:
         _terminate(proc)
+
+
+@pytest.mark.skipif(
+    packaged_runtime() is None, reason="packaged canx-runtime.exe has not been built"
+)
+async def test_packaged_runtime_imports_dbc_content_and_decodes_with_it(
+    tmp_path: Path,
+) -> None:
+    """The frozen executable — not the source tree — performs the import itself.
+
+    The V0.3-05 packaged proof imported the asset from the source side and handed
+    the executable a project that already owned it. This test moves the import
+    *into* the executable: the source side creates an empty project, submits Base64
+    bytes, and never writes a DBC into that project at all. Every fact asserted
+    below — the asset id, the registry row, the decoded values, the stored file —
+    is therefore produced by the packaged process.
+
+    The source-side check after shutdown is the exact-byte proof: it rules out a
+    re-render, because the packaged runtime would then have persisted a rendering
+    of the model it parsed instead of the bytes it was handed.
+    """
+    exe = packaged_runtime()
+    assert exe is not None
+    project_root = tmp_path / "packaged-dbc-import.canx"
+    with ProjectService().create(project_root, display_name="Packaged DBC import"):
+        pass
+
+    submitted = _DBC_FIXTURE.read_bytes()
+    expected_sha256 = hashlib.sha256(submitted).hexdigest()
+    payload: dict[str, object] = {
+        "project_path": str(project_root),
+        "source_name": _DBC_FIXTURE.name,
+        "content_base64": base64.b64encode(submitted).decode("ascii"),
+    }
+
+    # The precondition this test depends on: the source side imported nothing.
+    assert list((project_root / "dbc").iterdir()) == []
+
+    port = _free_port()
+    token = "v0306-dbc-import-token"
+    proc = subprocess.Popen(
+        [str(exe), "--host", "127.0.0.1", "--port", str(port), "--session-token", token],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30) as client:
+            await _await_health(client)
+
+            created = await client.post("/dbc/assets", json=payload)
+            assert created.status_code == 201, created.text
+            asset = created.json()
+            asset_id = asset["asset_id"]
+            assert asset["source_name"] == _DBC_FIXTURE.name
+            assert asset["sha256"] == expected_sha256
+            assert asset["size_bytes"] == len(submitted)
+            assert asset["encoding"] == "utf-8-sig"
+
+            listed = await client.get(
+                "/dbc/assets", params={"project_path": str(project_root)}
+            )
+            assert listed.status_code == 200, listed.text
+            assert [item["asset_id"] for item in listed.json()["assets"]] == [asset_id]
+
+            database = await client.get(
+                f"/dbc/assets/{asset_id}/database",
+                params={"project_path": str(project_root)},
+            )
+            assert database.status_code == 200, database.text
+            assert [message["name"] for message in database.json()["messages"]] == [
+                "EngineData"
+            ]
+
+            decoded = await client.post(
+                f"/dbc/assets/{asset_id}/decode",
+                json={
+                    "project_path": str(project_root),
+                    "frame": _dbc_frame(_DBC_ENGINE_DATA),
+                },
+            )
+            assert decoded.status_code == 200, decoded.text
+            body = decoded.json()
+            assert body["message_name"] == "EngineData"
+            speed, coolant, throttle = body["signals"]
+            assert speed["name"] == "EngineSpeed"
+            assert speed["raw_value"] == 3000
+            assert speed["physical_value"] == 750.0
+            assert coolant["name"] == "CoolantTemp"
+            assert coolant["raw_value"] == 80
+            assert coolant["physical_value"] == 40.0
+            assert throttle["name"] == "ThrottlePosition"
+            assert throttle["raw_value"] == 128
+
+            # The content-import contract has to be in the *shipped* runtime, not
+            # only in the source tree: a path-shaped extra field is refused there too.
+            refused = await client.post(
+                "/dbc/assets", json={**payload, "source_path": "C:\\secret\\vehicle.dbc"}
+            )
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["code"] == "api.request_validation_failed"
+            assert refused.json()["source"] == "api"
+            assert refused.json()["recoverable"] is False
+
+            still_one = await client.get(
+                "/dbc/assets", params={"project_path": str(project_root)}
+            )
+            assert [item["asset_id"] for item in still_one.json()["assets"]] == [asset_id]
+
+            shutdown = await client.post(
+                "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
+            )
+            assert shutdown.status_code == 202
+
+        proc.wait(timeout=30)
+        assert proc.returncode == 0
+    finally:
+        _terminate(proc)
+
+    # Exact-byte proof, read back from the source tree after the process exited.
+    with ProjectService().open(project_root) as reopened:
+        service = ProjectDbcService(reopened.root)
+        registered = service.get_asset(asset_id)
+        stored = (reopened.root / registered.relative_path).read_bytes()
+        document = service.load_asset(asset_id)
+
+        assert stored == submitted
+        assert hashlib.sha256(stored).hexdigest() == expected_sha256
+        assert len(stored) == len(submitted)
+        assert registered.sha256 == expected_sha256
+        assert registered.size_bytes == len(submitted)
+        assert registered.source_name == _DBC_FIXTURE.name
+        assert registered.encoding == "utf-8-sig"
+        assert service.list_assets() == (registered,)
+        assert [message.name for message in document.database.messages] == ["EngineData"]

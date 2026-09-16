@@ -24,6 +24,30 @@ and are never adopted automatically: registration is what makes a file an asset.
 
 Nothing here knows about ``cantools``: parsing goes through
 :class:`~canx.dbc.service.DbcImportService`, the one boundary that does.
+
+Two import entry points exist, and they differ only in where the bytes and their
+provenance come from:
+
+```text
+import_asset(source)          an external file path: validated, re-read and
+                              compared, so the bytes written are the bytes that
+                              were validated (the TOCTOU gate)
+
+import_asset_bytes(raw, …)    content a trusted caller already holds: the bytes
+                              it hands over are the bytes written, and there is
+                              nothing to re-read because no second read of
+                              anything ever happened
+```
+
+Below those two lines the persistence body is **one** function. Duplicating the
+staging file, the atomic promotion, the registry insert and the cleanup-on-failure
+path would mean two chances for that order to drift — and the invariant the order
+exists to produce, that a registry row can never point at a file that was never
+written, is the whole point of this module.
+
+Neither entry point takes a location from a caller that is not trusted with the
+filesystem: ``import_asset`` reads a path the host process was given, and
+``import_asset_bytes`` never consults the filesystem for its content at all.
 """
 
 from __future__ import annotations
@@ -78,6 +102,12 @@ class ProjectDbcService:
         byte**: the project-owned copy is the exact file that was validated, not a
         re-formatted rendering of the parsed model.
 
+        This is the path-based entry point, for a caller the host already trusts
+        with a filesystem location — a desktop filesystem bridge, or the test
+        suite. A caller that holds the bytes instead submits them to
+        :meth:`import_asset_bytes`, which never opens a path at all.
+
+
         Args:
             source: Path to the external DBC file. It is only ever read.
             encoding: Codec to decode the source with. ``None`` selects the
@@ -107,6 +137,82 @@ class ProjectDbcService:
         project_id = self._require_project_id()
         document = self._importer.import_file(source, encoding=encoding)
         raw = _reread_verified(source, document.source)
+        return self._persist_imported_document(project_id, document, raw)
+
+    def import_asset_bytes(
+        self, raw: bytes, *, source_name: str, encoding: str | None = None
+    ) -> DbcAsset:
+        """Import DBC bytes a trusted caller already holds as a project-owned asset.
+
+        The content-based sibling of :meth:`import_asset`, and the entry point the
+        Runtime control plane uses: a caller that has the bytes submits them, and
+        the Runtime never learns a location it would otherwise have to open. The
+        bytes are persisted **exactly as submitted**, so the digest, the size and
+        the byte-for-byte content of the project-owned copy are the ones the caller
+        can verify against what it sent.
+
+        There is no second filesystem read here, and none is invented: the caller's
+        bytes are already an immutable snapshot, so the TOCTOU gate that belongs to
+        a *path* — validate, re-read, compare — has nothing to protect against.
+
+        Args:
+            raw: The exact DBC bytes to import.
+            source_name: The file name being claimed for this content. Provenance
+                only: a plain ``.dbc`` file name, never a path.
+            encoding: Codec to decode the bytes with. ``None`` selects the declared
+                default; the encoding actually used is recorded.
+
+        Returns:
+            The registered asset: its stable id, the project that owns it, the
+            project-relative copy path, and the provenance of the content.
+
+        Raises:
+            ProjectError: If the project root is not a readable CAN-X project.
+            DbcUnsupportedFormatError: If ``source_name`` is not a plain, non-blank
+                ``.dbc`` file name; nothing is written or registered.
+            DbcDecodeError: If the bytes are not text under the declared encoding.
+            DbcParseError: If the text is not a well-formed DBC document.
+            DbcModelError: If the document cannot satisfy a CAN-X invariant.
+            DbcAssetIntegrityError: If the project's ``dbc`` directory no longer
+                resolves inside the project, or is missing: there is then no safe
+                place to write the copy, and nothing is written or registered.
+            DbcAssetStorageError: If the project-owned copy could not be written.
+            DbcAssetRegistryError: If the registry row could not be committed; the
+                newly written file is removed on a best-effort basis.
+        """
+        project_id = self._require_project_id()
+        document = self._importer.import_bytes(
+            raw, source_name=source_name, encoding=encoding
+        )
+        return self._persist_imported_document(project_id, document, raw)
+
+    def _persist_imported_document(
+        self, project_id: str, document: DbcDocument, raw: bytes
+    ) -> DbcAsset:
+        """Write one validated document's exact bytes and register it.
+
+        The single persistence body both import entry points end in. ``raw`` must
+        be the very bytes ``document`` describes — the path-based caller proves it
+        with :func:`_reread_verified`, and the content-based caller supplies it
+        directly — because this function writes ``raw`` and records
+        ``document.source``'s digest for it.
+
+        The commit order is the module's contract:
+
+        ```text
+        derive the asset identity and its canonical relative path
+        ↓  resolve the target through the same gate a load uses
+        ↓  write the exact bytes through a staging file (flush + fsync)
+        ↓  atomically promote staging → dbc/<asset_id>.dbc
+        ↓  insert the registry row
+        ```
+
+        Raises:
+            DbcAssetIntegrityError: If the path escapes the project or its ``dbc``
+                directory, or that directory is missing.
+            DbcAssetStorageError: If the copy could not be written or promoted.
+            DbcAssetRegistryError: If the registry row could not be committed.
+        """
         asset_id = str(uuid4())
         asset = DbcAsset(
             asset_id=asset_id,

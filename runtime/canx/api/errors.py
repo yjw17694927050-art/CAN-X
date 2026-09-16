@@ -24,13 +24,18 @@ from canx.dbc.errors import (
     DbcAssetIntegrityError,
     DbcAssetNotFoundError,
     DbcAssetRegistryError,
+    DbcAssetStorageError,
     DbcAssetValidationError,
+    DbcDecodeError,
     DbcDecodeUnsupportedError,
     DbcError,
     DbcFrameTypeMismatchError,
     DbcMessageNotFoundError,
+    DbcModelError,
+    DbcParseError,
     DbcPayloadTooShortError,
     DbcSignalDecodeError,
+    DbcUnsupportedFormatError,
 )
 from canx.project.errors import ProjectError
 from canx.query.errors import (
@@ -85,6 +90,26 @@ def status_for(error: DomainError) -> int:
     if isinstance(error, DbcAssetRegistryError):
         # The registry could not be read or committed; the environment may settle.
         return 503
+    if isinstance(error, DbcAssetStorageError):
+        # The project-owned copy could not be written — a full disk, a locked or
+        # read-only directory. The environment may settle, so this is a service
+        # condition rather than a rejected request.
+        return 503
+    if isinstance(
+        error,
+        (
+            DbcUnsupportedFormatError,
+            DbcDecodeError,
+            DbcParseError,
+            DbcModelError,
+        ),
+    ):
+        # The request was well formed and its *content* is the problem: a name that
+        # is not a DBC file name, bytes that are not text under the declared
+        # encoding, text that is not DBC, or a document that cannot satisfy a CAN-X
+        # invariant. Distinct codes, one status — the fix is the same (submit a DBC
+        # document the domain accepts) even though the reason is not.
+        return 422
     if isinstance(
         error,
         (

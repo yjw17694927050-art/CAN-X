@@ -3873,6 +3873,389 @@ Awaiting independent final acceptance
 
 ---
 
+### Step V0.3-06 — Safe DBC Content Import API Foundation
+
+V0.3-05 / V0.3-05-FINAL 已由项目负责人独立验收：**Independent Final Acceptance: PASS**
+（P0: 0 · P1: 0 · P2: 0 · Status: CLOSED；验收时 HEAD
+`f4e5c0bd81706986b3431d8da10734684e2d2453`）。本轮开工前核对 GitHub 远端 HEAD 与该值一致
+（`git ls-remote origin HEAD`），未发现冲突；V0.3-05 的 read / decode contract 本轮**未修改**。
+
+#### Objective
+
+为 Runtime 建立安全、typed、bounded、content-based 的 DBC project import HTTP
+control-plane：调用方把**已经持有的 DBC bytes** 导入为 project-owned asset，而 Runtime HTTP
+API 永远不接受任意 external source path。
+
+```text
+trusted caller already holds DBC bytes
+        ↓
+bounded typed HTTP request（Base64 / source_name / encoding）
+        ↓
+DbcImportService.import_bytes      external-import identity boundary
+        ↓
+canonical parse / validation
+        ↓
+ProjectDbcService.import_asset_bytes
+        ↓
+project-owned immutable DBC asset（byte-for-byte）
+        ↓
+registry（既有 dbc_assets 表）
+        ↓
+既有 GET /dbc/assets · /database · /decode（V0.3-05 未改）
+```
+
+#### Architecture
+
+```text
+HTTP Adapter (runtime/canx/api/dbc.py)
+   POST /dbc/assets → DbcAssetImportRequest（strict + extra=forbid）
+   Base64 解码 / size guard / 结果投影
+        ↓
+ProjectDbcService.import_asset_bytes       content import（本轮新增）
+ProjectDbcService.import_asset             path import（V0.3-03，语义未变）
+        ↓           两条路径在此汇合
+_persist_imported_document                 唯一 persistence body
+   staging → flush + fsync → atomic promote → registry insert → 失败清理
+        ↓
+DbcImportService.import_bytes / import_file / load_bytes    唯一 cantools 边界
+```
+
+HTTP 层**不做**：读文件、解析 DBC、推导 asset path、写 registry、构造第二套 error envelope。
+
+#### Security boundary（本轮核心）
+
+V0.3-05 记录的限制在本轮**仍然成立并成为正式 contract**：
+
+```text
+Runtime HTTP API 不接受 external source path
+不根据 caller path 打开外部文件
+不做 caller 指定的 Path.read_bytes()
+renderer / HTTP caller 无法指挥 Python Runtime 浏览任意 filesystem
+```
+
+外部文件系统 → bytes 的那一段属于未来 Tauri safe filesystem bridge，本轮只实现 Runtime 侧的
+content import foundation。
+
+三重防线（不是只有 adapter）：
+
+```text
+1. request model      extra="forbid"  → 未知字段（含 source_path）422，而非静默忽略
+2. HTTP adapter       类型 / Base64 / empty / size guard
+3. domain service     source_name invariant（import_bytes 内独立校验）
+```
+
+第 3 层存在的理由：未来 Tauri bridge 可能绕过 HTTP model 直接调用 domain/service，安全语义
+不能只存在于唯一一个 adapter。
+
+#### POST /dbc/assets contract
+
+```text
+POST /dbc/assets   → 201 Created + DbcAssetResponse（复用既有 schema，未新建重复投影）
+GET  /dbc/assets   → 既有 list（未改）
+```
+
+同一 resource collection 上 GET = list、POST = create/import。**未**新增
+`POST /dbc/import` / `/assets/import-path` / `/from-file`。
+
+Request：
+
+```json
+{
+  "project_path": "C:/projects/vehicle.canx",
+  "source_name": "vehicle.dbc",
+  "content_base64": "VkVSU0lPTiAiMS4wIg0K...",
+  "encoding": "cp1252"
+}
+```
+
+```text
+project_path    CAN-X project path
+source_name     provenance basename only（不是 filesystem path）
+content_base64  原始 DBC bytes 的 Base64（无损）
+encoding        optional codec；None 走既有默认 utf-8-sig
+```
+
+`ConfigDict(frozen=True, strict=True, extra="forbid")`：跨 JSON primitive category 的
+coercion 被拒（V0.3-05-FINAL 的 strict 纪律延续到新的 request model）。
+
+#### Base64 policy
+
+DBC 文件不保证是 text：可能是 `utf-8-sig`、legacy codec，或含非 ASCII comment /
+identifier。因此 durable import contract 传**原始 bytes 的无损表示**，不接受"解码后的
+text"——后者会替调用方选定编码，使 byte-for-byte copy 与其 digest 不可验证。
+
+本轮使用标准库 Base64，**未**引入 `python-multipart` 或任何新 dependency。
+
+#### HTTP size bound
+
+```text
+MAX_DBC_IMPORT_BYTES = 16 MiB
+```
+
+这是 **HTTP control-plane request guard**，不是 DBC domain 的永久能力限制：domain 的 import
+service 对另一个可信调用方交来的更大文档并无意见，project 层对大小没有观点。
+
+```text
+empty content            → 422
+invalid Base64           → 422
+decoded content > 16 MiB → 422
+```
+
+三者均为 request contract failure：`422` / `api.request_validation_failed` / `source = api`
+/ `recoverable = false`。malformed Base64 **不会**被伪装成 DBC parser error。
+
+实现上先用编码文本长度上界（`MAX_IMPORT_BASE64_CHARS`）拦截，再解码，所以超限请求不会先被
+materialise 成 bytes。
+
+#### Source-name invariant
+
+```text
+non-empty
+无前后空白
+basename only：无 "/"、"\"、":"（Windows drive separator）、无 control character
+必须 .dbc 结尾（case-insensitive）
+```
+
+```text
+vehicle.dbc              ACCEPT
+BODY.DBC                 ACCEPT
+a.b.c.dbc                ACCEPT
+../vehicle.dbc           REJECT
+C:\temp\vehicle.dbc      REJECT
+/tmp/vehicle.dbc         REJECT
+folder/vehicle.dbc       REJECT
+vehicle.txt              REJECT
+blank                    REJECT
+```
+
+拒绝值**不回显**进 `details`：这一层无法知道 caller 的字符串是不是路径或秘密，错误响应不能
+变成被拒 payload 的呈现；details 只报"哪条规则失败"（`reason`）。
+
+#### Domain / service changes
+
+```text
+DbcImportService.import_bytes(raw, *, source_name, encoding=None)   新增 public API
+    external-import identity boundary：校验 source_name / 解析 exact bytes /
+    return canonical DbcDocument，path = None
+
+DbcImportService.load_bytes(...)      未改：继续服务 project-owned asset load
+DbcImportService.import_file(...)     未改：path import 语义不变
+```
+
+#### Shared persistence design
+
+两条 import 路径在 `ProjectDbcService._persist_imported_document(project_id, document, raw)`
+汇合，只有一份：
+
+```text
+derive asset id / canonical relative path
+↓ resolve_asset_path（与 load 同一 containment gate）
+↓ _stage_asset（staging 写入 + flush + fsync + atomic promote）
+↓ repository.insert_asset
+↓ 失败时 best-effort 删除已写文件
+```
+
+`import_asset(path)` 的 TOCTOU gate（`_reread_verified`：validate → re-read → hash compare）
+**只属于 path-based import**，原样保留；bytes import 已持有 immutable bytes snapshot，没有
+第二次 filesystem read，也没有虚构一个。V0.3-03 的路径身份 / containment / symlink 逃逸 /
+registry rollback / tamper detection 测试未修改且全部通过。
+
+#### Error mapping
+
+`api/errors.py` 的 `status_for` 新增（**未**在 `api/dbc.py` 建第二套 envelope）：
+
+```text
+ProjectError                     → 400
+DbcUnsupportedFormatError        → 422   dbc.unsupported_format      ← 新增映射
+DbcDecodeError                   → 422   dbc.decode_failed           ← 新增映射
+DbcParseError                    → 422   dbc.parse_failed            ← 新增映射
+DbcModelError                    → 422   dbc.invalid_model           ← 新增映射
+DbcAssetStorageError             → 503   dbc.asset_storage_failed    ← 新增映射
+DbcAssetRegistryError            → 503   （V0.3-05 已有）
+DbcAssetValidationError          → 400
+DbcAssetNotFoundError            → 404
+DbcAssetIntegrityError           → 409
+```
+
+请求形状 / Base64 / size 失败继续走全局 `api.request_validation_failed`（422 / source = api），
+不回显 caller payload，不泄漏 traceback / filesystem internals / SQLite internals /
+cantools repr / raw DBC text。
+
+#### Async / thread boundary
+
+handler 沿用既有模式：`await asyncio.to_thread(_import_asset, request)`。Base64 decode、DBC
+parse、filesystem write + fsync、hash、SQLite registry 全部在 thread 中执行；**未**引入
+executor framework 或新 dependency。
+
+诚实记录一处取舍：request contract 校验（Base64 严格性 / empty / size）位于 Pydantic
+validator，即在事件循环内同步执行。它是"进入 domain 之前拒绝请求"的唯一位置——若挪进
+handler，`invalid Base64` 就会与 domain 的 DBC 失败共用一条路径，丢失
+`api.request_validation_failed` / `source = api` 语义。代价是接受路径上对**已受 16 MiB 上界
+约束**的文本多解码一次；真正昂贵的部分（parse / fsync / registry）仍在 loop 外。
+
+#### Tests added
+
+```text
+tests/unit/dbc/test_dbc_service.py              +34   import_bytes：bytes 保真 / 无 path /
+                                                     encoding 策略 / decode-parse-model 失败 /
+                                                     23 例非法 source_name / 3 例合法大小写
+tests/unit/dbc/test_dbc_project_service.py      +33   import_asset_bytes：byte-for-byte /
+                                                     BOM / reload 后可 decode / 无 dedup /
+                                                     decoy 文件不参与 / 失败无残留
+                                                     （无注册行 / 无最终文件 / 无 staging）
+tests/unit/api/test_dbc_api.py                  +39   201 契约 / 既有 read + decode 全链路 /
+                                                     source_name 拒绝 / 11 例 request shape /
+                                                     超限 / 对照组（422 vs 400）/ 唯一内容源 /
+                                                     无回显
+tests/integration/test_dbc_api_integration.py    +6   create→close→POST→list/database/decode /
+                                                     双 asset 不串 / 与 path import 共存 /
+                                                     400 vs 422 / tamper 409 / 无 dedup
+tests/integration/test_packaged_runtime_smoke.py +1   packaged exe 自己执行 import +
+                                                     exact-byte proof
+```
+
+新增 fixture：无（复用既有 license-clean 手写 fixture）。
+
+#### Full regression（2026-09-17，全部为实际执行结果）
+
+```text
+python -m pytest tests/unit/dbc -q                                  570 passed, 1 skipped
+python -m pytest tests/unit/api/test_dbc_api.py -q                  137 passed
+python -m pytest tests/unit/api -q                                  238 passed
+python -m pytest tests/integration/test_dbc_api_integration.py -q    14 passed
+python -m pytest tests/integration -q                               245 passed (87.41s)
+python -m pytest -q                                              1618 passed, 1 skipped (129.82s)
+ruff check runtime tests tools                                    exit 0（All checks passed!）
+mypy runtime                                                      exit 0（64 source files，strict）
+```
+
+用例总数 1505 → 1618（净增 113 = unit 106 + integration 6 + packaged 1）。1 skipped 为既有已知
+项（本机无权限创建目录链接 WinError 1314），非本轮引入。
+
+#### Packaged-runtime import proof（本阶段关键验收项）
+
+V0.3-05 的 packaged proof 是「source side 建 project + source side import asset → packaged
+exe 读 / decode」。V0.3-06 把 import 本身移进 exe：
+
+```text
+source side: 只创建 EMPTY project（断言 project/dbc 为空目录）
+↓ start 新构建的 canx-runtime.exe
+↓ POST /dbc/assets（project_path / source_name / content_base64）
+↓ packaged exe 自己：Base64 decode → canonical parse →
+                   写 project-owned asset → 写 registry 行
+↓ GET /dbc/assets · GET /database · POST /decode
+  EngineSpeed raw 3000 → 750 rpm；CoolantTemp raw 80 → 40 degC；
+  ThrottlePosition raw 128
+↓ POST /dbc/assets + source_path（path-shaped extra field）→ 422
+  api.request_validation_failed / source = api / recoverable = false
+  → 且 asset 数仍为 1（被拒请求未创建任何 asset）
+↓ shutdown exe（exit 0）
+↓ source side reopen project：asset 存在 / 可 load / list_assets 恰为 1 条
+```
+
+RED 证据（同一测试对 V0.3-05-FINAL 构建的 exe 运行）：
+
+```text
+POST /dbc/assets → 405 {"detail":"Method Not Allowed"}
+```
+
+即该 endpoint 确实不在旧 shipped runtime 中，测试能捕获其缺失。
+
+#### Exact-byte packaged proof
+
+packaged 进程退出后，从 source side reopen project 读取 `project/dbc/<asset_id>.dbc`：
+
+```text
+stored_bytes == submitted_bytes                        PASS
+sha256(stored_bytes) == sha256(submitted_bytes)        PASS
+size_bytes == len(submitted_bytes)                     PASS
+registry 行 sha / size / source_name / encoding 与提交一致  PASS
+load_asset(asset_id) 仍解析出 EngineData                PASS
+```
+
+这排除了「parse → 重新渲染 DBC 文本 → 保存渲染结果」的可能：packaged runtime 写下的必须是
+提交的原始 bytes。
+
+#### Packaging
+
+```text
+scripts\package-windows.cmd                 exit 0
+  · [1/6] runtime build + staged sidecar     PASS
+  · [2/6] staged sidecar verified            ok
+  · [3/6] packaged-runtime smoke test        5 passed in 21.36s
+  · [4/6] Tauri MSI build                    PASS
+  · [5/6] MSI artifact check                 ok: CAN-X_0.1.0_x64_en-US.msi
+  · [6/6] packaging complete                 exit 0
+
+独立复核（对新构建的 exe 重跑 smoke，不复用旧 exe）
+  CANX_TEST_RUNTIME_EXE=<repo>\build\runtime-dist\canx-runtime.exe \
+    python -m pytest tests\integration\test_packaged_runtime_smoke.py -q
+  → 5 passed in 21.58s
+
+build\runtime-dist\canx-runtime.exe                               60,122,752 bytes
+apps\...\binaries\canx-runtime-x86_64-pc-windows-msvc.exe         60,122,752 bytes
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi                     62,943,232 bytes
+（V0.3-05-FINAL：60,116,826 / 60,116,826 / 62,939,136）
+```
+
+#### Schema / dependency changes
+
+```text
+SQLite schema             未改（未新增 migration）
+project.json              未改
+Parquet schema            未改
+Frame / FrameBatch        未改
+canonical DBC model       未改
+DecodedFrame              未改
+WebSocket                 未改
+frontend / Tauri          未改（本轮未触碰 apps/desktop/）
+新增 Python dependency    none（Base64 使用标准库）
+新增 Rust / JS dependency none
+```
+
+#### Known limitations（诚实记录）
+
+```text
+ 1 content import 只有 HTTP / domain 入口，没有桌面入口：Tauri filesystem bridge 尚未实现，
+   用户目前无法从 UI 选择 DBC 文件。
+ 2 size guard（16 MiB）是 HTTP 端点边界，不是 domain 能力上限；直接调用 domain 的调用方不受
+   该上界约束。
+ 3 request contract 校验在事件循环内对已受上界约束的文本多解码一次（见 Async / thread
+   boundary）。
+ 4 同一份内容导入两次得到两个 asset（无 dedup）——有意保留的现状，不是缺陷；asset 的生命
+   周期（rename / replace / delete）仍未定义。
+ 5 本轮只在 Windows 上验证打包产物；macOS / Linux 构建形态未验证。
+ 6 未对真实 CAN 硬件 / 真实设备做任何验证（本阶段不涉及）。
+```
+
+#### Deferred（本轮明确未做）
+
+```text
+Tauri file picker / React DBC UI / drag & drop import / filesystem capability
+active DBC / channel ↔ DBC binding / Trace decoded columns / WebSocket decoded stream
+Plot signal binding / Agent dbc.decode
+DBC Editor / delete / rename / replace asset / asset dedup
+decode cache / float decode / nested & extended multiplexing
+persistent decoded signals / Parquet decoded dataset / DuckDB decoded query
+V0.4 work
+```
+
+#### 状态
+
+```text
+V0.3-06 Safe DBC Content Import API Foundation
+
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮**不自行宣布** V0.3-06 Final Acceptance: PASS / CLOSED；最终验收由项目负责人独立执行。
+不得由本轮自行开始下一阶段。
+
+
+---
+
 ## V0.3 — Professional Trace & DBC Foundation
 
 目标：

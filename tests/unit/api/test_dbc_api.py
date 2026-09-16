@@ -23,6 +23,7 @@ Three things are pinned deliberately:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from datetime import datetime
@@ -46,6 +47,7 @@ METADATA = FIXTURES / "metadata.dbc"
 MIXED_ENDIAN = FIXTURES / "endian_signed_scale.dbc"
 MULTIPLEXED = FIXTURES / "multiplexed.dbc"
 EXTENDED = FIXTURES / "extended.dbc"
+MALFORMED = FIXTURES / "malformed.dbc"
 
 #: ``basic_standard.dbc``'s ``EngineData``: EngineSpeed 3000 → 750 rpm,
 #: CoolantTemp 80 → 40 degC, ThrottlePosition 128 → 50.19607808 %.
@@ -1303,3 +1305,458 @@ async def test_a_coercion_refusal_echoes_no_value_and_no_internals(tmp_path: Pat
     body = response.json()
     _assert_validation_envelope(response.status_code, body)
     assert "99887766" not in str(body)
+
+
+# --- content import: POST /dbc/assets ----------------------------------------
+#
+# The create half of the collection ``GET /dbc/assets`` lists. The Runtime is
+# handed content, never a location: no request field names a file for the Runtime
+# to open, and no code path could honour one if it did.
+
+#: The HTTP request guard on one content import. Mirrors the contract, which is a
+#: bound on this endpoint rather than a permanent limit of the DBC domain.
+MAX_IMPORT_BYTES = 16 * 1024 * 1024
+
+#: A ``°`` in ``"°C"``: not valid UTF-8 on its own, so it proves the declared
+#: encoding is what decoded the bytes.
+LEGACY_CP1252_DBC = (
+    'VERSION "1.0"\n'
+    "\n"
+    "BU_: N1\n"
+    "\n"
+    "BO_ 256 Demo: 8 N1\n"
+    ' SG_ Temp : 0|8@1+ (1,-40) [-40|215] "\xb0C" N1\n'
+)
+
+#: A legal DBC document that is not any fixture: used where the *identity* of the
+#: submitted bytes matters more than their content.
+OTHER_DBC = (
+    'VERSION "1.0"\n'
+    "\n"
+    "BU_: N1\n"
+    "\n"
+    "BO_ 512 Other: 8 N1\n"
+    ' SG_ Level : 0|8@1+ (1,0) [0|255] "" N1\n'
+)
+
+
+def _empty_project(tmp_path: Path) -> Path:
+    """Create a real project and return it closed.
+
+    Every request below has to open and validate the project itself, which is the
+    behaviour under test — the import is not handed an already-open handle.
+    """
+    root = tmp_path / "vehicle.canx"
+    with ProjectService().create(root, display_name="DBC import"):
+        pass
+    return root
+
+
+def _import_body(
+    root: Path, *, content: bytes = b"", source_name: str = "vehicle.dbc", **overrides: object
+) -> dict[str, object]:
+    """Build one content-import body carrying ``content``."""
+    payload: dict[str, object] = {
+        "project_path": str(root),
+        "source_name": source_name,
+        "content_base64": base64.b64encode(content).decode("ascii"),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _stored_assets(root: Path) -> list[str]:
+    """Names of the files the project owns, whatever the registry says."""
+    return sorted(path.name for path in (root / "dbc").iterdir())
+
+
+def _valid_import_payload() -> dict[str, object]:
+    """A shape-valid import body whose project path need not exist.
+
+    Shape validation happens before any project is opened, so these payloads can
+    name a path that is not there — which is exactly what makes the control test
+    below able to tell "refused as a request" from "refused as a project".
+    """
+    return {
+        "project_path": "C:/projects/vehicle.canx",
+        "source_name": "vehicle.dbc",
+        "content_base64": base64.b64encode(b'VERSION "1.0"\n').decode("ascii"),
+    }
+
+
+def _without_import_field(field: str) -> dict[str, object]:
+    """A shape-valid import body with one declared field removed."""
+    return {key: value for key, value in _valid_import_payload().items() if key != field}
+
+
+def _import_field(field: str, value: object) -> dict[str, object]:
+    """A shape-valid import body with one field replaced or added."""
+    return {**_valid_import_payload(), field: value}
+
+
+MALFORMED_IMPORTS: list[tuple[str, dict[str, object]]] = [
+    ("missing project_path", _without_import_field("project_path")),
+    ("missing source_name", _without_import_field("source_name")),
+    ("project_path as integer", _import_field("project_path", 42)),
+    ("source_name as integer", _import_field("source_name", 42)),
+    ("content_base64 as integer", _import_field("content_base64", 42)),
+    ("encoding as integer", _import_field("encoding", 42)),
+    ("content_base64 is not base64", _import_field("content_base64", "!!not-base64!!")),
+    ("content_base64 is empty", _import_field("content_base64", "")),
+    ("unknown extra field", _import_field("unexpected", 1)),
+    ("extra source_path field", _import_field("source_path", "C:\\secret\\vehicle.dbc")),
+    ("extra content field", _import_field("content", 'VERSION "1.0"\n')),
+]
+
+
+async def test_importing_content_creates_an_asset_the_existing_apis_can_use(
+    tmp_path: Path,
+) -> None:
+    """create → every V0.3-05 read path, against the real project on disk."""
+    root = _empty_project(tmp_path)
+    raw = BASIC.read_bytes()
+
+    async with _client() as client:
+        created = await client.post("/dbc/assets", json=_import_body(root, content=raw))
+        assert created.status_code == 201, created.text
+        asset = created.json()
+        assert set(asset) == {
+            "asset_id",
+            "source_name",
+            "sha256",
+            "size_bytes",
+            "encoding",
+            "imported_at",
+        }
+        assert asset["source_name"] == "vehicle.dbc"
+        assert asset["sha256"] == hashlib.sha256(raw).hexdigest()
+        assert asset["size_bytes"] == len(raw)
+        assert asset["encoding"] == "utf-8-sig"
+        assert datetime.fromisoformat(asset["imported_at"]).tzinfo is not None
+        assert "relative_path" not in asset
+
+        asset_id = asset["asset_id"]
+        listed = await client.get("/dbc/assets", params={"project_path": str(root)})
+        fetched = await client.get(
+            f"/dbc/assets/{asset_id}", params={"project_path": str(root)}
+        )
+        database = await client.get(
+            f"/dbc/assets/{asset_id}/database", params={"project_path": str(root)}
+        )
+        decoded = await client.post(
+            f"/dbc/assets/{asset_id}/decode", json=_decode_body(root, ENGINE_DATA)
+        )
+
+    assert [item["asset_id"] for item in listed.json()["assets"]] == [asset_id]
+    assert fetched.json() == asset
+    assert [message["name"] for message in database.json()["messages"]] == ["EngineData"]
+    assert decoded.status_code == 200, decoded.text
+    body = decoded.json()
+    assert body["message_name"] == "EngineData"
+    assert body["signals"][0]["name"] == "EngineSpeed"
+    assert body["signals"][0]["raw_value"] == 3000
+    assert body["signals"][0]["physical_value"] == 750.0
+    assert body["signals"][1]["raw_value"] == 80
+    assert body["signals"][1]["physical_value"] == 40.0
+
+    # The project-owned copy is the submitted payload, byte for byte.
+    assert _stored_assets(root) == [f"{asset_id}.dbc"]
+    assert (root / "dbc" / f"{asset_id}.dbc").read_bytes() == raw
+
+
+async def test_the_import_records_the_bytes_it_was_given_and_not_a_re_render(
+    tmp_path: Path,
+) -> None:
+    """A byte-order mark survives: nothing between the request and the file rewrites."""
+    root = _empty_project(tmp_path)
+    raw = b"\xef\xbb\xbf" + BASIC.read_bytes()
+
+    async with _client() as client:
+        created = await client.post("/dbc/assets", json=_import_body(root, content=raw))
+
+    assert created.status_code == 201, created.text
+    asset = created.json()
+    stored = (root / "dbc" / f"{asset['asset_id']}.dbc").read_bytes()
+    assert stored == raw
+    assert asset["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert asset["size_bytes"] == len(raw)
+
+
+async def test_importing_legacy_bytes_with_a_declared_encoding_succeeds(
+    tmp_path: Path,
+) -> None:
+    root = _empty_project(tmp_path)
+    raw = LEGACY_CP1252_DBC.encode("cp1252")
+
+    async with _client() as client:
+        created = await client.post(
+            "/dbc/assets", json=_import_body(root, content=raw, encoding="cp1252")
+        )
+
+    assert created.status_code == 201, created.text
+    asset = created.json()
+    assert asset["encoding"] == "cp1252"
+    assert (root / "dbc" / f"{asset['asset_id']}.dbc").read_bytes() == raw
+
+
+async def test_importing_the_same_content_twice_creates_two_assets(tmp_path: Path) -> None:
+    """No content de-duplication: an import is an explicit asset creation."""
+    root = _empty_project(tmp_path)
+    raw = BASIC.read_bytes()
+
+    async with _client() as client:
+        first = await client.post("/dbc/assets", json=_import_body(root, content=raw))
+        second = await client.post("/dbc/assets", json=_import_body(root, content=raw))
+
+    assert first.status_code == second.status_code == 201
+    assert first.json()["asset_id"] != second.json()["asset_id"]
+    assert first.json()["sha256"] == second.json()["sha256"]
+    assert len(_stored_assets(root)) == 2
+
+
+async def test_an_import_of_unparseable_content_is_a_typed_422(tmp_path: Path) -> None:
+    """A malformed document is the *database's* failure, not the request's."""
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets", json=_import_body(root, content=MALFORMED.read_bytes())
+        )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert set(body) == ENVELOPE_FIELDS
+    assert body["code"] == "dbc.parse_failed"
+    assert body["source"] == "dbc"
+    assert body["recoverable"] is False
+    assert _stored_assets(root) == []
+
+
+async def test_an_import_of_legacy_bytes_without_their_encoding_is_a_typed_422(
+    tmp_path: Path,
+) -> None:
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets", json=_import_body(root, content=LEGACY_CP1252_DBC.encode("cp1252"))
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "dbc.decode_failed"
+    assert response.json()["source"] == "dbc"
+    assert _stored_assets(root) == []
+
+
+async def test_an_import_with_an_unknown_encoding_is_a_typed_422(tmp_path: Path) -> None:
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets",
+            json=_import_body(root, content=BASIC.read_bytes(), encoding="not-a-real-codec"),
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "dbc.decode_failed"
+    assert _stored_assets(root) == []
+
+
+async def test_an_import_into_an_invalid_project_is_a_400(tmp_path: Path) -> None:
+    plain = tmp_path / "not-a-project"
+    plain.mkdir()
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets", json=_import_body(plain, content=BASIC.read_bytes())
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert set(body) == ENVELOPE_FIELDS
+    assert body["source"] == "project"
+    assert body["code"].startswith("project.")
+    assert sorted(path.name for path in plain.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    [
+        "",
+        "   ",
+        ".",
+        "..",
+        "../vehicle.dbc",
+        "..\\vehicle.dbc",
+        "folder/vehicle.dbc",
+        "folder\\vehicle.dbc",
+        "/tmp/vehicle.dbc",
+        "\\tmp\\vehicle.dbc",
+        "C:\\temp\\vehicle.dbc",
+        "C:vehicle.dbc",
+        "vehicle.txt",
+        "vehicle",
+        " vehicle.dbc",
+        "vehicle.dbc ",
+    ],
+)
+async def test_an_import_refuses_a_source_name_that_is_not_a_plain_dbc_name(
+    tmp_path: Path, source_name: str
+) -> None:
+    """A provenance label, not a path — refused by the domain, reported as a 422."""
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets",
+            json=_import_body(root, content=BASIC.read_bytes(), source_name=source_name),
+        )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert set(body) == ENVELOPE_FIELDS
+    assert body["code"] == "dbc.unsupported_format"
+    assert body["source"] == "dbc"
+    assert body["recoverable"] is False
+    assert _stored_assets(root) == []
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"), MALFORMED_IMPORTS, ids=[label for label, _ in MALFORMED_IMPORTS]
+)
+async def test_a_malformed_import_request_is_refused_by_the_shared_envelope(
+    label: str, payload: dict[str, object]
+) -> None:
+    """Every shape failure is the shared envelope, and never the framework's own."""
+    async with _client() as client:
+        response = await client.post("/dbc/assets", json=payload)
+
+    _assert_validation_envelope(response.status_code, response.json())
+
+
+async def test_an_oversized_import_request_is_refused(tmp_path: Path) -> None:
+    """The request guard: decoded content above the bound never reaches the parser."""
+    root = _empty_project(tmp_path)
+    oversized = base64.b64encode(b"V" * (MAX_IMPORT_BYTES + 1)).decode("ascii")
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets",
+            json={
+                "project_path": str(root),
+                "source_name": "vehicle.dbc",
+                "content_base64": oversized,
+            },
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+    assert _stored_assets(root) == []
+
+
+async def test_a_rejected_import_never_reaches_the_project(tmp_path: Path) -> None:
+    """The control group that proves *where* a refusal happened.
+
+    The same absent project is addressed twice with differently-broken payloads. A
+    shape failure is answered as a request failure (422, ``source = api``) and the
+    domain is never entered; a shape-valid payload reaches the handler and is
+    answered by the project domain (400, ``source = project``). Without the second
+    half, the first could not tell "refused as a request" from "refused because the
+    project is missing".
+    """
+    absent = tmp_path / "absent.canx"
+
+    async with _client() as client:
+        shape_failure = await client.post(
+            "/dbc/assets",
+            json={
+                **_valid_import_payload(),
+                "project_path": str(absent),
+                "source_path": "C:\\secret\\vehicle.dbc",
+            },
+        )
+        reached_the_handler = await client.post(
+            "/dbc/assets", json=_import_body(absent, content=BASIC.read_bytes())
+        )
+
+    assert shape_failure.status_code == 422
+    assert shape_failure.json()["code"] == REQUEST_VALIDATION_CODE
+    assert shape_failure.json()["source"] == "api"
+
+    assert reached_the_handler.status_code == 400
+    assert reached_the_handler.json()["code"] == "project.not_found"
+    assert reached_the_handler.json()["source"] == "project"
+    assert not absent.exists()
+
+
+async def test_the_import_content_comes_only_from_the_request_bytes(tmp_path: Path) -> None:
+    """A decoy file on this machine must never become the content of an import.
+
+    A perfectly importable ``secret.dbc`` sits on disk. A caller names that same
+    file but submits different, unparseable bytes: the import must fail *on the
+    submitted bytes*. The mirror case is the one that would catch a silent read —
+    the same name, real bytes submitted, and a project-owned copy that is provably
+    not the decoy.
+    """
+    decoy_directory = tmp_path / "elsewhere"
+    decoy_directory.mkdir()
+    decoy = decoy_directory / "secret.dbc"
+    decoy.write_bytes(BASIC.read_bytes())
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        mismatched = await client.post(
+            "/dbc/assets",
+            json=_import_body(root, content=b"not a dbc document\n", source_name="secret.dbc"),
+        )
+        assert mismatched.status_code == 422, mismatched.text
+        assert mismatched.json()["code"] == "dbc.parse_failed"
+        # The submitted bytes decided the outcome: the decoy could not have been
+        # consulted, or this import would have succeeded.
+        assert _stored_assets(root) == []
+
+        genuine = await client.post(
+            "/dbc/assets",
+            json=_import_body(root, content=OTHER_DBC.encode("utf-8"), source_name="secret.dbc"),
+        )
+
+    assert genuine.status_code == 201, genuine.text
+    stored = (root / "dbc" / f"{genuine.json()['asset_id']}.dbc").read_bytes()
+    assert stored == OTHER_DBC.encode("utf-8")
+    assert stored != decoy.read_bytes()
+    assert genuine.json()["sha256"] == hashlib.sha256(OTHER_DBC.encode("utf-8")).hexdigest()
+    assert decoy.read_bytes() == BASIC.read_bytes()
+    assert _stored_assets(root) == [f"{genuine.json()['asset_id']}.dbc"]
+
+
+async def test_a_refused_import_echoes_no_content_and_no_internals(tmp_path: Path) -> None:
+    """A rejection carries a diagnostic location, never a rendering of the payload."""
+    root = _empty_project(tmp_path)
+    secret_path = "C:\\customer\\secret-project\\vehicle.dbc"
+
+    async with _client() as client:
+        malformed_request = await client.post(
+            "/dbc/assets",
+            json={
+                **_import_body(root, content=b"TOP-SECRET-DBC-CONTENT"),
+                "content_base64": "!!!not-base64!!!",
+                "source_path": secret_path,
+            },
+        )
+        unparseable_content = await client.post(
+            "/dbc/assets", json=_import_body(root, content=MALFORMED.read_bytes())
+        )
+
+    for response in (malformed_request, unparseable_content):
+        assert response.status_code == 422, response.text
+        rendered = str(response.json()).lower()
+        for marker in LEAK_MARKERS:
+            assert marker not in rendered, marker
+
+    request_body = str(malformed_request.json()).lower()
+    assert "not-base64" not in request_body
+    assert "secret-project" not in request_body
+    assert secret_path.lower() not in request_body
+    assert "top-secret" not in request_body
+    # The parser's own message embeds the offending source line; the imported one
+    # reports a position instead, so no fragment of the document travels back.
+    assert "brokenframe" not in str(unparseable_content.json()).lower()

@@ -19,12 +19,30 @@ tolerated and stripped. Decoding is **strict** — unlike the third-party engine
 own file loader, which opens DBC as ``cp1252`` with ``errors='replace'`` and
 would rather invent a replacement character than report a problem. A caller with
 a genuinely legacy file declares it explicitly via ``encoding=``.
+
+The service has two kinds of entry point, and the difference between them is what
+they are allowed to assume about the caller:
+
+* :meth:`DbcImportService.import_file` and
+  :meth:`DbcImportService.import_bytes` are the **external import** boundary. A
+  caller is making a claim about content CAN-X has never seen, so the *identity*
+  of that content — the extension of a file, the shape of a submitted file name —
+  is validated here. Neither reads anything it was not handed.
+* :meth:`DbcImportService.load_bytes` serves bytes whose identity a durable record
+  already established: a project-owned asset, re-read and hash-verified against
+  its registry row. It reports the name that record holds and re-litigates
+  nothing.
+
+Keeping the second path permissive is deliberate. A registry row written by an
+older release, or by a caller that reached the domain directly, must still load;
+tightening ``load_bytes`` to the external-import rule would turn a bookkeeping
+choice into a broken project.
 """
 
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from canx.dbc.errors import (
     DbcDecodeError,
@@ -41,6 +59,13 @@ DEFAULT_DBC_ENCODING = "utf-8-sig"
 
 #: The only source extensions this increment will import.
 SUPPORTED_DBC_EXTENSIONS = (".dbc",)
+
+#: Characters that may never appear in the name an external import claims for its
+#: content: path separators, the Windows drive separator, and control characters.
+#: A name carrying one of them is describing a location, not a file.
+FORBIDDEN_SOURCE_NAME_CHARACTERS = frozenset("/\\:") | frozenset(
+    chr(code) for code in (*range(0x20), 0x7F)
+)
 
 
 class DbcImportService:
@@ -119,6 +144,43 @@ class DbcImportService:
         codec = _resolve_encoding(encoding)
         return self._parse_bytes(raw, codec=codec, source_name=source_name, path=None)
 
+    def import_bytes(
+        self, raw: bytes, *, source_name: str, encoding: str | None = None
+    ) -> DbcDocument:
+        """Import DBC bytes a trusted caller already holds into a canonical document.
+
+        The external-import sibling of :meth:`load_bytes`. Both parse the exact
+        bytes they are handed and neither opens a file; the difference is what they
+        may assume about the caller. This one **is** the boundary, so the name the
+        caller claims for the content is validated as a provenance label — a plain
+        ``.dbc`` file name — rather than trusted the way a registry row is.
+
+        The bytes are never re-rendered: the canonical document is a *view* of
+        them, so a caller that persists the same ``raw`` it passed here keeps the
+        digest, the size and the byte-for-byte content it submitted.
+
+        Args:
+            raw: The exact DBC bytes to import.
+            source_name: The file name being claimed for this content. Not a path.
+            encoding: Codec to decode the bytes with. ``None`` selects
+                :data:`DEFAULT_DBC_ENCODING`.
+
+        Returns:
+            A canonical document whose provenance carries **no path**: the content
+            came from the caller, not from a location CAN-X could name.
+
+        Raises:
+            DbcUnsupportedFormatError: If ``source_name`` is not a plain,
+                non-blank ``.dbc`` file name.
+            DbcDecodeError: If the bytes are not text under the declared encoding,
+                or the encoding is not a known codec.
+            DbcParseError: If the text is not a well-formed DBC document.
+            DbcModelError: If the document cannot satisfy a CAN-X invariant.
+        """
+        _require_import_source_name(source_name)
+        codec = _resolve_encoding(encoding)
+        return self._parse_bytes(raw, codec=codec, source_name=source_name, path=None)
+
     def _parse_bytes(
         self, raw: bytes, *, codec: str, source_name: str, path: str | None
     ) -> DbcDocument:
@@ -135,6 +197,47 @@ class DbcImportService:
             database=database,
             source=_source(name=source_name, path=path, raw=raw, encoding=codec),
         )
+
+
+def _require_import_source_name(source_name: object) -> str:
+    """Return ``source_name`` when it is a plain ``.dbc`` file name, else raise.
+
+    An external import is handed a name the caller chose, so that name is untrusted
+    input rather than a fact read off a directory listing. Three properties are
+    required, and each failure is a different fact:
+
+    * it is text — anything else cannot be a file name at all;
+    * it is a *base name*: no directory separator, no Windows drive separator, no
+      control character, and no leading or trailing whitespace a later reader
+      would silently disagree about;
+    * it ends in ``.dbc``, case-insensitively, so the recorded provenance names a
+      document CAN-X actually imports.
+
+    The rejected value is deliberately **not** echoed into ``details``. This layer
+    cannot know whether the caller's string was a path or a secret, and an error
+    response must not become a rendering of the payload that was refused — so the
+    diagnostic names the rule that failed, not the text that failed it.
+
+    Raises:
+        DbcUnsupportedFormatError: If the name cannot describe an imported DBC.
+    """
+    if not isinstance(source_name, str):
+        raise _unsupported_source_name(reason="source_name_not_text")
+    if not source_name or source_name != source_name.strip():
+        raise _unsupported_source_name(reason="source_name_blank_or_padded")
+    if any(character in FORBIDDEN_SOURCE_NAME_CHARACTERS for character in source_name):
+        raise _unsupported_source_name(reason="source_name_is_a_path")
+    if PurePosixPath(source_name).suffix.lower() not in SUPPORTED_DBC_EXTENSIONS:
+        raise _unsupported_source_name(reason="source_name_is_not_a_dbc_file")
+    return source_name
+
+
+def _unsupported_source_name(*, reason: str) -> DbcUnsupportedFormatError:
+    """Build the typed refusal for a name an external import cannot claim."""
+    return DbcUnsupportedFormatError(
+        "An imported DBC source must be named as a plain file name ending in '.dbc'.",
+        details={"reason": reason},
+    )
 
 
 def _resolve_encoding(encoding: str | None) -> str:

@@ -21,6 +21,8 @@ Three facts get their own test, because each is a claim the architecture makes:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from pathlib import Path
 
 from canx.api.app import create_app
@@ -35,6 +37,7 @@ FIXTURES = REPOSITORY_ROOT / "tests" / "fixtures" / "dbc"
 
 BASIC = FIXTURES / "basic_standard.dbc"
 EXTENDED = FIXTURES / "extended.dbc"
+MALFORMED = FIXTURES / "malformed.dbc"
 
 #: ``basic_standard.dbc``'s ``EngineData`` (standard, id 0x123).
 ENGINE_DATA = "B80B508000000000"
@@ -331,3 +334,237 @@ async def test_a_decode_against_an_absent_project_is_a_400_from_the_project_doma
     assert response.json()["code"] == "project.not_found"
     assert response.json()["source"] == "project"
     assert not absent.exists()
+
+
+# --- content import over HTTP ------------------------------------------------
+#
+# The V0.3-06 chain, with nothing mocked: a closed project, the real ASGI app, the
+# bytes submitted as Base64, and every value asserted below produced by the
+# project-owned asset the Runtime itself wrote — not by a fixture this test
+# placed into the project.
+
+
+def _empty_project(tmp_path: Path) -> Path:
+    """Create a real project and return it closed.
+
+    Every request below has to open and validate it, which is the behaviour under
+    test: no request is handed an already-open project.
+    """
+    root = tmp_path / "vehicle.canx"
+    with ProjectService().create(root, display_name="Content import"):
+        pass
+    return root
+
+
+def _content_body(
+    root: Path, fixture: Path, *, source_name: str | None = None, encoding: str | None = None
+) -> dict[str, object]:
+    """Build one content-import body carrying ``fixture``'s exact bytes."""
+    payload: dict[str, object] = {
+        "project_path": str(root),
+        "source_name": fixture.name if source_name is None else source_name,
+        "content_base64": base64.b64encode(fixture.read_bytes()).decode("ascii"),
+    }
+    if encoding is not None:
+        payload["encoding"] = encoding
+    return payload
+
+
+async def test_a_content_import_feeds_the_existing_read_and_decode_apis(
+    tmp_path: Path,
+) -> None:
+    """create → close → POST content → list → database → decode, all over HTTP."""
+    root = _empty_project(tmp_path)
+    raw = BASIC.read_bytes()
+
+    async with _client() as client:
+        created = await client.post("/dbc/assets", json=_content_body(root, BASIC))
+        assert created.status_code == 201, created.text
+        asset = created.json()
+        asset_id = asset["asset_id"]
+
+        listed = await client.get("/dbc/assets", params={"project_path": str(root)})
+        assert listed.status_code == 200, listed.text
+
+        database = await client.get(
+            f"/dbc/assets/{asset_id}/database", params={"project_path": str(root)}
+        )
+        assert database.status_code == 200, database.text
+
+        decoded = await client.post(
+            f"/dbc/assets/{asset_id}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA)},
+        )
+        assert decoded.status_code == 200, decoded.text
+
+    assert [item["asset_id"] for item in listed.json()["assets"]] == [asset_id]
+    assert asset["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert asset["size_bytes"] == len(raw)
+    assert [message["name"] for message in database.json()["messages"]] == ["EngineData"]
+
+    body = decoded.json()
+    assert body["message_name"] == "EngineData"
+    signals = {signal["name"]: signal for signal in body["signals"]}
+    assert signals["EngineSpeed"]["raw_value"] == 3000
+    assert signals["EngineSpeed"]["physical_value"] == 750.0
+    assert signals["EngineSpeed"]["unit"] == "rpm"
+    assert signals["CoolantTemp"]["raw_value"] == 80
+    assert signals["CoolantTemp"]["physical_value"] == 40.0
+    assert signals["CoolantTemp"]["unit"] == "degC"
+
+    # Read back from the source tree: the project-owned copy is what was submitted.
+    with ProjectService().open(root) as reopened:
+        stored = ProjectDbcService(reopened.root).get_asset(asset_id)
+        owned = reopened.root / stored.relative_path
+    assert owned.read_bytes() == raw
+    assert stored.sha256 == hashlib.sha256(raw).hexdigest()
+    assert stored.size_bytes == len(raw)
+
+
+async def test_two_content_imports_in_one_project_never_cross(tmp_path: Path) -> None:
+    """Two DBCs that both answer for ``0x123`` answer for their own asset only."""
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        standard = await client.post("/dbc/assets", json=_content_body(root, BASIC))
+        extended = await client.post("/dbc/assets", json=_content_body(root, EXTENDED))
+        assert standard.status_code == 201, standard.text
+        assert extended.status_code == 201, extended.text
+        standard_id = standard.json()["asset_id"]
+        extended_id = extended.json()["asset_id"]
+
+        standard_decode = await client.post(
+            f"/dbc/assets/{standard_id}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA, is_extended=False)},
+        )
+        extended_decode = await client.post(
+            f"/dbc/assets/{extended_id}/decode",
+            json={
+                "project_path": str(root),
+                "frame": _wire(TRUCK_DATA, is_extended=True),
+            },
+        )
+        crossed = await client.post(
+            f"/dbc/assets/{extended_id}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA, is_extended=False)},
+        )
+        listed = await client.get("/dbc/assets", params={"project_path": str(root)})
+
+    assert [item["asset_id"] for item in listed.json()["assets"]] == [
+        standard_id,
+        extended_id,
+    ]
+    assert standard_decode.json()["message_name"] == "EngineData"
+    assert extended_decode.json()["message_name"] == "TruckStatus"
+    assert crossed.status_code == 422
+    assert crossed.json()["code"] == "dbc.message_not_found"
+    assert crossed.json()["source"] == "dbc"
+
+
+async def test_a_content_import_lives_beside_a_path_import_in_one_project(
+    tmp_path: Path,
+) -> None:
+    """The two import entry points share the project, the registry and the API."""
+    root, asset_ids = _imported_project(tmp_path, BASIC)
+    path_imported = asset_ids[0]
+
+    async with _client() as client:
+        created = await client.post("/dbc/assets", json=_content_body(root, EXTENDED))
+        assert created.status_code == 201, created.text
+        content_imported = created.json()["asset_id"]
+
+        listed = await client.get("/dbc/assets", params={"project_path": str(root)})
+        path_decode = await client.post(
+            f"/dbc/assets/{path_imported}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA)},
+        )
+        content_decode = await client.post(
+            f"/dbc/assets/{content_imported}/decode",
+            json={
+                "project_path": str(root),
+                "frame": _wire(TRUCK_DATA, is_extended=True),
+            },
+        )
+
+    assert {item["asset_id"] for item in listed.json()["assets"]} == {
+        path_imported,
+        content_imported,
+    }
+    assert path_decode.json()["message_name"] == "EngineData"
+    assert content_decode.json()["message_name"] == "TruckStatus"
+
+
+async def test_a_rejected_project_and_rejected_content_are_reported_distinctly(
+    tmp_path: Path,
+) -> None:
+    """A bad target is the project domain's 400; bad content is the DBC domain's 422."""
+    plain = tmp_path / "not-a-project"
+    plain.mkdir()
+    root = _empty_project(tmp_path)
+    broken = tmp_path / "broken.dbc"
+    broken.write_bytes(MALFORMED.read_bytes())
+
+    async with _client() as client:
+        bad_project = await client.post("/dbc/assets", json=_content_body(plain, BASIC))
+        bad_content = await client.post("/dbc/assets", json=_content_body(root, broken))
+
+    assert bad_project.status_code == 400
+    assert bad_project.json()["source"] == "project"
+    assert bad_project.json()["code"].startswith("project.")
+
+    assert bad_content.status_code == 422
+    assert bad_content.json()["code"] == "dbc.parse_failed"
+    assert bad_content.json()["source"] == "dbc"
+    assert bad_content.json()["recoverable"] is False
+
+    # Neither refusal left anything behind.
+    assert sorted(path.name for path in plain.iterdir()) == []
+    assert list((root / "dbc").iterdir()) == []
+
+
+async def test_a_content_imported_asset_is_integrity_checked_like_any_other(
+    tmp_path: Path,
+) -> None:
+    """Importing through content does not create a second, weaker asset kind."""
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        created = await client.post("/dbc/assets", json=_content_body(root, BASIC))
+        assert created.status_code == 201, created.text
+        asset_id = created.json()["asset_id"]
+
+        target = root / "dbc" / f"{asset_id}.dbc"
+        target.write_bytes(target.read_bytes() + b"\n")
+
+        database = await client.get(
+            f"/dbc/assets/{asset_id}/database", params={"project_path": str(root)}
+        )
+        decode = await client.post(
+            f"/dbc/assets/{asset_id}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA)},
+        )
+
+    for response in (database, decode):
+        assert response.status_code == 409, response.text
+        assert response.json()["code"] == "dbc.asset_integrity_failed"
+        assert response.json()["recoverable"] is False
+
+
+async def test_every_request_that_imports_the_same_content_gets_its_own_asset(
+    tmp_path: Path,
+) -> None:
+    """No de-duplication: the same bytes submitted twice are two project assets."""
+    root = _empty_project(tmp_path)
+
+    async with _client() as client:
+        first = await client.post("/dbc/assets", json=_content_body(root, BASIC))
+        second = await client.post("/dbc/assets", json=_content_body(root, BASIC))
+        listed = await client.get("/dbc/assets", params={"project_path": str(root)})
+
+    assert first.status_code == second.status_code == 201
+    assert first.json()["asset_id"] != second.json()["asset_id"]
+    assert first.json()["sha256"] == second.json()["sha256"]
+    assert len(listed.json()["assets"]) == 2
+    assert sorted(path.name for path in (root / "dbc").iterdir()) == sorted(
+        f"{item.json()['asset_id']}.dbc" for item in (first, second)
+    )
