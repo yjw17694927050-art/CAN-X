@@ -159,3 +159,64 @@ async def test_archive_saturation_degrades_and_stops_without_releasing_recorder(
         assert metrics.recorder_queue_depth == metrics.stream_queue_depth == 0
         assert metrics.ingress_queue_depth == 0
         assert not (asyncio.all_tasks() - existing_tasks)
+
+
+class SlowDiskRecorder(MsgpackRecorder):
+    """Append with a fixed per-batch latency, simulating a slow but progressing disk."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        super().__init__()
+        self._delay_seconds = delay_seconds
+        self.appends = 0
+
+    async def append(self, batch: FrameBatch) -> None:
+        await asyncio.sleep(self._delay_seconds)
+        await super().append(batch)
+        self.appends += 1
+
+
+async def test_slow_disk_soak_stays_lossless_and_bounded(tmp_path) -> None:
+    """Sustained capture through a slow (but progressing) recorder must not lose frames.
+
+    Unlike the saturation test, this keeps the recorder *moving*: it proves that a
+    long run with a non-instant disk stays lossless, that recovery never fires, and
+    that the runtime query store and recorder queue stay bounded for the whole run.
+    """
+    path = tmp_path / "soak.canxmsg"
+    recorder = SlowDiskRecorder(delay_seconds=0.01)
+    history_capacity = 500
+    service = RuntimeService(recorder=recorder, history_capacity=history_capacity)
+    async with service.broker.subscribe() as stream:
+        await service.start_capture(
+            VirtualAdapterConfig(rate_hz=6_000, seed=7),
+            batch_size=100,
+            recording_path=path,
+        )
+        batches_seen = 0
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 0.6
+        while loop.time() < deadline:
+            try:
+                await asyncio.wait_for(stream.get(), timeout=0.2)
+            except TimeoutError:
+                break
+            batches_seen += 1
+        # A slow recorder must not stall the sibling stream.
+        assert batches_seen > 0
+        assert service.capture_state is CaptureSessionState.RUNNING
+        await service.stop_capture()
+
+    metrics = service.metrics_snapshot()
+    recorded = sum(batch.frame_count for batch in read_recording(path))
+    # Ran long enough to exercise bounded-history eviction.
+    assert recorded > history_capacity
+    # No silent recorder loss: every captured frame was committed.
+    assert recorded == metrics.recorded_frames == metrics.captured_frames
+    assert metrics.dropped_frames == 0
+    assert metrics.dropped_stream_frames == 0
+    # The slow recorder never saturated, failed, or degraded the session.
+    assert metrics.recorder_failures == 0
+    assert metrics.recorder_state == "stopped"
+    assert metrics.queue_peaks["recorder_queue_depth"] <= 1_000
+    # The runtime query store stays bounded regardless of session length.
+    assert len(service.frames()) == history_capacity
