@@ -218,6 +218,38 @@ class DataSessionWriter:
         if self._session.state is DataSessionState.ACTIVE:
             self.finalize()
 
+    def fail(self) -> bool:
+        """Mark this ``ACTIVE`` session ``FAILED`` without inventing committed data.
+
+        The transition is deliberately narrow and observable:
+
+        * only ``ACTIVE`` → ``FAILED`` is performed. A session that already
+          reached ``COMPLETED``, ``FAILED`` or ``INTERRUPTED`` is left untouched
+          and the call reports ``False``, so reporting the same failure twice is
+          safe and a completed capture is never retroactively invalidated.
+        * frames still in the buffer are dropped rather than written. They were
+          never committed, so ``frame_count``, ``segment_count`` and every
+          already committed segment — file and row — stay exactly as they were.
+        * ``updated_at`` advances and ``ended_at`` is left alone. The data model
+          carries no ``ended_at`` for a ``FAILED`` session (only ``COMPLETED``
+          and ``INTERRUPTED`` require one), so nothing is fabricated here.
+
+        Persisting the new state is best-effort: the in-memory session is
+        authoritative for the lifetime of this writer, and a durable row that
+        could not be updated can still only be moved to ``INTERRUPTED`` by the
+        explicit :meth:`DataSessionService.recover_incomplete_sessions`. An
+        unpersisted failure therefore can never be read back as ``COMPLETED``.
+
+        Returns:
+            ``True`` when this call performed the ``ACTIVE`` → ``FAILED``
+            transition, ``False`` when the session was already terminal.
+        """
+        if self._session.state is not DataSessionState.ACTIVE:
+            return False
+        self._buffer.clear()
+        self._mark_failed()
+        return True
+
     def __enter__(self) -> Self:
         self._require_active()
         return self

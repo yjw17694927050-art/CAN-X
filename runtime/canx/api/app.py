@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
@@ -23,6 +24,7 @@ from canx.agent.tools import (
 from canx.agent.trace_summary import TraceSummaryInput, TraceSummaryOutput, summarize_frames
 from canx.devices.virtual import VirtualAdapterConfig
 from canx.metrics.models import MetricsSnapshot
+from canx.runtime.errors import CaptureConfigurationError
 from canx.runtime.service import RuntimeService
 from canx.transport.broker import BatchBroker
 from canx.transport.msgpack_codec import encode_batch
@@ -50,7 +52,13 @@ class RuntimeStatusResponse(BaseModel):
 
 
 class CaptureStartRequest(BaseModel):
-    """Validated V0.1 virtual capture configuration."""
+    """Validated virtual capture configuration and its recording target.
+
+    ``recording_path`` is the V0.1 MessagePack compatibility target and
+    ``project_path`` the V0.2 project-backed one. They are alternatives, not a
+    fallback chain: supplying both is a validation error rather than a silent
+    choice by the runtime.
+    """
 
     model_config = ConfigDict(frozen=True)
     channel_count: Literal[1, 4, 8] = 1
@@ -60,12 +68,16 @@ class CaptureStartRequest(BaseModel):
     seed: int = 1
     batch_size: int = Field(default=250, gt=0, le=10_000)
     recording_path: str | None = None
+    project_path: str | None = None
 
 
 class CaptureStartResponse(BaseModel):
+    """Identity of a started capture and of its data session, when persisted."""
+
     model_config = ConfigDict(frozen=True)
     status: Literal["started"] = "started"
     stream_id: str
+    data_session_id: str | None = None
 
 
 class CaptureStopResponse(BaseModel):
@@ -183,7 +195,12 @@ def create_app(
 
     @app.post("/capture/start", response_model=None, status_code=202)
     async def capture_start(request: CaptureStartRequest) -> CaptureStartResponse | JSONResponse:
-        """Start the V0.1 deterministic virtual adapter."""
+        """Start the deterministic virtual adapter with at most one recording target.
+
+        A project-backed capture answers with the data session it created, so a
+        caller can query the persisted data without guessing an identity. A
+        capture with no target stays realtime-only and reports ``null``.
+        """
         if service.has_session:
             error = ErrorResponse(
                 code="capture.already_running",
@@ -200,14 +217,31 @@ def create_app(
             rate_hz=request.rate_hz,
             seed=request.seed,
         )
-        from pathlib import Path
-
-        stream_id = await service.start_capture(
-            config,
-            batch_size=request.batch_size,
-            recording_path=None if request.recording_path is None else Path(request.recording_path),
+        try:
+            stream_id = await service.start_capture(
+                config,
+                batch_size=request.batch_size,
+                recording_path=(
+                    None if request.recording_path is None else Path(request.recording_path)
+                ),
+                project_path=(
+                    None if request.project_path is None else Path(request.project_path)
+                ),
+            )
+        except CaptureConfigurationError as error:
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    code=error.code,
+                    message=error.message,
+                    details=error.details,
+                    recoverable=error.recoverable,
+                    source=error.source,
+                ).model_dump(),
+            )
+        return CaptureStartResponse(
+            stream_id=stream_id, data_session_id=service.data_session_id
         )
-        return CaptureStartResponse(stream_id=stream_id)
 
     @app.post("/capture/stop", response_model=CaptureStopResponse)
     async def capture_stop() -> CaptureStopResponse:

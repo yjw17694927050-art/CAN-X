@@ -11,12 +11,18 @@ from uuid import uuid4
 
 from canx.capture.pipeline import CapturePipeline
 from canx.capture.subscriber import FrameSubscriber, SubscriberDisabledError, SubscriberFailure
+from canx.data.errors import DataError
+from canx.data.session import DEFAULT_MAX_FRAMES_PER_SEGMENT
 from canx.devices.virtual import VirtualAdapter, VirtualAdapterConfig
 from canx.domain.batch import FrameBatch
 from canx.domain.frame import Frame
 from canx.metrics.collector import MetricsCollector
 from canx.metrics.models import MetricsSnapshot
+from canx.project.errors import ProjectError
+from canx.project.service import ProjectService
 from canx.recorder.msgpack_recorder import MsgpackRecorder, RecorderFailure, RecorderState
+from canx.recorder.project_recorder import ProjectRecorder
+from canx.runtime.errors import CaptureConfigurationError
 from canx.transport.broker import BatchBroker
 
 
@@ -30,7 +36,15 @@ class CaptureSessionState(StrEnum):
 
 
 class RuntimeService:
-    """Coordinate independent runtime consumers without UI ownership."""
+    """Coordinate independent runtime consumers without UI ownership.
+
+    The service owns capture orchestration only. When a capture is given a
+    CAN-X project it delegates *all* persistence to
+    :class:`~canx.recorder.project_recorder.ProjectRecorder`, which in turn
+    delegates to the V0.2 data-session domain; no storage rule is re-implemented
+    here. The archive (recorder) and stream (WebSocket) consumers stay siblings:
+    neither is upstream of the other, and neither depends on a UI being open.
+    """
 
     def __init__(
         self,
@@ -40,11 +54,19 @@ class RuntimeService:
         archive_capacity: int | None = None,
         archive_publish_timeout_seconds: float = 1.0,
         recorder_cleanup_timeout_seconds: float = 1.0,
+        project_max_frames_per_segment: int = DEFAULT_MAX_FRAMES_PER_SEGMENT,
+        project_recorder_factory: Callable[[int], ProjectRecorder] | None = None,
     ) -> None:
         if history_capacity <= 0:
             raise ValueError("history_capacity must be positive")
         if archive_capacity is not None and archive_capacity <= 0:
             raise ValueError("archive_capacity must be positive")
+        if (
+            not isinstance(project_max_frames_per_segment, int)
+            or isinstance(project_max_frames_per_segment, bool)
+            or project_max_frames_per_segment <= 0
+        ):
+            raise ValueError("project_max_frames_per_segment must be positive")
         for name, timeout in (
             ("archive_publish_timeout_seconds", archive_publish_timeout_seconds),
             ("recorder_cleanup_timeout_seconds", recorder_cleanup_timeout_seconds),
@@ -70,7 +92,10 @@ class RuntimeService:
         self._lifecycle_lock = asyncio.Lock()
         self._batch_size = 250
         self._stream_id = ""
-        self._recorder = MsgpackRecorder() if recorder is None else recorder
+        self._msgpack_recorder = MsgpackRecorder() if recorder is None else recorder
+        self._recorder: MsgpackRecorder | ProjectRecorder = self._msgpack_recorder
+        self._project_max_frames_per_segment = project_max_frames_per_segment
+        self._project_recorder_factory = project_recorder_factory
         self._active_channels = 0
         self._generated_total = 0
         self._captured_total = 0
@@ -96,6 +121,19 @@ class RuntimeService:
         return self._failure
 
     @property
+    def data_session_id(self) -> str | None:
+        """Return the data session of the current recording, or ``None``.
+
+        ``None`` is the honest answer for a capture that is not project-backed
+        and for one whose session has already been closed: the identity exists
+        only while a recorder owns a live data session.
+        """
+        recorder = self._recorder
+        if isinstance(recorder, ProjectRecorder):
+            return recorder.data_session_id
+        return None
+
+    @property
     def _consumer_tasks(self) -> tuple[asyncio.Task[None], ...]:
         return tuple(task for task in (self._archive_task, self._stream_task) if task is not None)
 
@@ -110,11 +148,34 @@ class RuntimeService:
         *,
         batch_size: int = 250,
         recording_path: Path | None = None,
+        project_path: Path | None = None,
     ) -> str:
-        """Start one synthetic capture session and its sibling consumers."""
+        """Start one synthetic capture session and its sibling consumers.
+
+        Args:
+            config: Synthetic adapter configuration.
+            batch_size: Frames per published batch.
+            recording_path: V0.1 MessagePack recording target. Mutually exclusive
+                with ``project_path``.
+            project_path: Root of an existing CAN-X project. When given, this
+                capture is recorded into a new ``ACTIVE`` data session of that
+                project, and the session is finalized on a clean stop.
+
+        Returns:
+            The capture stream id, which is also the data session's stream id.
+
+        Raises:
+            CaptureConfigurationError: If both recording targets are given, or
+                ``project_path`` is not a valid CAN-X project.
+            RuntimeError: If a capture session is already running.
+            ValueError: If ``batch_size`` is not positive.
+        """
         async with self._lifecycle_lock:
             return await self._start_capture(
-                config, batch_size=batch_size, recording_path=recording_path
+                config,
+                batch_size=batch_size,
+                recording_path=recording_path,
+                project_path=project_path,
             )
 
     async def _start_capture(
@@ -123,11 +184,25 @@ class RuntimeService:
         *,
         batch_size: int,
         recording_path: Path | None,
+        project_path: Path | None,
     ) -> str:
         if self.has_session:
             raise RuntimeError("capture is already running")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if project_path is not None and recording_path is not None:
+            raise CaptureConfigurationError(
+                "A capture cannot target a recording file and a CAN-X project at the same time.",
+                code="capture.recording_target_conflict",
+                details={
+                    "project_path": str(project_path),
+                    "recording_path": str(recording_path),
+                },
+                recoverable=True,
+            )
+        # Validated before anything is created: a rejected target must not leave a
+        # pipeline, a session row or a directory behind.
+        project_root = None if project_path is None else self._require_project(project_path)
         self._stream_id = str(uuid4())
         self._history.clear()
         self._batch_size = batch_size
@@ -152,10 +227,7 @@ class RuntimeService:
         self._stream_subscriber = stream_subscriber
         self._archive_pending_frames = 0
         try:
-            if recording_path is not None:
-                await self._recorder.start(recording_path, stream_id=self._stream_id)
-            else:
-                self._recorder.reset_session()
+            await self._start_recorder(project_root=project_root, recording_path=recording_path)
             self._archive_task = asyncio.create_task(
                 self._run_consumer(
                     archive_subscriber,
@@ -176,12 +248,15 @@ class RuntimeService:
             )
             await pipeline.start()
         except BaseException as error:
-            if isinstance(error, Exception):
-                self._handle_recorder_failure(
-                    code="recorder.open_failed",
-                    message=str(error),
-                    context={"stream_id": self._stream_id},
-                )
+            # Cleanup below runs through the recorder, so the abort has to be
+            # recorded for every exception class. That keeps one rule true for a
+            # project-backed capture: an aborted startup leaves the data session
+            # FAILED, never ACTIVE and never COMPLETED.
+            self._handle_recorder_failure(
+                code="recorder.open_failed",
+                message=str(error) or type(error).__name__,
+                context={"stream_id": self._stream_id, "error_type": type(error).__name__},
+            )
             self._stop_event.set()
             for task in self._consumer_tasks:
                 task.cancel()
@@ -201,6 +276,79 @@ class RuntimeService:
         self._failure = None
         self._capture_state = CaptureSessionState.RUNNING
         return self._stream_id
+
+    @staticmethod
+    def _require_project(project_path: Path) -> Path:
+        """Validate a capture target with the project domain, never a private copy.
+
+        The project's own validator decides what a CAN-X project is, so a plain
+        directory can never be silently turned into one and no ``project.db`` or
+        ``data/sessions`` tree is created for a path that does not already hold a
+        readable project.
+
+        Raises:
+            CaptureConfigurationError: If ``project_path`` is not a readable
+                CAN-X project.
+        """
+        try:
+            with ProjectService().open(project_path) as handle:
+                return handle.root
+        except ProjectError as error:
+            raise CaptureConfigurationError(
+                "The capture target is not a valid CAN-X project.",
+                code="capture.invalid_project",
+                details={
+                    "project_path": str(project_path),
+                    "cause": error.code,
+                    "reason": error.message,
+                },
+                recoverable=False,
+            ) from error
+
+    async def _start_recorder(
+        self, *, project_root: Path | None, recording_path: Path | None
+    ) -> None:
+        """Open the recorder backend that matches the requested recording target.
+
+        A project-backed recorder is rebuilt per capture because it binds to one
+        data session; the V0.1 MessagePack recorder stays the compatibility
+        backend for a bare ``recording_path`` and for a capture with no target.
+
+        A project that cannot open a data session is reported as a request-level
+        configuration error rather than surfacing a raw storage exception to the
+        control plane, because the caller has to resolve it either way.
+
+        Raises:
+            CaptureConfigurationError: If the project could not open a data
+                session for this capture.
+        """
+        if project_root is not None:
+            factory = self._project_recorder_factory
+            recorder = (
+                ProjectRecorder(max_frames_per_segment=self._project_max_frames_per_segment)
+                if factory is None
+                else factory(self._project_max_frames_per_segment)
+            )
+            self._recorder = recorder
+            try:
+                await recorder.start(project_root, stream_id=self._stream_id)
+            except DataError as error:
+                raise CaptureConfigurationError(
+                    "The CAN-X project could not open a data session for this capture.",
+                    code="capture.session_start_failed",
+                    details={
+                        "project_path": str(project_root),
+                        "cause": error.code,
+                        "reason": error.message,
+                    },
+                    recoverable=True,
+                ) from error
+            return
+        self._recorder = self._msgpack_recorder
+        if recording_path is not None:
+            await self._msgpack_recorder.start(recording_path, stream_id=self._stream_id)
+        else:
+            self._msgpack_recorder.reset_session()
 
     async def stop_capture(self) -> None:
         """Stop ingress, drain queued frames, flush recorder, then stop streaming work."""
@@ -281,6 +429,11 @@ class RuntimeService:
         subscriber = self._archive_subscriber
         if queued_frames is None:
             queued_frames = 0 if subscriber is None else subscriber.queue_depth
+        data_session_id = self.data_session_id
+        if data_session_id is not None:
+            # A persisted capture's failure has to name the session a caller
+            # would inspect; it is absent for a non-persisted capture.
+            context = {**context, "data_session_id": data_session_id}
         self._recorder.fail(code=code, message=message, recoverable=False, context=context)
         self._failure = self._recorder.failure
         self._capture_state = CaptureSessionState.DEGRADED

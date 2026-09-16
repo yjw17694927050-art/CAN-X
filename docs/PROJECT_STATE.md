@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-16  
-> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service
+> **Current Phase**: V0.2 — Runtime & Data Foundation · Step V0.2-04 Project-Backed Capture Persistence Integration
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -1048,12 +1048,192 @@ V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service
 Implementation complete
 Independent acceptance: Conditional PASS
 Final remediation completed
-Awaiting final acceptance
+V0.2-03 Final Acceptance: PASS
 ```
 
 本阶段刻意未进入：FastAPI query endpoint、Trace / Plot historical UI、
 frontend store / Worker / WebSocket 改动、Agent query tool、自然语言查询、
 arbitrary SQL console、Recorder capture-pipeline migration。
+
+---
+
+### Step V0.2-04 — Project-Backed Capture Persistence Integration
+
+把 V0.2 已建立的 Project / DataSession / Parquet / Runtime Capture 四个独立基础模块
+第一次连成一条**可失败、可恢复、可查询、可打包验证**的正式实时持久化链路。
+本阶段只有一个 coherent increment：让一次实时采集真正落进一个 CAN-X 工程。
+
+真实数据路径：
+
+```text
+Virtual CAN / future Hardware
+        ↓
+CapturePipeline
+        ├──────────────► stream subscriber ──► FrameBatch ──► WebSocket
+        └── archive ───► Runtime recorder boundary
+                              ↓
+                        ProjectRecorder          （runtime/canx/recorder/project_recorder.py）
+                              ↓  asyncio.to_thread + 单实例锁
+                        DataSessionWriter        （V0.2-02，未复制任何持久化逻辑）
+                              ↓
+                        bounded Parquet segments
+                              ↓
+                        SQLite session / segment metadata
+                              ↓
+                        QueryService / DuckDB    （V0.2-03，未改动）
+```
+
+`archive` 与 `stream` 仍是 sibling subscriber：Recorder 不是 UI stream 的下游，
+UI / WebSocket 也从未成为 Recorder 的上游。
+
+实现清单：
+
+```text
+Project-backed recorder          ✅ ProjectRecorder（state / failure / recorded_frames /
+                                    data_session_id / fail / reset_session / start / append / stop）
+DataSessionWriter 公共失败语义   ✅ ACTIVE → FAILED 公共 fail()，重复调用安全
+Blocking IO 边界                 ✅ Parquet / SQLite / 文件系统写入全部 asyncio.to_thread
+顺序与竞争                       ✅ 单实例 threading.Lock 串行化 writer 访问
+                                    （asyncio 无法取消线程 → finalize 必须等 append 落盘）
+Sequence 连续性                  ✅ 出现无法解释的 gap → recorder.sequence_gap + FAILED
+Project 校验                     ✅ 复用 ProjectService.open（不复制 validator，
+                                    拒绝时不在任意目录创建 project.db / data/sessions）
+启动失败回滚                     ✅ DataSession 建立后任何启动异常 → session FAILED，不留 ACTIVE 孤儿
+Runtime API                      ✅ start_capture(..., project_path=...)、data_session_id
+FastAPI 契约                     ✅ POST /capture/start 新增 project_path，
+                                    response 新增 data_session_id（无 project 时为 null）
+Recording target 冲突            ✅ project_path + recording_path 同时给出 →
+                                    capture.recording_target_conflict（结构化，非静默选择）
+错误模型                         ✅ canx.runtime.errors.CaptureConfigurationError
+                                    （code / message / details / recoverable / source）
+```
+
+固定语义（failure semantics）：
+
+```text
+正常 stop                        ACTIVE → flush pending → finalize → COMPLETED
+recorder failure（任意来源）      → DataSessionWriter.fail() → FAILED
+  · archive backpressure / 写盘失败 / SQLite 登记失败
+  · recorder cleanup deadline 过期
+  · sequence gap
+  · 启动中途异常（DataSession 已建立）
+FAILED 时                        已 committed segment 与其计数原样保留；
+                                 缓冲区未 commit 的帧被丢弃，绝不计入 frame_count
+end_at                            FAILED 不带 ended_at（模型只为 COMPLETED / INTERRUPTED 要求）
+未持久化的 FAILED                只能被显式 recovery 变成 INTERRUPTED，永远不会变成 COMPLETED
+```
+
+未改动（本阶段明确保持）：
+
+```text
+Frame canonical schema          未改
+Parquet schema                  未改（FRAME_PARQUET_SCHEMA_VERSION 仍为 1）
+SQLite schema                   未改（user_version 仍为 2）
+backpressure policy             未改（ADR 0001 语义原样保留）
+V0.1 MsgpackRecorder            保留为 compatibility backend，未重写、未删除
+新增依赖                        无（pyarrow / duckdb / FastAPI 已足够）
+```
+
+本机验证（2026-09-16，V0.2-04 实现完成时）：
+
+```text
+full pytest                                               618 passed
+  （本增量前基线：561 passed；新增 57 例）
+  tests/unit/data/test_session_writer_failure.py          12 passed
+  tests/unit/recorder/test_project_recorder.py            15 passed
+  tests/unit/runtime/test_project_capture.py              15 passed
+  tests/unit/api/test_capture_project_target.py            6 例（新增）
+  tests/integration/test_project_backed_capture.py         7 passed
+  tests/integration/test_project_recording_soak.py         1 passed
+  tests/integration/test_packaged_runtime_smoke.py         2 passed（新增 project-backed 一例）
+ruff check runtime tests tools                            exit 0
+mypy runtime                                              exit 0 (50 source files)
+scripts\package-windows.cmd                               exit 0
+  · runtime build + staged sidecar                         PASS
+  · packaged-runtime smoke (canx-runtime.exe)              PASS (2 passed)
+  · Tauri MSI build + artifact check                       PASS (CAN-X_0.1.0_x64_en-US.msi)
+```
+
+Performance / soak 记录（Windows 11 10.0.26200 / Python 3.13.15 / 本机 .venv /
+单进程 / 无真实 CAN 硬件；timing 仅供信息，不是性能门槛）：
+
+```text
+修改前 baseline（20 kHz 配置，1.5 s bounded run，msgpack record path）
+  generated 13,000 / captured 13,000 / recorded 13,000
+  recorder queue peak 6 / failures 0 / gaps 0 / elapsed 1.546 s
+
+修改后 project-backed（同配置、同机）
+  generated 12,500 / captured 12,500 / persisted 12,500（segment 1 个）
+  recorder queue peak 5 / failures 0 / gaps 0 / elapsed 1.620 s
+  → 与 V0.1 prototype 同一量级；差值在 run-to-run 噪声范围内
+
+in-suite bounded soak（rate 20 kHz / 2.0 s / max_frames_per_segment 4096）
+  generated 16,505 / captured 16,505 / persisted 16,505
+  segments 5 / max segment 4096 / sequence gaps 0 / recorder failures 0
+  dropped 0 / recorder queue peak 176 / elapsed 2.060 s / state completed
+
+10–50 GB target                                            NOT VERIFIED
+```
+
+Packaged Parquet 执行路径（本阶段由 NOT VERIFIED 变为 VERIFIED）：
+
+```text
+build\runtime-dist\canx-runtime.exe                 46,487,265 bytes
+  · PyInstaller hook-pyarrow.py 命中，pyarrow.libs DLL 已收集
+  · PYZ 中 duckdb 出现 0 次（query domain 不在打包 import graph 内）
+packaged project-backed smoke                       PASS
+source 侧读回（由 .exe 进程产出的文件）
+  project                        临时 CAN-X project（source 进程创建）
+  segment                        data/sessions/7624fdc3-…/segments/000000.parquet
+  segment bytes                  39,435
+  footer rows                    1,254（1 row group）
+  canx metadata                  can-x-frame-segment / schema_version 1 /
+                                 session_id / stream_id / segment_index=0 全部一致
+  DataSession                    completed / frames 1,254 / segments 1
+  stream_id 一致                 是（与 /capture/start 返回的 stream_id 相同）
+  QueryService.summarize_frames  1,254
+  integrity inspection           clean
+```
+
+已知限制 / 边界（均为设计内行为，不是未修的缺陷）：
+
+```text
+1  archive path 是无损的，因此 sequence gap 只可能出现在已经可观测的失败之后；
+   recorder 仍显式拒绝 gap（recorder.sequence_gap），不会把不完整录制呈现为完整。
+2  recorder cleanup deadline 过期时不会杀死磁盘线程：若该线程正在正常 finalize，
+   finalize 会完成，DataSession 可能仍以 COMPLETED 落库，而 runtime 报
+   recorder.cleanup_timeout。两种结果都不丢帧、不伪造帧；capture session（runtime
+   生命周期）与 data session（持久化生命周期）本就是两个对象。
+3  DataSessionWriter.fail() 的落库是 best-effort：内存状态在该 writer 生命周期内是
+   权威；未落库的 FAILED 只能被显式 recovery 变成 INTERRUPTED。
+4  data_session_id 只在 recorder 仍持有活动 session 时非空（即 start 之后、stop 之前）。
+5  bare recording_path 仍是 V0.1 的 .canxmsg 文件，不是 CAN-X 工程存储格式。
+6  timestamp segment pruning 仍关闭（V0.2-03 决定，未变）。
+7  max_frames_per_segment 默认仍为 65536（foundation 常量，不是 SPEC 值）。
+```
+
+NOT VERIFIED（本阶段未改变）：
+
+```text
+Packaged DuckDB query execution path   NOT VERIFIED
+  （未新增 Query HTTP API；packaged exe 内 duckdb 出现 0 次）
+10–50 GB engineering dataset           NOT VERIFIED
+real Vector / PCAN / Kvaser / ZLG       NOT VERIFIED
+macOS real-machine validation          NOT VERIFIED
+windowed desktop launch                NOT VERIFIED（沿用 V0.1.1 结论）
+```
+
+状态：
+
+```text
+V0.2-04 Project-Backed Capture Persistence Integration
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮只做了 implementation + self verification。**不自行宣布 Independent Acceptance: PASS**；
+最终独立验收由 ChatGPT / 项目负责人执行。
 
 ---
 
@@ -1558,10 +1738,16 @@ V0.2-02 Data Session & Parquet Segment Persistence 已完成实现、本机验�
 独立验收（Conditional PASS）与定向修复（见 §18 Step V0.2-02）：
 **V0.2-02 Final Acceptance: PASS**。
 
-V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service 已完成实现、本机验证
-与独立验收（见 §18 Step V0.2-03）：**V0.2-03 Independent Acceptance: Conditional PASS**
-（一项 P1 查询正确性）。定向修复 V0.2-03-FINAL 已完成，当前等待
-**V0.2-03 Final Acceptance**。尚未开始 V0.2-04。
+V0.2-03 DuckDB Query Foundation & Bounded Historical Query Service 已完成实现、本机验证、
+独立验收（Conditional PASS，一项 P1 查询正确性）与定向修复 V0.2-03-FINAL
+（见 §18 Step V0.2-03）：**V0.2-03 Final Acceptance: PASS**。
+
+V0.2-04 Project-Backed Capture Persistence Integration 已完成实现与本机验证
+（见 §18 Step V0.2-04）：**Implementation complete / Local verification complete /
+Awaiting independent acceptance**。本阶段把实时 Capture 正式接入
+Project → DataSession → Parquet 持久化链路，并让 packaged
+`canx-runtime.exe` 真正执行 Parquet 写入路径（**Packaged Parquet execution path:
+VERIFIED**，Packaged DuckDB query path 仍为 NOT VERIFIED）。
 
 状态：
 
@@ -1585,8 +1771,10 @@ V0.2 — Runtime & Data Foundation
 ├── V0.2-03 local verification       ✅ done
 ├── V0.2-03 independent acceptance   ✅ Conditional PASS (1 P1)
 ├── V0.2-03 final remediation        ✅ done
-├── V0.2-03 final acceptance         ⏳ awaiting
-└── V0.2-04 (next coherent increment) not started
+├── V0.2-03 final acceptance         ✅ PASS
+├── V0.2-04 implementation           ✅ done
+├── V0.2-04 local verification       ✅ done
+└── V0.2-04 independent acceptance   ⏳ awaiting
 ```
 
 ---
