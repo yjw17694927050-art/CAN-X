@@ -476,3 +476,24 @@ def test_an_asset_cannot_be_loaded_once_its_owned_file_is_gone(tmp_path: Path) -
         service.load_asset(asset.asset_id)
 
     assert info.value.code == "dbc.asset_integrity_failed"
+
+
+def test_importing_the_same_bytes_twice_creates_two_assets(tmp_path: Path) -> None:
+    """No content de-duplication: an import is an explicit asset creation.
+
+    Two assets that happen to hold identical bytes are two assets. Collapsing
+    them on the digest would freeze a future decision — aliasing, revisions,
+    replacement — into a constraint nobody asked for yet.
+    """
+    root, _ = make_project(tmp_path)
+    service = ProjectDbcService(root)
+    source = write_source(tmp_path / "inbox", "vehicle.dbc")
+
+    first = service.import_asset(source)
+    second = service.import_asset(source)
+
+    assert first.asset_id != second.asset_id
+    assert first.sha256 == second.sha256
+    assert first.relative_path != second.relative_path
+    assert len(service.list_assets()) == 2
+    assert len(stored_files(root)) == 2
