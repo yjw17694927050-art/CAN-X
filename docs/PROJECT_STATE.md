@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-17  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-08 Desktop DBC Import Orchestration Foundation
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-08-FINAL Packaged DBC Import Smoke Truthfulness Closure
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -5526,7 +5526,8 @@ smoke project    .rivet\scratch\smoke-project-v308（新建，dbc/ 初始为空�
 Cancel
   native dialog opened（class #32770）                YES
   按下对话框自身的 Cancel 按钮（InvokePattern）        YES
-  renderer 收到 null / orchestration 报 cancelled      YES
+  renderer 收到 null（当轮由 bridge 产生，非编排器）   YES
+  orchestration 报 cancelled                         —— 当轮并未真正执行，见 V0.3-08-FINAL
   Runtime 资产数（HTTP GET /dbc/assets）              导入前 0 → Cancel 后 0
   project/dbc 目录初始文件数                           0
 
@@ -5623,6 +5624,197 @@ Awaiting independent acceptance
 
 本轮**不自行宣布** Final Acceptance: PASS / Status: CLOSED；最终独立验收由项目负责人执行。
 本轮也不开始 V0.3-09。
+
+---
+
+### Step V0.3-08-FINAL — Packaged DBC Import Smoke Truthfulness Closure
+
+V0.3-08 的独立验收结论为 **Conditional PASS**（P0: 0 · P1: 2 · P2: 1），
+`Final Acceptance: NOT PASS`。本轮只关闭两个 P1——**smoke 的证据与实际执行路径不一致**、以及
+**smoke 的失败不反映到退出码**。P2（near-limit renderer starvation）按验收要求保持不变：不修复、
+不引入 Worker、不改 transport contract、不改写成「已解决」。
+
+#### P1-A — Packaged Cancel 没有经过生产 Orchestrator
+
+根因（`apps/desktop/src/smoke/dbc-dialog-smoke.ts` 的 `cancelStep()`）：它直接调用
+`selectDbcContent()`，因此打包 smoke 实际执行的是
+
+```text
+native dialog → Rust → IPC → selectDbcContent() → null
+```
+
+而报告呈现的却是
+
+```text
+importDbcFromNativeDialog(projectPath) → { status: "cancelled" } → 零 Runtime import
+```
+
+两条路径对「用户点了 Cancel」都回答 `null`，所以这个偏差**在任何运行时断言上都不会暴露**：当轮的
+`cancelStoredNothing` 只查 HTTP 资产数，通过与否和走的是哪条路径无关。只有读代码才看得见。但上一节
+当时把它写成「orchestration 报 cancelled」，证据强度高于实际执行路径。上一节该行已改为如实描述，
+并指向本节。
+
+修复：`cancelStep()` 改为调用生产函数 `importDbcFromNativeDialog(projectPath)`，project path 仍来自
+构建期 `VITE_CANX_DBC_SMOKE_PROJECT_PATH`，结果如实上报
+
+```json
+{"step": "cancel", "outcome": "cancelled"}
+```
+
+若操作者没有按 Cancel 而是选了文件，则上报 `outcome: "imported"` 并附
+`error: "the dialog was not cancelled"`——**误操作被报成不匹配，而不是被当作取消接受**。`import`
+步骤与 `payload_shape` 步骤保持不变；`payload_shape` 仍以一次裸 `invoke` 直接观察 Rust payload，
+它是唯一有意绕过编排的步骤。
+
+#### P1-B — smoke script 没有 fail closed
+
+根因（`scripts/smoke-native-dbc-dialog.ps1`）：脚本计算 verdict、逐行打印 PASS/FAIL，然后正常结束。
+PowerShell 的 `-File` 在没有未捕获异常时退出码为 0，因此**一份打印着 FAIL 的运行与一份全 PASS 的
+运行，对任何调用方都无法区分**。这条 gate 是装饰性的。
+
+修复：在进程清理完成、evidence JSON 已写盘之后，增加统一判定
+
+```text
+required verdicts（23 项，全部必须为 true）
+  → 含 payloadKeyCountIsTwo 与 payloadKeysAreExpected
+     （键集比较，而非计数：出现第三个字段即失败）
+  → failedVerdicts 非空 → 逐项打印 名称 = 值
+  → throw "V0.3-08 packaged DBC smoke failed: <names>"
+```
+
+失败路径下 evidence 文件仍然完整保留（写盘早于判定）。退出码语义：
+
+```text
+全部 required verdict == true   → exit 0
+任一 required verdict != true   → exit 1（未捕获 throw）
+```
+
+#### RED → GREEN
+
+**RED-A（架构检查）**——新增 `apps/desktop/src/smoke/dbc-dialog-smoke.test.ts`，静态断言「Cancel
+步骤必须调用 `importDbcFromNativeDialog`，且不得以 `selectDbcContent` 作为其执行路径」。
+
+```text
+修复前  npx vitest run src/smoke/dbc-dialog-smoke.test.ts
+        Test Files 1 failed · Tests 2 failed | 3 passed
+        失败项：runs the Cancel step through the production orchestrator
+                reports the orchestrator's own cancelled outcome
+修复后  同上 → 5 passed
+```
+
+该测试第一版因用 `\n}\n` 定位函数体、在 CRLF 检出上找不到闭合括号而全红——那是测试自身的缺陷，
+已把读取内容规范化为 LF；修正后 RED 才落在正确的两个断言上，而不是落在解析错误上。
+
+**RED-B（fail-closed）**——把**修复前**的脚本复制到
+`.rivet\scratch\smoke-failopen-variant.ps1`，只改一行：期望 payload key count 由 2 改为 3。
+
+```text
+运行（旧脚本 + 旧 exe）：
+  FAIL 行 10 项（含变异项 payloadKeyCount）
+  RED_B_SCRIPT_EXIT=0        ← 打印 FAIL 却成功退出：缺陷复现
+```
+
+**GREEN-B（同一失败条件，新脚本）**：
+
+```text
+运行（新脚本的等价变异副本 + 新打包 exe + 全新空 project）：
+  EVIDENCE_WRITTEN=<path>                     （evidence 仍写盘）
+  FAILED VERDICTS (1 of 23):
+    - payloadKeyCountIsTwo = False
+  V0.3-08 packaged DBC smoke failed: payloadKeyCountIsTwo
+  GREEN_B_SCRIPT_EXIT=1                       ← 同一失败条件，非零退出
+```
+
+**GREEN（正确条件）**：
+
+```text
+  ALL REQUIRED VERDICTS PASSED (23)
+  GREEN_FULL_SCRIPT_EXIT=0
+```
+
+#### 回归（本机执行，不是 CI）
+
+```text
+npm test                  11 files / 82 tests passed
+                          （V0.3-08 基线 10 / 77；+1 file / +5 tests = 新增架构检查）
+npm run lint              exit 0
+npm run typecheck         exit 0
+npm run build             exit 0（不设 smoke 开关 → dist 内无 CANXSMOKE / dbc-dialog-smoke 标记）
+cargo fmt --check         exit 0
+cargo clippy --all-targets --all-features -- -D warnings   exit 0
+cargo check               exit 0
+cargo test                28 passed（lib）+ 3 passed（tests/runtime_sidecar.rs）
+python -m pytest -q       1626 passed, 1 skipped in 158.54s
+ruff check runtime tests tools   All checks passed!
+mypy runtime              Success: no issues found in 64 source files
+```
+
+```text
+GitHub workflow runs: none
+```
+
+仓库没有 `.github`，因此本文件不声称 CI 参与过任何一项验证；以上数字全部为本机实测输出。
+
+#### Packaging 与 Packaged E2E
+
+```text
+构建      cmd.exe /c scripts\package-windows.cmd
+          （VITE_CANX_DBC_SMOKE=1 + VITE_CANX_DBC_SMOKE_PROJECT_PATH=<fresh project>）exit 0
+smoke chunk  dist/assets/dbc-dialog-smoke-DmkhYyQ0.js   5.55 kB
+can-x.exe    9,798,656 bytes
+             SHA256 3c89195c5c7dc73a9dbd645c8115d6f9835143be8e1e245ee70144b30114ddf5
+MSI          CAN-X_0.1.0_x64_en-US.msi · 63,131,648 bytes
+             SHA256 edff0f53bfcb703a9f5b2069fa0b6fd1fb46d5b5d3c6f99746817044eb1ea115
+fixture      .rivet\scratch\smoke-secret-dir\vehicle.dbc · 359 bytes
+             SHA256 9bb985aaad3223d5ec81c1928fe544340995a9fdbf101f67dec75572d1996342
+smoke project  .rivet\scratch\smoke-project-v308f（新建，dbc/ 初始为空）
+```
+
+renderer 侧报告的三步（`document.title` 通道，由 UI Automation 读取）：
+
+```json
+{"step": "cancel", "outcome": "cancelled"}
+{"step": "payload_shape", "returnedNull": false,
+ "payloadKeys": ["content_base64", "source_name"], "sourceName": "vehicle.dbc"}
+{"step": "import", "outcome": "imported", "assetId": "6e3e324c-70d4-4236-ae1f-d7fc8581b143",
+ "sourceName": "vehicle.dbc", "sourceNameHasSeparator": false,
+ "assetSha256": "9bb985…342", "assetSizeBytes": 359, "assetEncoding": "utf-8-sig"}
+```
+
+Cancel 现在**由生产编排器产生 outcome**——这正是本节要闭合的事实。其余判定：
+
+```text
+Runtime 资产数（HTTP GET /dbc/assets）   导入前 0 → Cancel 后 0 → Import 后 1
+Cancel 期间 project/dbc 无新增            YES
+Cancel 是否发起 HTTP                     否（资产数与目录均未变）
+IPC payload keys                         ["content_base64","source_name"]（恰好 2 个）
+stored bytes == source bytes             YES（逐字节相等）
+stored SHA256 == source SHA256           9bb985…342
+stored size == source size               359 == 359
+source_name                              vehicle.dbc（basename，无分隔符）
+asset load（源码侧 Python 域重开 project）assetCount 1 · 1 message / 3 signals
+Runtime health                           dialogs 前后 ready；Desktop 关闭后 sidecar 随之退出
+app responsiveness                       YES
+```
+
+#### P2（保持不变，不在本轮修复）
+
+near-limit Desktop HTTP serialization 的 ≈51–53 ms renderer starvation 观测**没有改变**：本轮不修复、
+不引入 Worker、不改 transport contract。上一节的 Performance observation 一节逐字保留，仍是 known
+limitation，不得改写为「已解决」。
+
+#### 状态
+
+```text
+Step V0.3-08-FINAL — Packaged DBC Import Smoke Truthfulness Closure
+
+Implementation complete
+Local verification complete
+
+Awaiting independent final acceptance
+```
+
+本轮**不自行宣布** Final Acceptance: PASS / Status: CLOSED。V0.3-09 未开始。
 
 ---
 
