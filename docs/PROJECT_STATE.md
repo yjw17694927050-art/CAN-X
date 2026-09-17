@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 — Project Runtime Read Model API Foundation — V0.3-11-FINAL applied, V0.3-11-FINAL-2 post-fix regression recorded; awaiting independent re-acceptance)
+> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline added)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -193,17 +193,19 @@ Current Phase:
 V0.3 — Professional Trace & DBC Foundation
 
 Latest CLOSED step:
+V0.3-11 — Project Runtime Read Model API Foundation
+  (Final Acceptance: PASS, Status: CLOSED — independent acceptance)
+
+Previous CLOSED step:
 V0.3-10 — Read-Only DBC Workspace UI Foundation   (Final Acceptance: PASS, Status: CLOSED)
 
 Current step:
-V0.3-11 — Project Runtime Read Model API Foundation
-  Implementation complete
-  Local verification complete
-  V0.3-11-FINAL applied (empty project_path contract hardening)
-  V0.3-11-FINAL-2 applied (post-fix full regression recorded on a18a4f3)
-  Awaiting independent re-acceptance
+None. No V0.3-12 implementation has been started.
 
-No further implementation step has been started.
+Engineering infrastructure (not a numbered product phase):
+Maintenance CI-01 — Continuous Integration Baseline Foundation
+  Implementation complete · self-verification complete · Awaiting independent acceptance
+  Adds .github/workflows/ci.yml only — no product scope change
 ```
 
 The `Final Acceptance: PASS / Status: CLOSED` verdicts recorded here are **project-owner /
@@ -236,9 +238,31 @@ The P1 finding was correct — an empty `project_path` was interpreted by `Path(
 Runtime working directory, so `GET /project/inspect?project_path=` answered `200` with whatever
 project the runtime happened to be running in. It is fixed by **V0.3-11-FINAL**, which refuses
 an empty path at the FastAPI request-validation boundary (`422
-api.request_validation_failed`, `source = api`) before the project domain is reached. The phase
-is now **awaiting independent re-acceptance**; the agent did not write `Final Acceptance: PASS`
-for its own work, either before or after the fix.
+api.request_validation_failed`, `source = api`) before the project domain is reached. The fix
+was then covered by **V0.3-11-FINAL-2**, a post-fix full regression recorded on `a18a4f3`.
+
+After that fix and its regression evidence, the phase was independently re-accepted:
+
+```text
+Independent acceptance source:
+Project owner / independent reviewer
+
+Final Acceptance: PASS
+Status: CLOSED
+
+P0: 0
+P1: 0
+Blocking P2: 0
+```
+
+This verdict is an **external result**, supplied by the project owner / independent reviewer.
+The development agent did not write `Final Acceptance: PASS` for its own work at any point —
+not on the initial submission (`NOT PASS`), not after V0.3-11-FINAL, and not after
+V0.3-11-FINAL-2. V0.3-11 is now CLOSED and `V0.3-12` has not been started.
+
+The complete history — initial `NOT PASS` with the P1 finding, the V0.3-11-FINAL fix, and the
+V0.3-11-FINAL-2 post-fix regression — remains in
+`docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md` unedited.
 
 This document's own maintenance task (*Maintenance — PROJECT_STATE Documentation Compaction*)
 is a documentation-only task, **not** a numbered development phase, and did not touch any
@@ -366,6 +390,21 @@ typed read client: no new Python endpoint, no SQLite migration, no new dependenc
 global current project. Evidence:
 `docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md`.
 
+**V0.3-11 — Project Runtime Read Model API Foundation**
+Final Acceptance: PASS · Status: CLOSED (independent acceptance — P0: 0, P1: 0, Blocking P2: 0)
+Result: one read-only Runtime endpoint `GET /project/inspect?project_path=…`, built as a thin
+adapter over the existing `ProjectService` (the project domain stays the authority), returning a
+typed immutable read model (`project_id` / `display_name` / `schema_version` / `created_at` /
+`updated_at`) with no filesystem path in the response, a request-scoped handle lifecycle, and
+the blocking open/read/close sequence off the event loop. No global current project, no DBC
+coupling, no schema change, no Desktop work. Its first independent review returned `NOT PASS`
+with one P1 — an empty `project_path` was read by `Path("")` as the Runtime working directory;
+**V0.3-11-FINAL** refuses an empty path at the request-validation boundary
+(`422 api.request_validation_failed`, `source = api`), and **V0.3-11-FINAL-2** recorded the
+post-fix full regression on `a18a4f3`. Evidence, including the initial `NOT PASS` and the
+RED → GREEN record:
+`docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md`.
+
 All V0.1 → V0.3-09 detail: `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_V0.3-09.md`.
 V0.3-10 onward: `docs/acceptance/`.
 
@@ -377,8 +416,7 @@ Verified against the current working tree (Runtime routers, desktop modules, Age
 
 ```text
 Project foundation                         ✅
-Project Runtime read-model API (HTTP)      ✅ implemented, locally verified —
-                                             awaiting independent acceptance
+Project Runtime read-model API (HTTP)      ✅
 SQLite project metadata                    ✅
 Parquet session persistence                ✅
 DuckDB query foundation                    ✅
@@ -422,10 +460,10 @@ acceptance; the phase has since been independently accepted (**Final Acceptance:
 Status: CLOSED**), so they now carry the same ✅ as the rows inherited from earlier CLOSED
 phases.
 
-The `Project Runtime read-model API (HTTP)` row is annotated deliberately: it is
-**implemented and locally verified** by V0.3-11 — including the V0.3-11-FINAL empty-path
-hardening — but is **awaiting independent re-acceptance**. The first independent review
-returned `NOT PASS` with one P1, so this is not yet an accepted capability.
+The `Project Runtime read-model API (HTTP)` row was annotated while V0.3-11 was still awaiting
+independent re-acceptance. The phase has since been independently accepted (**Final
+Acceptance: PASS · Status: CLOSED** — after V0.3-11-FINAL and the V0.3-11-FINAL-2 post-fix
+regression), so the row now carries the same ✅ as the phases CLOSED before it.
 
 ---
 
@@ -629,21 +667,25 @@ independent acceptance result" — and must not present its own conclusion as th
 ```text
 V0.3-10 — Final Acceptance: PASS · Status: CLOSED
 V0.3-11 — Project Runtime Read Model API Foundation
-          First independent review: NOT PASS · Status: OPEN (P0: 0, P1: 1, P2: 0)
-          V0.3-11-FINAL applied → AWAITING INDEPENDENT RE-ACCEPTANCE
-          V0.3-11-FINAL-2: post-fix full regression recorded on a18a4f3
-          (Python 1663 passed / 1 skipped · frontend 162 passed · Rust 28+3 passed
-           · packaging exit 0 · packaged smoke 6 passed)
+          Final Acceptance: PASS · Status: CLOSED   (independent acceptance —
+          P0: 0, P1: 0, Blocking P2: 0)
+          History: first independent review NOT PASS (P0: 0, P1: 1, P2: 0)
+          → V0.3-11-FINAL (empty project_path contract hardening)
+          → V0.3-11-FINAL-2 (post-fix full regression recorded on a18a4f3)
+          → independent re-acceptance: PASS / CLOSED
 ```
 
-V0.3-11 adds one read-only Runtime endpoint — `GET /project/inspect?project_path=…` — built as
-a thin adapter over the existing `ProjectService`. Its first independent review found one P1:
-an empty `project_path` was read by `Path("")` as the Runtime working directory. V0.3-11-FINAL
-refuses an empty path at the request-validation boundary instead. Evidence, including the
-RED → GREEN record, is in
-`docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md`. It must not be recorded
-as PASS / CLOSED until an independent re-acceptance result exists, and no later phase
-(V0.3-12) may start before that.
+V0.3-11 is CLOSED. It added one read-only Runtime endpoint —
+`GET /project/inspect?project_path=…` — built as a thin adapter over the existing
+`ProjectService`. Its first independent review found one P1 (an empty `project_path` was read by
+`Path("")` as the Runtime working directory); V0.3-11-FINAL refuses an empty path at the
+request-validation boundary instead, and V0.3-11-FINAL-2 supplied the post-fix regression
+evidence. The full RED → GREEN record is in
+`docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md`, and none of the earlier
+`NOT PASS` / FINAL / FINAL-2 history was rewritten.
+
+Closing V0.3-11 does **not** begin V0.3-12. The next numbered phase must arrive as its own
+explicit task brief; no V0.3-12 implementation exists in this tree.
 
 ---
 
@@ -666,9 +708,11 @@ docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md
     (independent acceptance — project owner / independent reviewer).
 
 docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md
-    V0.3-11 acceptance evidence. First independent review: NOT PASS (P0: 0, P1: 1, P2: 0).
-    V0.3-11-FINAL applied; V0.3-11-FINAL-2 records the post-fix full regression
-    (§19 — carried out on a18a4f3). Awaiting independent re-acceptance.
+    V0.3-11 acceptance evidence. Final Acceptance: PASS · Status: CLOSED
+    (independent acceptance — project owner / independent reviewer,
+    P0: 0, P1: 0, Blocking P2: 0). The initial independent review was NOT PASS
+    (P0: 0, P1: 1, P2: 0); the P1 was fixed by V0.3-11-FINAL, and §19 records the
+    V0.3-11-FINAL-2 post-fix full regression on a18a4f3. History preserved unedited.
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
