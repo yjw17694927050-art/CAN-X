@@ -314,6 +314,7 @@ migration cost
 10. Run performance test if relevant
 11. Review diff
 12. Report result
+13. Confirm the CI quality gate for the change is green (§14)
 ```
 
 禁止：
@@ -373,6 +374,38 @@ NOT VERIFIED
 Implemented but not executed in this environment.
 ```
 
+CAN-X 同时有 GitHub Actions CI baseline：`.github/workflows/ci.yml`。
+它是**第二道独立的自动质量门**，不替代以上任何义务：
+
+```text
+Local Verification
+↓
+GitHub CI
+↓
+Integration Review
+↓
+Independent Acceptance
+```
+
+- 本地测试仍然必须运行。不得因为“本地通过”就忽略 CI failure。
+- CI 在 pull request → `main`、push → `main`、以及手动 `workflow_dispatch` 时运行。
+  它拆成三个互相独立的 job——Runtime / Python、Frontend / TypeScript、
+  Desktop System / Rust——外加一个 Quality Gate；任一 job 未 `success`，
+  整个 CI 失败。
+- 红色 CI 是阻塞性失败。不得把“没有 CI run”当作通过。
+- 绿色 CI **不是** Independent Acceptance。`Final Acceptance: PASS` / `Status: CLOSED`
+  仍然是外部裁决（见 `docs/PROJECT_STATE.md` §11），CI 不能授予。
+
+禁止为了让 CI 变绿而：
+
+```text
+continue-on-error: true
+skip / 删除测试
+降低 assertion
+```
+
+（§43 同样适用。）
+
 ---
 
 # 15. No Fake Compatibility
@@ -393,6 +426,10 @@ CI compile successful
 ```
 
 前提是实际 CI 通过。
+
+CI baseline（`.github/workflows/ci.yml`）只在 `windows-latest` 上运行。
+因此一次成功的 CI run **不能**让任何 macOS / Linux 声明成立，也**不**验证真实 CAN 硬件。
+跨平台 CI matrix 属于后续 maintenance task。
 
 真实硬件同理。
 
@@ -944,6 +981,14 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
+CI（GitHub Actions）:
+
+```text
+.github/workflows/ci.yml   pull_request → main · push → main · workflow_dispatch
+                           Runtime / Python · Frontend / TypeScript · Desktop System / Rust
+                           → Quality Gate
+```
+
 实际命令发生变化时同步更新本文件。
 
 ---
@@ -993,6 +1038,8 @@ metrics
 [ ] Documentation updated
 [ ] No hidden failing tests
 [ ] No unverified performance claims
+[ ] CI quality gate green for the change — or, if no CI run exists yet, the absence is
+    explicitly reported as NOT VERIFIED (never reported as passed)
 ```
 
 性能任务额外：

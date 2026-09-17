@@ -596,8 +596,18 @@ Desktop / Runtime / DBC limitations still open:
   replica (e.g. `signal.length` only requires a non-negative integer; uniqueness and
   `frame_id`/`is_extended` relations are Runtime-domain guarantees).
 
-Project process gaps recorded honestly: no `.github/` exists, so no CI is claimed for any
-regression number; all recorded test numbers are local runs.
+Project process gaps recorded honestly: until Maintenance CI-01 there was **no** `.github/` in
+this repository, so no CI existed and every test number recorded in this document and under
+`docs/acceptance/` is a **local run**, not a CI result. Maintenance CI-01 added
+`.github/workflows/ci.yml`, so a real Windows quality gate now exists for
+`pull_request → main`, `push → main` and `workflow_dispatch`. Two boundaries stay attached to
+that gate:
+
+- CI is an **automatic quality gate**, not a substitute for Independent Acceptance. A green CI
+  run never grants a phase `Final Acceptance: PASS`.
+- CI runs on **`windows-latest` only**. It verifies neither macOS nor Linux nor real CAN
+  hardware, so the rows above stay `NOT VERIFIED`. A cross-platform CI matrix is a later
+  maintenance task.
 
 ---
 
