@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2 — awaiting independent re-acceptance, see §17)
+> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3 — awaiting independent re-acceptance, see §17)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -235,11 +235,15 @@ Maintenance CI-02 — Protected Integration Gate Foundation
 
 Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
   Implementation complete · remediation complete (SAFETY-01-FIX-1) ·
-  hardening complete (SAFETY-01-FIX-2) · Awaiting independent re-acceptance
+  hardening complete (SAFETY-01-FIX-2) ·
+  emergency-stop epoch hardening complete (SAFETY-01-FIX-3) ·
+  Awaiting independent re-acceptance
   First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — all six fixed by
   SAFETY-01-FIX-1; the first verdict is preserved in §17.
   Second independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 1) — all three fixed
   by SAFETY-01-FIX-2; the second verdict is preserved in §17 too.
+  Third independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 0) — both fixed by
+  SAFETY-01-FIX-3; the third verdict is preserved in §17 as well.
   Adds runtime/canx/safety/ and docs/architecture/SAFETY_ARCHITECTURE.md —
   safety domain, policy, contracts and tests only. It introduces no dangerous
   execution capability. See §17.
@@ -766,9 +770,11 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Implementation complete
           Remediation complete (SAFETY-01-FIX-1)
           Hardening complete (SAFETY-01-FIX-2)
+          Emergency-stop epoch hardening complete (SAFETY-01-FIX-3)
           AWAITING INDEPENDENT RE-ACCEPTANCE
           First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — preserved in §17
           Second independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 1) — preserved in §17
+          Third independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 0) — preserved in §17
           Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
 ```
 
@@ -802,7 +808,12 @@ and it changes one existing module — `canx/agent/tools.py`, where `ToolRisk` b
 the canonical `RiskLevel`. SAFETY-01-FIX-2 also hardened the audit contract inside that package:
 the audit *transaction* now covers event preparation and construction, not only the sink write
 (invariant S20), and every audit reference field is a validated identifier rather than a
-non-empty string (invariant S21). It adds **no** dangerous capability: no TX, no replay send, no
+non-empty string (invariant S21). SAFETY-01-FIX-3 then closed the two findings of the third
+independent review inside the same package: the emergency stop is now an epoch boundary rather
+than a pause — `arm`, `confirm_arm` and `grant_approval` are all refused while it is engaged
+(invariant S22) and a successful release leaves the runtime `DISARMED` with no outstanding
+approval (S23) — and the cancellation boundary it reports through is typed (S24). It adds **no**
+dangerous capability: no TX, no replay send, no
 injection, no diagnostic request, no ECU mutation, no new endpoint and no new UI control. Its own
 verdict is external as well; §17 records what was implemented and what remains unverified.
 
@@ -846,12 +857,12 @@ docs/engineering/INTEGRATION_POLICY.md
     merely described) by the `main-protected-integration` GitHub Repository Ruleset — see §15.
 
 docs/architecture/SAFETY_ARCHITECTURE.md
-    SAFETY-01 safety architecture. The frozen invariants S1–S21, the risk taxonomy,
+    SAFETY-01 safety architecture. The frozen invariants S1–S24, the risk taxonomy,
     operation / caller / ARM / scope / permission / approval / audit /
-    audit-safe-identifier / emergency-stop contracts, the audit transaction
-    semantics, the Agent and script safety boundaries, the adapter boundary, restart
-    and concurrency semantics, the future-integration rules, and the list of items
-    that remain NOT VERIFIED — see §17.
+    audit-safe-identifier / emergency-stop (epoch-boundary) / cancellation contracts,
+    the audit transaction semantics, the Agent and script safety boundaries, the
+    adapter boundary, restart and concurrency semantics, the future-integration
+    rules, and the list of items that remain NOT VERIFIED — see §17.
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
@@ -1008,6 +1019,7 @@ Level 2  Repository Continuous Integration     DONE
 Level 3  Protected Integration Workflow        DONE
 Safety Foundation (SAFETY-01)                  IMPLEMENTED · REMEDIATED (FIX-1) ·
                                                HARDENED (FIX-2) ·
+                                               EPOCH-HARDENED (FIX-3) ·
                                                AWAITING INDEPENDENT RE-ACCEPTANCE
 Level 4  Multi-Agent Orchestration             NOT STARTED
 Level 5  Controlled Delivery / Qualification   NOT STARTED
@@ -1061,11 +1073,36 @@ All three findings were correct as well. They are remediated by SAFETY-01-FIX-2
 acceptance history is the record of what reviewers found, and rewriting it would
 destroy the only evidence that the process was adversarial.
 
+```text
+Third independent acceptance (after SAFETY-01-FIX-2):
+Project-owner / independent reviewer
+
+Final Acceptance: NOT PASS
+Status: AWAITING FIX-3
+
+P0 = 1
+P1 = 1
+P2 = 0
+```
+
+Both findings were correct as well. They are remediated by SAFETY-01-FIX-3
+(§17.11 below). This verdict is preserved unedited as well:
+
+```text
+P0  Emergency Stop could be used as pause/resume: ARM state and approval could be
+    rebuilt while the stop was engaged, and survived the release.
+P1  OperationCanceller returned tuple[str], and that tuple reached the audit
+    event's detail through EmergencyStopState.describe() — arbitrary subsystem
+    text outside the typed identifier contract, and the raw operator reason
+    fanned out to every canceller by the same route.
+```
+
 **Status: implementation complete · remediation complete (FIX-1) · hardening
-complete (FIX-2) · self-verification complete · AWAITING INDEPENDENT
-RE-ACCEPTANCE.** The development agent did not write a `Final Acceptance: PASS` for
-this work at any point — not on the first submission, not after the first
-remediation, and not after the second.
+complete (FIX-2) · emergency-stop epoch hardening complete (FIX-3) ·
+self-verification complete · AWAITING INDEPENDENT RE-ACCEPTANCE.** The development
+agent did not write a `Final Acceptance: PASS` for this work at any point — not on
+the first submission, not after the first remediation, not after the second, and
+not after the third.
 
 ### 17.1 The question it answers
 
@@ -1083,7 +1120,7 @@ path is asserted by regression test rather than promised in prose (S12).
 runtime/canx/safety/            a new Runtime domain package (14 modules)
   risk.py        RiskLevel · Capability · OperationClass · deterministic classification
   caller.py      CallerKind · CallerIdentity (caller_id is an identifier) · who may supply authority
-  identifiers.py the audit-safe identifier + digest contract (FIX-2)
+  identifiers.py the audit-safe identifier + digest contract (FIX-2; CancellerId added by FIX-3)
   scope.py       OperationTarget · ArmScope · NaN-safe has_lapsed
   arm.py         ArmState · ArmController · explicit transition table
   permission.py  PermissionGrant · PermissionSet (no mutator; empty by default)
@@ -1092,11 +1129,13 @@ runtime/canx/safety/            a new Runtime domain package (14 modules)
   decision.py    DecisionOutcome · SafetyReason · PolicyDecision
   policy.py      SafetyPolicy · SafetyContext · ApprovalRequirement
   audit.py       SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink
-  emergency.py   EmergencyStopController · EmergencyStopState · OperationCanceller
-  kernel.py      SafetyKernel — the authority · the audit commit guard
+  emergency.py   EmergencyStopController · EmergencyStopState · OperationCanceller ·
+                 CancellationFailure · CancellationFailureCode (FIX-3: typed cancellation)
+  kernel.py      SafetyKernel — the authority · the audit commit guard ·
+                 the emergency-stop authority gate (FIX-3)
   errors.py      SafetyError family, all codes prefixed `safety.`
 
-docs/architecture/SAFETY_ARCHITECTURE.md   the frozen contract (25 sections, S1–S21)
+docs/architecture/SAFETY_ARCHITECTURE.md   the frozen contract (26 sections, S1–S24)
 tests/unit/safety/                         refusal paths, fault injection, cross-caller
                                            matrices, anti-escalation, the audit
                                            transaction's failure points, the
@@ -1115,10 +1154,14 @@ ARM states         DISARMED → ARMING → ARMED; disarm() idempotent; no DISARM
 Permissions        capability-based, scoped, empty by default, no widening method
 Approvals          one capability, expiring, single-use where demanded, atomic consumption
 Scope              device / channel / target address; a blank request coordinate is NOT a wildcard
-Emergency stop     globally disarm · deny new dangerous work · request cancellations · audit
+Emergency stop     an epoch boundary, not a pause (S22–S24): globally disarm ·
+                   clear approvals · block arm/confirm_arm/grant_approval while
+                   engaged · request cancellations with a reason digest · audit.
+                   Release leaves DISARMED + no outstanding approval
 Audit              ALLOW and DENY both recorded; references are typed identifiers and
                    digests, never free text; the whole commit path is the transaction
-                   (S20, S21); unrecordable ⇒ fault
+                   (S20, S21); unrecordable ⇒ fault. Cancellation feedback obeys the
+                   same contract (S24)
 ```
 
 ### 17.3 What was deliberately NOT added
@@ -1363,3 +1406,175 @@ stale the moment it changed the head. Live PR metadata belongs in the PR
 (a FIX-1 finding, §17.8 P2-1). No new Quality Gate job was added — the FIX-2 tests
 live in `tests/` and are covered by the existing gate, so `.github/workflows/ci.yml`
 and the `main` ruleset are untouched.
+
+### 17.11 Remediation (SAFETY-01-FIX-3)
+
+The **third** independent review returned `NOT PASS` with one P0 and one P1
+(§17 above). Both were correct. Neither was a redesign — the review found two
+places where the frozen contract said one thing and the code did another — and the
+remediation is frozen as invariants S22, S23 and S24.
+
+#### P0 — the emergency stop was a pause, not an epoch boundary
+
+Engaging the stop already did the right three things in the right order (disarm,
+clear approvals, stay engaged), and `evaluate` refused dangerous work for as long
+as it was engaged. What was missing was the other half: `arm`, `confirm_arm` and
+`grant_approval` were not gated on the stop at all.
+
+```text
+E-stop engaged → arm() → confirm_arm() → grant_approval()
+→ release E-stop → runtime already ARMED, approval already present
+```
+
+so the next dangerous operation proceeded without anyone rebuilding anything. The
+stop did not remove authority so much as park it, and the release was a resume.
+Reproduced before any edit with a `.rivet/scratch/` probe:
+
+```text
+RED     engaged: True
+        P0 arm during e-stop: SUCCEEDED (defect)
+        P0 confirm_arm during e-stop: SUCCEEDED armed
+        P0 grant_approval during e-stop: SUCCEEDED; outstanding: 1
+        after release: arm_state= armed outstanding= 1 engaged= False
+```
+
+Fixed in two layers rather than at whichever was easier:
+
+```text
+Layer 1  SafetyKernel._require_emergency_stop_released(action=…)
+         called by arm · confirm_arm · grant_approval, before any mutation and
+         inside the kernel lock, raising SafetyEmergencyStopError
+         (`safety.emergency_stop_active`)
+Layer 2  release_emergency_stop disarms and clears approvals as part of the
+         release, outside the audit commit guard, and rolls back only the stop's
+         engagement when the audit cannot be written
+```
+
+`confirm_arm` carries its own gate because it is a real bypass, not a duplicate:
+a runtime that was already `ARMING` when the stop engaged reaches `ARMED` through
+the confirmation and never calls `arm` again. The gate is a typed fault rather than
+a `PolicyDecision.DENY` because these are control-plane authority mutations that
+never reach `evaluate` — there is no verdict for a `DENY` to be.
+
+```text
+GREEN   P0 arm during e-stop: refused -> SafetyEmergencyStopError safety.emergency_stop_active
+        P0 confirm_arm during e-stop: refused -> SafetyEmergencyStopError
+        P0 grant_approval during e-stop: refused -> SafetyEmergencyStopError
+        after release: arm_state= disarmed outstanding= 0 engaged= False
+```
+
+#### P1 — the cancellation boundary was outside the identifier contract
+
+`OperationCanceller.cancel_active_operations` returned `tuple[str, ...]` and that
+tuple went into `EmergencyStopState.requested_cancellations` unvalidated, then into
+the audit event's `detail` through `EmergencyStopState.describe()`. The failure list
+was prose assembled at the failure site — `f"{ClassName}: {ExceptionName}"`. So a
+subsystem could put anything into Safety Audit's `detail` by returning it, which is
+the back door S21 closed for `operation_id` / `approval_id` / `device_id` /
+`channel`, reopened one layer up. The raw operator reason fanned out to every
+canceller by the same route.
+
+```text
+RED     requested_cancellations: ('tx-1', 'operator secret is hunter2')
+        audit detail: {"cancellation_failures":[],"engaged":true,…,
+                       "requested_cancellations":["tx-1","operator secret is hunter2"]}
+        secret in detail: True
+        canceller saw reason: ['bench secret xyz']
+```
+
+Fixed by giving the cancellation boundary the same typed contract as the rest of
+the trail (S24):
+
+```text
+OperationCanceller       cancel_active_operations(reason_digest=…) -> tuple[OperationId, …]
+registration             register_canceller(CancellerId, canceller) — not type(x).__name__
+revalidation             every returned value re-runs through OperationId(), because the
+                         return type is a typing promise rather than a runtime guarantee
+CancellationFailure      canceller_id · failure_code · failure_type — all bounded, no message text
+CancellationFailureCode  canceller.raised · canceller.invalid_reference ·
+                         canceller.contract_violation (closed vocabulary)
+EmergencyStopState       __post_init__ re-checks every audit-facing field, the same defence
+                         in depth SafetyAuditEvent applies to itself
+```
+
+Two properties were preserved and are asserted: **the stop still engages** — a
+malformed answer is a failure to *report*, never a veto, so the identifiers it did
+name are kept, the rest become a structured failure, and the stop engages either
+way — and **nothing silently disappears**, because S13/S14 require an operator to
+see which operation cancellation was requested and which subsystem did not answer.
+The answer is a structured bounded `detail`, not `detail=None`.
+
+```text
+GREEN   requested_cancellations: ('tx-1',)
+        cancellation_failures: CancellationFailure(canceller_id='tx.periodic',
+            failure_code=CANCELLER_INVALID_REFERENCE, failure_type='str')
+        secret in detail: False
+        canceller saw reason_digest only: True
+        e-stop still engaged: True
+```
+
+#### A test that encoded the defect, corrected
+
+`test_the_stop_survives_a_re_arm_attempt_during_the_emergency` — and the
+architecture prose next to it — documented re-arming during the stop as
+*permitted*. The third review found the expected behaviour itself unsafe, so the
+test is now `test_rearming_is_forbidden_while_emergency_stop_is_engaged` and the
+prose was replaced. This is a corrected contract, not a weakened test: the old
+assertion pinned a pause, the new one pins an epoch boundary. No other safety test
+was deleted, skipped or loosened.
+
+#### What the remediation did not change
+
+```text
+S1–S21       unchanged, and none weakened
+FIX-1        every FIX-1 protection intact — two-axis authority, derived provenance,
+             finite dangerous-permission expiry, reason digests
+FIX-2        every FIX-2 protection intact — the whole-transaction audit commit,
+             SafetyRollbackError, the identifier contract
+tests        none deleted, skipped or loosened; the one E-stop expectation that
+             encoded the defect was corrected
+ci.yml       untouched
+ruleset      untouched
+TX / UDS     still absent — the boundary is enforced; no capability was added
+```
+
+A general *authority epoch* (one counter invalidating old authority on stop,
+restart, device reconnect or channel change alike) is recorded in
+`SAFETY_ARCHITECTURE.md` §21 as the natural generalisation of S22/S23 and as
+**deferred**. `DISARMED` + no approvals expresses the whole requirement the third
+review set, so FIX-3 stops there rather than inventing a fourth piece of authority
+state.
+
+### 17.12 Verification (current tree, SAFETY-01-FIX-3)
+
+Local runs against the tree this section describes. §17.5 and §17.10 are
+**historical** — they are the runs that were made then, and they have deliberately
+not been restated as current.
+
+```text
+python -m pytest tests/unit/safety/test_emergency_stop.py -q    53 passed
+python -m pytest tests/unit/safety -q                           554 passed
+python -m pytest -q                                             2220 passed, 1 skipped in 151.75 s
+                                                                (the skip is the same pre-existing
+                                                                Windows directory-link privilege in an
+                                                                unrelated DBC test)
+python -m ruff check runtime tests tools                        All checks passed
+python -m mypy runtime                                          Success: no issues found in 80 source files
+```
+
+For reference, the historical progression is `522` safety tests before FIX-3 (the
+FIX-2 tree), `286` before FIX-2 (the FIX-1 tree) and `183` at the end of the initial
+SAFETY-01 implementation (§17.5).
+
+```text
+GitHub Quality Gate on the FIX-3 head
+  Runtime / Python          required
+  Frontend / TypeScript     required
+  Desktop System / Rust     required
+  Quality Gate              required — must be `success`
+```
+
+The exact run id and head SHA live in the PR #4 body rather than here (a FIX-1
+finding, §17.8 P2-1). `.github/workflows/ci.yml` and the `main` ruleset are
+untouched: the FIX-3 tests live in `tests/` and are covered by the existing gate,
+and the explicit instruction for this round was to leave both alone.

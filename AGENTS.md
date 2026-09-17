@@ -479,7 +479,7 @@ Runtime 组件：runtime/canx/safety/
 具体到 Agent Tool：一个 effect risk 为 `READ` 的 tool，
 只要 `required_capabilities` 含 `CAN_TX`，`ToolExecutor` 就拒绝直接执行它。
 
-该文档中的安全不变量 `S1`–`S21` 为**冻结条款**。
+该文档中的安全不变量 `S1`–`S24` 为**冻结条款**。
 它们不能被任务 prompt 绕过——如果某条指令要求打破不变量，
 正确做法是指出冲突并停止，而不是静默执行。
 
@@ -498,6 +498,25 @@ event 构造、sink 写入的全部。其中任何一步失败，都必须先回
 "看起来像不像 secret" 的启发式规则代替 identifier contract——
 secret 可以是任何字符串。契约在
 `runtime/canx/safety/identifiers.py` 中唯一定义。
+
+**Emergency Stop 是安全 epoch 边界，不是 pause（S22–S24）。** Stop engaged
+期间，任何 Agent / UI / Script / Automation / SYSTEM workflow 都不得建立或
+预置危险 authority：`arm` / `confirm_arm` / `grant_approval` 在 mutation 之前
+一律以 typed fault（`SafetyEmergencyStopError`）拒绝，而不是返回
+`PolicyDecision.DENY`——它们是 control-plane authority mutation，不经过
+`evaluate`。"先 arm 起来、等 release 再放开"不是优化，是缺陷。
+
+**Emergency Stop release 永远不是 resume command。** release 之后 runtime
+保持 `DISARMED`，且没有任何 outstanding approval；authority 必须被显式重建。
+不得为了"恢复事务前状态"而在 release 失败时恢复 ARM 或 Approval——
+减少 authority 的动作不可回滚成更多 authority（S17、S23）。
+
+**Cancellation audit 引用必须走 identifier contract（S24）。** 会被取消的
+subsystem 以稳定的 `CancellerId` 注册（`"tx.periodic"`，不是
+`type(x).__name__`），`cancel_active_operations` 返回 `OperationId` 并接收
+reason **digest**；raw subsystem text 与 raw operator reason 都不得跨越
+cancellation audit 边界。malformed 返回不得阻止 E-stop engagement——
+它被记录为结构化的 `CancellationFailure`。
 
 ---
 

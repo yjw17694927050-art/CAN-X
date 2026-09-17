@@ -1188,7 +1188,28 @@ transaction 成功时才提交：event 准备 + event 构造 + sink 写入。任
 audit 失败可以导致 authority 丢失，但**绝不**可以导致 authority 被恢复——
 fail safe，不是 fail transactionally symmetric。
 
-该文档冻结的安全不变量（S1-S21）是架构条款：任何任务指令都不得绕过。
+**Emergency Stop 语义（S22–S24）。** Emergency Stop 是**安全 epoch 边界**，
+不是 pause/resume：
+
+```text
+ENGAGE      → DISARM
+            → clear approvals
+            → authority creation blocked（arm / confirm_arm / grant_approval 全部拒绝）
+            → request cancellation of active dangerous work
+
+RELEASE     → emergency_stop = False
+            → runtime remains DISARMED
+            → approvals empty
+            → 危险 authority 必须被显式重建
+```
+
+**Release ≠ resume。** Stop engaged 期间不得建立也不得预置危险 authority；
+release 之后既不是 ARMED，也不存在遗留 Approval。取消（cancellation）反馈同样
+属于 Safety Audit 的一部分，因此其引用必须是 typed identifier / bounded
+structured failure code，而不是任意子系统文本；canceller 收到的是 reason digest，
+不是 operator 的原始 reason。
+
+该文档冻结的安全不变量（S1-S24）是架构条款：任何任务指令都不得绕过。
 SAFETY-01 只建立 domain / policy / state machine / contract / test，
 不引入任何真实 TX、replay 发送、UDS 或 ECU 变更能力——
 那些能力由后续任务的 SPEC 变更引入，并且必须经过 Safety Kernel。

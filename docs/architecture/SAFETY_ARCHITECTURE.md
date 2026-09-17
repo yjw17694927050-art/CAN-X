@@ -154,13 +154,26 @@ S21  Safety Audit reference fields are identifiers, and Safety Audit records onl
      typed identifiers, enumerated vocabulary values, bounded structured
      coordinates and cryptographic digests. It has no field for arbitrary
      caller-controlled text.
+S22  While the emergency stop is engaged, no caller may establish or pre-stage
+     dangerous vehicle authority. ARM state and approval are that authority, so
+     neither may be created, requested or granted while the runtime is stopped.
+S23  Releasing the emergency stop restores only the possibility of rebuilding
+     authority. After a successful release the runtime is DISARMED and holds no
+     outstanding approval; authority must be re-established explicitly. Release
+     is never a resume command.
+S24  Every cancellation reference persisted by Safety Audit is a typed identifier
+     or a bounded structured failure code. The raw operator reason and arbitrary
+     subsystem text do not cross the cancellation audit boundary.
 ```
 
 S1–S14 were frozen by SAFETY-01. S15–S19 were added by SAFETY-01-FIX-1 after the
 first independent review returned `NOT PASS`, and they are the five things that
 review found the model could not yet hold (§24). S20–S21 were added by
 SAFETY-01-FIX-2 after the second independent review returned `NOT PASS`, and they
-are the two things that review found it still could not hold (§25).
+are the two things that review found it still could not hold (§25). S22–S24 were
+added by SAFETY-01-FIX-3 after the **third** independent review returned
+`NOT PASS`, and they are the two properties that review found the model could not
+hold, plus the boundary that follows from the second of them (§26).
 
 ### How each invariant is held
 
@@ -187,6 +200,9 @@ are the two things that review found it still could not hold (§25).
 | S19 | `reason_digest` replaces raw reasons; a control event's `message` is kernel text; `caller_id` is a bounded identifier | `safety/audit.py`, `safety/caller.py`, `safety/emergency.py` |
 | S20 | The whole preparation *and* the sink write are inside the commit guard's `try`; `SafetyAuditEvent` refuses a non-finite `recorded_at`; `_record_control`/`_record_decision` normalise every audit-chain exception into `SafetyAuditError` | `safety/kernel.py`, `safety/audit.py`, `tests/unit/safety/test_authority_audit_atomicity.py` |
 | S21 | Every reference field is validated by one central contract at construction — the domain types *and* `SafetyAuditEvent.__post_init__` | `safety/identifiers.py`, `safety/audit.py`, `safety/caller.py`, `safety/operation.py`, `safety/scope.py`, `safety/approval.py`, `tests/unit/safety/test_audit_identifiers.py` |
+| S22 | `_require_emergency_stop_released` gates `arm`, `confirm_arm` and `grant_approval` *before* any mutation and inside the kernel lock; a broken clock or a malformed canceller answer cannot prevent the stop itself | `safety/kernel.py`, `safety/emergency.py` |
+| S23 | `release_emergency_stop` disarms and clears approvals as part of the release, deliberately outside the commit guard so a failed audit cannot put them back; only the stop's engagement is rolled back | `safety/kernel.py`, `tests/unit/safety/test_emergency_stop.py` |
+| S24 | `OperationCanceller` returns `OperationId` and receives `reason_digest`; the controller revalidates every returned value and records a structured `CancellationFailure`; `CancellerId` replaces `type(x).__name__`; `EmergencyStopState.__post_init__` re-checks its audit-facing fields | `safety/emergency.py`, `safety/identifiers.py`, `safety/kernel.py`, `tests/unit/safety/test_emergency_stop.py` |
 
 ---
 
@@ -416,6 +432,11 @@ DISARMED  ───────────────▶ ARMING  ────�
   authority cannot be silently re-targeted.
 * `disarm()` is idempotent from every state. Disarming is the safe direction, and
   an emergency stop calls it unconditionally.
+* **While the emergency stop is engaged, `arm()` and `confirm_arm()` refuse**
+  with `SafetyEmergencyStopError` (invariant S22). The refusal happens before
+  `ArmController` is asked, so `ARMING` is never entered and there is no
+  half-armed state left to complete later. The stop removes authority; it does not
+  hold it in escrow for whoever releases it.
 * Every transition outside the diagram raises `SafetyStateError`
   (`safety.invalid_transition`) rather than being dropped. A dropped arm attempt
   would leave a caller believing the runtime was armed when it was not.
@@ -554,6 +575,13 @@ label was doing the work of a credential. Now `ApprovalStore.grant` independentl
 refuses a label that does not match its grantor, and the kernel refuses anything
 that is not an `ApprovalSpec`.
 
+**No approval may be granted while the emergency stop is engaged** (invariant
+S22). An approval is dangerous authority, not a formality, so staging one during a
+stop would shorten the chain the stop exists to lengthen: release, and the
+pre-staged approval is already there. `SafetyKernel.grant_approval` therefore
+refuses with `SafetyEmergencyStopError` before constructing anything, and the stop
+clears every approval when it engages — so a released runtime finds none waiting.
+
 Default model:
 
 | Risk | Approval required | Single-use | Exact target | Human issuer |
@@ -685,6 +713,15 @@ parameters_digest / reason_digest   sha256 hex, or absent
 caller_kind · operation_class · decision · reason_code · arm_state · outcome
                 enum values — themselves bounded identifiers
 ```
+
+`detail` is not a loophole in that list. It is a *rendered projection of kernel
+coordinates*, and those coordinates are held to the same contract: since
+SAFETY-01-FIX-3 the emergency stop's rendered state contains booleans, a finite
+timestamp or `None`, a digest, `OperationId` values and structured
+`CancellationFailure` records — a `CancellerId` (identifier) and a
+`CancellationFailureCode` (bounded vocabulary). No free-form text is constructed
+into it anywhere, which is why the canceller return value is revalidated rather
+than quoted (invariant S24).
 
 **Why the rule is an alphabet and not a detector.** The shortcut is to reject
 values that "look like secrets" — containing ``SECRET``, or ``+``/``/``/``=``, or
@@ -843,23 +880,63 @@ escape could reach.
 Emergency Stop
 → globally disarm
 → deny new dangerous operations
+→ block the creation of new authority
 → request cancellation of active dangerous operations
 → audit event
 ```
 
+The stop is a **safety epoch boundary, not a pause** (invariants S22, S23):
+
+```text
+before the stop    authority may exist
+while stopped      no dangerous authority can be created or pre-staged
+after the release  no dangerous authority exists
+                   authority has to be explicitly rebuilt afterwards
+```
+
 * **Any caller kind may engage it.** An Agent, script or automation rule that
-  detects danger can pull it. Engaging only ever reduces authority.
+  detects danger can pull it. Engaging only ever reduces authority — which is
+  also why nothing on the engage path can fail it: a clock that cannot be read
+  records `engaged_at = None`, a canceller that raises or answers with prose is
+  reported in the state, and the stop still engages. A reduction that could not
+  be recorded stands (invariant S17).
 * **Only an operator or the host may release it.** Releasing restores the
-  *possibility* of dangerous work, which is an authority decision.
-* Engaging drops every approval in the session. A re-arm therefore does not
-  restore the ability to do dangerous work — authority has to be re-established.
+  *possibility* of dangerous work, which is an authority decision. The caller
+  check runs before anything is mutated, so a refused release cannot leave the
+  runtime half-released.
+* **Releasing is never a resume command** (S23). After a successful release the
+  runtime is `DISARMED` and holds no approval. Both reductions run as part of the
+  release and deliberately *outside* the audit commit guard: a release whose
+  audit could not be written restores the stop's engagement and nothing else —
+  putting authority back would be the failure, not the fix.
+* **No authority may be pre-staged while the stop is engaged** (S22). `arm`,
+  `confirm_arm` and `grant_approval` each refuse with `SafetyEmergencyStopError`
+  (`safety.emergency_stop_active`), before mutating anything, so there is nothing
+  to roll back. `confirm_arm` carries its own gate rather than relying on
+  `arm`'s: a runtime that was already `ARMING` when the stop engaged reaches
+  `ARMED` through the confirmation and never calls `arm` again.
+* **Engaging drops every approval in the session.** Combined with the gate above,
+  a released runtime cannot find a live approval waiting for it.
+* **The cancellation boundary is typed** (S24). A canceller is registered under
+  a stable `CancellerId` (`"tx.periodic"`, not `type(x).__name__`), receives a
+  reason **digest** rather than the operator's words, and returns
+  `tuple[OperationId, ...]`. Because the return type is a typing promise rather
+  than a runtime guarantee, the controller revalidates every value: identifiers
+  it can keep are kept, anything else becomes a structured `CancellationFailure`
+  and the text itself is never stored.
 * A subsystem that cannot confirm cancellation is **reported**, not swallowed:
-  `EmergencyStopState.cancellation_failures` names it.
+  `EmergencyStopState.cancellation_failures` names it, by validated canceller id
+  and bounded failure code — never by the exception's message.
 * Observational work is not blocked. The stop denies *dangerous* work; reading
   the bus remains available, because hiding the evidence during an incident is
   the opposite of helpful.
 
-`OperationCanceller` is the seam a future transmit engine plugs into.
+`OperationCanceller` is the seam a future transmit engine plugs into:
+
+```python
+register_canceller("tx.periodic", canceller)
+canceller.cancel_active_operations(reason_digest=…) -> tuple[OperationId, ...]
+```
 
 > **NOT VERIFIED:** interrupting a real device write. There is no real transmit
 > path, so there is nothing to interrupt. The contract, the state and the refusal
@@ -897,6 +974,14 @@ R17  An authority change that could be neither audited nor rolled back raises a
      no longer be trusted and the caller must not be told otherwise
 R18  A reference field reaches the trail only as a validated identifier, and a
      non-finite timestamp never reaches it at all (S21)
+R19  An authority-increasing control action is refused while the emergency stop
+     is engaged, before anything is mutated, so the refusal is a gate and not a
+     rollback (S22)
+R20  A release that could not be audited restores the stop's engagement and
+     nothing else: the authority it removed stays removed (S23)
+R21  A cancellation answer that violates the typed contract is recorded as a
+     structured failure, never defeats the stop, and never reaches the trail as
+     text (S24)
 ```
 
 R8 deserves its own line because it is the least obvious. `NaN` compares false
@@ -911,6 +996,12 @@ sink rolls back like a fault at the sink. R17 says the one case that cannot be
 recovered must be reported as what it is: if the rollback also failed, the runtime
 is holding unaudited authority and every subsequent decision is suspect. Neither
 rule invents a new state — the fault is the contract.
+
+R19–R21 are the set SAFETY-01-FIX-3 added, and they close one idea from three
+sides. R19 says a stop blocks authority instead of parking it; R20 says the
+release therefore cannot hand any back; R21 says the cancellation reporting that
+accompanies both enters the trail under the same typed contract as everything
+else. Together they make the emergency stop an epoch boundary rather than a mode.
 
 ---
 
@@ -1024,7 +1115,9 @@ Binding on every task that adds a dangerous capability:
 5. It does not add a free-text field to the audit event.
 6. It does not persist or restore authority.
 7. It comes with its own refusal-path tests, not only a happy path.
-8. If it can be interrupted, it registers an OperationCanceller.
+8. If it can be interrupted, it registers an OperationCanceller — under a stable
+   `CancellerId`, returning `OperationId` values, accepting a reason digest
+   rather than the operator's words (S24).
 9. If it needs more than the standard approval table, the table changes
    explicitly — with the reason written down.
 ```
@@ -1032,6 +1125,16 @@ Binding on every task that adds a dangerous capability:
 Safety invariants cannot be bypassed by a task prompt. If a task instruction
 requires breaking one, the correct action is to say so and stop, not to comply
 quietly.
+
+**Deferred, and named rather than half-built.** A general *authority epoch* —
+a monotonic counter that would invalidate old authority on an emergency stop,
+a restart, a device reconnect or a channel change alike — is the natural
+generalisation of S22/S23 and is **not** in this stage. `DISARMED` + no approvals
+expresses the whole requirement the third review set, so FIX-3 stops there rather
+than inventing a fourth piece of authority state. When a second invalidation
+source arrives (device reconnect, channel change), the epoch is the shape to
+reach for — and it would then be S22/S23's mechanism rather than a replacement
+for them.
 
 ---
 
@@ -1041,7 +1144,7 @@ quietly.
 runtime/canx/safety/
 ├─ risk.py         RiskLevel · Capability · OperationClass · classification
 ├─ caller.py       CallerKind · CallerIdentity · who may supply authority
-├─ identifiers.py  the audit-safe identifier + digest contract (S21)
+├─ identifiers.py  the audit-safe identifier + digest contract (S21, S24)
 ├─ scope.py        OperationTarget · ArmScope · has_lapsed
 ├─ arm.py          ArmState · ArmController · the transition table
 ├─ permission.py   PermissionGrant · PermissionSet
@@ -1050,7 +1153,8 @@ runtime/canx/safety/
 ├─ decision.py     DecisionOutcome · SafetyReason · PolicyDecision
 ├─ policy.py       SafetyPolicy · SafetyContext · ApprovalRequirement
 ├─ audit.py        SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink
-├─ emergency.py    EmergencyStopController · EmergencyStopState · OperationCanceller
+├─ emergency.py    EmergencyStopController · EmergencyStopState · OperationCanceller ·
+│                  CancellationFailure · CancellationFailureCode (S22–S24)
 ├─ kernel.py       SafetyKernel — the authority · the audit commit guard
 └─ errors.py       SafetyError and its typed family (safety.*)
 ```
@@ -1363,3 +1467,168 @@ TX / UDS     still absent — the boundary is enforced; no capability was added
 
 S20 and S21 are the two properties the second review found the model could not
 hold, and each is asserted by tests rather than by this document.
+
+---
+
+## 26. Acceptance remediation (SAFETY-01-FIX-3)
+
+SAFETY-01's **third** independent review returned `NOT PASS`:
+
+```text
+Final Acceptance: NOT PASS
+Status: AWAITING FIX-3
+
+P0 = 1
+P1 = 1
+P2 = 0
+```
+
+Both findings were correct. Neither was a redesign: the review named two places
+where the frozen contract was stated and the code did not hold it. Each is
+recorded here with what it was, why the model could not hold it, and what now
+does. S1–S21 were not weakened; S22–S24 were added.
+
+### P0 — the emergency stop was a pause, not an epoch boundary
+
+Engaging the stop did the right things in the right order:
+
+```text
+engage E-stop → DISARM → clear approvals → stop stays ENGAGED
+```
+
+and `evaluate` refused dangerous work for as long as it was engaged. What was
+missing was the other half. `arm`, `confirm_arm` and `grant_approval` were not
+gated on the stop at all, so authority could be *pre-staged while the runtime was
+stopped*:
+
+```text
+E-stop engaged → arm() → confirm_arm() → grant_approval()
+→ release E-stop → runtime already ARMED, approval already present
+→ the next dangerous operation proceeds without anyone rebuilding anything
+```
+
+The stop did not remove authority so much as park it, and the release was a
+resume. That is the opposite of what an operator pulling an emergency stop is
+asking for, and it defeated the reason engaging drops the session's approvals in
+the first place.
+
+Fixed in two layers, deliberately, rather than at whichever one was easier:
+
+```text
+Layer 1  block the creation of authority while stopped (S22)
+         arm · confirm_arm · grant_approval
+         → _require_emergency_stop_released(action=…)
+         → SafetyEmergencyStopError (safety.emergency_stop_active)
+         raised before any mutation, inside the kernel lock
+
+Layer 2  assert the release postcondition instead of assuming it (S23)
+         disarm + clear approvals as part of the release, outside the commit
+         guard, so a failed audit cannot put them back
+```
+
+`confirm_arm` carries its own gate because it is a real bypass, not a duplicate:
+a runtime that was already `ARMING` when the stop engaged reaches `ARMED` through
+the confirmation and never calls `arm` again.
+
+The gate is a typed *fault*, not a `PolicyDecision.DENY`. These are control-plane
+authority mutations that never reach `evaluate`; there is no verdict for a `DENY`
+to be the verdict of, and a caller needs to tell "the stop is engaged" apart from
+"the arm machine has no such transition".
+
+```text
+RED    arm / confirm_arm / grant_approval each SUCCEEDED while the stop was
+       engaged, and a released runtime came back ARMED with 1 outstanding
+       approval — reproduced with a .rivet/scratch/ probe before any edit
+GREEN  all three raise SafetyEmergencyStopError while engaged; after release
+       arm_state == DISARMED, active_scope is None, approvals.outstanding() == ()
+```
+
+### P1 — the cancellation boundary was outside the identifier contract
+
+`OperationCanceller.cancel_active_operations` returned `tuple[str, ...]`, and that
+tuple went into `EmergencyStopState.requested_cancellations` unvalidated and then
+into the audit event's `detail` through `EmergencyStopState.describe()`. The
+failure list was worse: it was assembled as prose at the failure site.
+
+```python
+failures.append(f"{type(canceller).__name__}: {type(error).__name__}")
+```
+
+So a subsystem could put anything at all into Safety Audit's `detail` by returning
+it — the exact back door S21 closed for `operation_id`, `approval_id`, `device_id`
+and `channel`, reopened one layer up:
+
+```text
+canceller returns ("tx-1", "operator secret is hunter2")
+→ detail: {"requested_cancellations": ["tx-1", "operator secret is hunter2"], …}
+```
+
+The same route carried the operator's raw reason out of the safety domain: every
+canceller was handed `reason=…` verbatim, and a subsystem outside Safety Audit
+may log what it is given.
+
+Fixed by giving the cancellation boundary the same typed contract as the rest of
+the trail (S24), in `runtime/canx/safety/emergency.py`:
+
+```text
+OperationCanceller      cancel_active_operations(reason_digest=…) -> tuple[OperationId, …]
+registration            register_canceller(CancellerId, canceller) — not type(x).__name__
+revalidation            every returned value is re-run through OperationId(),
+                        because the return type is a typing promise, not a
+                        runtime guarantee
+CancellationFailure     canceller_id · failure_code · failure_type — all bounded,
+                        no message text ever
+CancellationFailureCode a closed vocabulary: canceller.raised ·
+                        canceller.invalid_reference · canceller.contract_violation
+EmergencyStopState      __post_init__ re-checks every audit-facing field, the
+                        same defence in depth SafetyAuditEvent applies to itself
+```
+
+Two properties were preserved while doing it, and both are asserted:
+
+* **The stop still engages.** A malformed answer is a failure to *report*, never a
+  veto. The identifiers it did name are kept; the rest become a structured
+  failure; the stop engages either way.
+* **Nothing silently disappears.** S13/S14 require an operator to see *which*
+  operation cancellation was requested and *which* subsystem did not answer. The
+  answer is a structured, bounded `detail` — not `detail=None`, and not
+  observability deleted to make a leak go away.
+
+```text
+RED    requested_cancellations == ("tx-1", "operator secret is hunter2"); the text
+       appeared verbatim in the engaged event's detail; the canceller received
+       reason == "bench secret xyz"
+GREEN  requested_cancellations == ("tx-1",); the rest recorded as
+       CancellationFailure(canceller_id="tx.periodic",
+                           failure_code="canceller.invalid_reference",
+                           failure_type="str"); the text is absent from state and
+       trail; the canceller receives only digest_reason(...)
+```
+
+### A test that encoded the defect
+
+`test_the_stop_survives_a_re_arm_attempt_during_the_emergency` — and the
+architecture prose beside it — documented re-arming during the stop as *allowed*.
+The third review found the expected behaviour itself unsafe, so the test was
+rewritten as `test_rearming_is_forbidden_while_emergency_stop_is_engaged` and the
+prose replaced. This is a corrected contract, not a weakened test: the old
+assertion pinned a pause, the new one pins an epoch boundary. No other safety test
+was deleted, skipped or loosened.
+
+### What the remediation did not change
+
+```text
+S1–S21       unchanged, and none weakened
+FIX-1        every FIX-1 protection intact — two-axis authority, derived
+             provenance, finite dangerous-permission expiry, reason digests
+FIX-2        every FIX-2 protection intact — the whole-transaction audit commit,
+             SafetyRollbackError, the identifier contract
+tests        none deleted, skipped or loosened; the one E-stop expectation that
+             encoded the defect was corrected
+ci.yml       untouched
+ruleset      untouched
+TX / UDS     still absent — the boundary is enforced; no capability was added
+```
+
+S22–S24 are the properties the third review found the model could not hold, and
+each is asserted by tests rather than by this document.
