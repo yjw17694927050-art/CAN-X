@@ -5316,6 +5316,316 @@ Status: CLOSED
 
 ---
 
+### Step V0.3-08 — Desktop DBC Import Orchestration Foundation
+
+> **Phase gate（开工前核实，2026-09-17）**：`docs/PROJECT_STATE.md` 顶部 `Current Phase` 当时
+> 指向 `V0.3-07-FINAL`，该节状态为 `Awaiting independent final closure`——独立技术验收已经
+> PASS（P0: 0 · P1: 0 · P2: 1，唯一 P2 为文档状态陈旧，已由 `f90a1b9` 修正），但项目负责人
+> 尚未落纸正式关闭。按本阶段任务书第 1 节，这属于必须由负责人授权的 phase transition，不得
+> 由执行方代为宣布。项目负责人在本次开工指令中明确授权：把 `V0.3-07-FINAL` 记为正式关闭，
+> 并把 `Current Phase` 推进到本阶段。该授权由提交 `b215267` 落纸，且只改状态行与授权说明
+> ——上文验收结论与「证据来源（诚实区分）」一节逐条未动，历史记录未被改写。
+
+#### Objective
+
+闭合 Desktop DBC 导入链路的第一段，且只闭合这一段：
+
+```text
+Desktop native DBC selection
+  → TypeScript orchestration
+  → Runtime DBC HTTP import
+  → project-owned DBC asset
+```
+
+本阶段**不**实现正式 DBC Workspace UI、不实现 DBC Editor、不引入 Import 按钮、不引入
+project picker、不定义 active DBC、不做 channel ↔ DBC 绑定、不引入任何 project 全局态。
+V0.3-06 的 content-only Runtime import API 与 V0.3-07 的原生文件桥是本阶段的两个既有边界，
+两者都**未修改**。
+
+#### Architecture
+
+生产数据流：
+
+```text
+importDbcFromNativeDialog(projectPath)
+  │  apps/desktop/src/orchestration/dbc-import.ts        ← 本阶段新增（编排）
+  ↓
+selectDbcContent()                                       ← V0.3-07，未改
+  │  apps/desktop/src/desktop/dbc-file-bridge.ts
+  ↓ Tauri invoke("select_dbc_file") → Rust select_dbc_file → 原生对话框
+  ↓ bounded exact-byte read（空/超限/非 .dbc 一律拒绝）
+  ↓ SelectedDbcContent { sourceName, contentBase64 }      ← basename + 精确字节，无路径
+  ↓
+null → { status: "cancelled" }                            ← 正常控制流，不发任何 HTTP
+  ↓
+toRuntimeImportFields(selected)                           ← 两个名字的映射，值一字不改
+  ↓
+importDbcAsset({ projectPath, sourceName, contentBase64 })
+  │  apps/desktop/src/runtime/dbc-client.ts               ← 本阶段新增（Runtime HTTP client）
+  ↓ POST http://127.0.0.1:8765/dbc/assets
+  ↓ { project_path, source_name, content_base64 }
+  ↓
+Python Runtime（未改）
+  ↓ canx/api/dbc.py → ProjectDbcService → 项目自有 DBC asset
+  ↓ 201 { asset_id, source_name, sha256, size_bytes, encoding, imported_at }
+  ↓
+readAsset(payload)                                        ← 逐字段校验后重建 typed 对象
+  ↓
+{ status: "imported", asset: RuntimeDbcAsset }
+```
+
+三层边界与本阶段前完全一致，只是首次被一条真实链路串起来：
+
+```text
+desktop/        = OS / Tauri IPC 边界
+runtime/        = Python Runtime HTTP client 边界
+orchestration/  = 两个边界之间的流程协调（无状态、无 UI、无缓存）
+Python Runtime  = DBC domain / persistence 权威
+```
+
+#### Files changed
+
+```text
+apps/desktop/src/runtime/dbc-client.ts             新增 · Runtime DBC asset client
+apps/desktop/src/runtime/dbc-client.test.ts        新增 · 21 项契约测试
+apps/desktop/src/orchestration/dbc-import.ts       新增 · 编排（严格 4 步）
+apps/desktop/src/orchestration/dbc-import.test.ts  新增 · 12 项编排测试
+apps/desktop/src/smoke/dbc-dialog-smoke.ts         扩展 · 追加 import 步骤（仅 smoke 构建可见）
+apps/desktop/src/vite-env.d.ts                     扩展 · VITE_CANX_DBC_SMOKE_PROJECT_PATH 声明
+scripts/smoke-native-dbc-dialog.ps1                扩展 · 三次对话框 + 独立校验
+.gitignore                                         扩展 · 忽略 .rivet/ 运行时目录
+```
+
+```text
+runtime/canx/**                       未改
+apps/desktop/src-tauri/**             未改（无新 Tauri command）
+capabilities/default.json             未改（仍为 ["core:default"]）
+apps/desktop/src/desktop/*.ts         未改（V0.3-07 桥一行未动）
+```
+
+#### Contracts
+
+```text
+IPC surface                  未变（select_dbc_file 仍无参数，payload 仍恰好两字段）
+Runtime HTTP schema          未变（POST /dbc/assets 仍为 project_path/source_name/content_base64）
+SQLite schema                未变
+DBC canonical schema         未变
+project schema               未变
+```
+
+本阶段的全部工作，是 Desktop 第一次消费这些**已经存在**的契约。
+
+wire 映射是 `projectPath → project_path`、`sourceName → source_name`、
+`contentBase64 → content_base64`；`encoding` 字段本阶段不发送（没有真实的 encoding 输入，
+不凭空发明一个 UI 决定）。请求体由单元测试证明**恰好这三个键**。
+
+Runtime 错误不经翻译：`RuntimeDbcApiError` 原样携带 `status / code / message / details /
+recoverable / source`，因此 `dbc.parse_failed`、`dbc.asset_storage_failed`、
+`project.not_found`、`api.request_validation_failed` 仍是四个不同的事实；没有第二套
+domain error taxonomy。
+
+#### Security / privacy
+
+```text
+source filesystem path 未跨 IPC        payload 仍恰好 [content_base64, source_name]
+source filesystem path 未进 HTTP       请求体恰好三个字段，且测试遍历
+                                       source_path/path/absolute_path/directory/
+                                       file_path/selected_path 逐个断言不存在
+renderer 无新增 fs capability          capabilities/default.json 未改
+Runtime 仍只接受 content               未改，且其 request model 仍是 extra="forbid"
+exact bytes preserved                  编排层无 atob/TextDecoder/trim/BOM/换行规范化；
+                                       git 级变异证明该断言有判别力（见 RED evidence）
+error 不回显内容                      两个错误类型都无字段可承载 payload/path/body
+```
+
+project path 与 source path 被刻意区分：`project_path` 是 Runtime API 明确要求的 CAN-X
+Project 路径，发送给本机 Runtime；用户选中的外部 DBC 文件只以 basename + 字节出现，其
+位置在 renderer、IPC 和 HTTP 三处都没有落脚点。
+
+#### Tests
+
+```text
+apps/desktop/src/runtime/dbc-client.test.ts      21 passed（含 19 项契约 + 2 项请求面）
+apps/desktop/src/orchestration/dbc-import.test.ts 12 passed（含调用顺序与次数）
+```
+
+编排测试刻意**只替换最外层**（Tauri `invoke` 与全局 `fetch`），中间的投影、字段映射、
+请求体与响应校验都是真实代码——避免 mock 掩盖接线缺陷。
+
+RED evidence（git 级变异，每项都让目标断言变红后再逐字恢复源码）：
+
+```text
+A  cancel 分支也调用 Runtime                    → "cancel 不发 Runtime 请求" 变红
+B  contentBase64 经过 btoa(atob(…)) 往返        → "从不 decode/re-encode" 变红
+C  请求体人工加入 source_path                   → "不含 location 字段" 变红
+D  绕过响应校验（payload as RuntimeDbcAsset）   → 7 项 contract 断言全部变红
+```
+
+全量回归（本机实测）：
+
+```text
+npm test（vitest run）                        10 files / 77 tests passed
+npm run lint（eslint --max-warnings 0）       exit 0
+npm run typecheck（tsc -b）                   exit 0
+npm run build（tsc -b && vite build）         exit 0
+cargo fmt --check                             exit 0
+cargo clippy --all-targets --all-features -- -D warnings   exit 0
+cargo check                                   exit 0
+cargo test                                    28 passed（lib）+ 3 passed（tests/runtime_sidecar.rs）
+python -m pytest -q                           1626 passed, 1 skipped in 158.01s
+ruff check runtime tests tools                All checks passed!
+mypy runtime                                  Success: no issues found in 64 source files
+```
+
+前端用例数从 V0.3-07-FINAL 的 8 files / 44 tests 变为 10 files / 77 tests（+2 files /
++33 tests，全部本阶段新增）；Rust 与 Python 用例数与本阶段基线一致（Rust 未改，Python
+未改，本轮只是 regression rerun）。
+
+#### Packaging
+
+```text
+cmd.exe /c scripts\package-windows.cmd（带 VITE_CANX_DBC_SMOKE=1）   exit 0
+  [3/6] packaged-runtime smoke test                                   PASS
+  [5/6] MSI artifact check                                            ok
+```
+
+```text
+build\runtime-dist\canx-runtime.exe                        60,126,810 bytes
+apps\...\target\release\can-x.exe                           9,798,656 bytes
+                    SHA256 e5c1f0716393783e6a7ed514876bef5637a238cdc6e1599c40482c90c154dca1
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi              63,131,648 bytes
+                    SHA256 2e24dd709b1c7e2942b8e05f20a48ded26c839bb0f74899ee6aaf38ed67c7e97
+```
+
+smoke 构建产物中出现 harness chunk：
+
+```text
+dist/assets/dbc-dialog-smoke-FigaLxYX.js   5.33 kB
+```
+
+随后的一次**普通** production build（不设任何 `VITE_CANX_DBC_SMOKE*`）证明 harness 缺席：
+
+```text
+dist/ 中搜索 CANXSMOKE / dbc-dialog-smoke / canx-dbc-smoke / VITE_CANX_DBC_SMOKE
+  → 无匹配
+dist/assets/ 14 个 chunk，与 smoke 构建前的普通构建产物列表一致
+```
+
+#### Packaged E2E evidence
+
+真实 Windows 打包产物上的端到端执行（`scripts\smoke-native-dbc-dialog.ps1`，
+UI Automation 驱动操作系统真实对话框；证据 JSON 见执行记录）：
+
+```text
+fixture          .rivet\scratch\smoke-secret-dir\vehicle.dbc · 359 bytes
+                 SHA256 9bb985aaad3223d5ec81c1928fe544340995a9fdbf101f67dec75572d1996342
+smoke project    .rivet\scratch\smoke-project-v308（新建，dbc/ 初始为空）
+```
+
+```text
+Cancel
+  native dialog opened（class #32770）                YES
+  按下对话框自身的 Cancel 按钮（InvokePattern）        YES
+  renderer 收到 null / orchestration 报 cancelled      YES
+  Runtime 资产数（HTTP GET /dbc/assets）              导入前 0 → Cancel 后 0
+  project/dbc 目录初始文件数                           0
+
+Select + Import
+  IPC 原始 payload keys                              ["content_base64", "source_name"]（恰好 2 个）
+  source name                                        vehicle.dbc（basename，无分隔符）
+  Runtime 资产数（HTTP）                              1
+  返回 asset metadata                                source_name vehicle.dbc ·
+                                                     sha256 9bb985…342 · size_bytes 359 ·
+                                                     encoding utf-8-sig · imported_at 2026-09-17T06:44:56.503808+00:00
+
+Persist + Reopen（关闭 Desktop 后，源码侧 Python 域重开该 project）
+  asset count                                        1
+  project/dbc 中的文件                               ed0e1551-….dbc（359 bytes）
+  source_name                                        vehicle.dbc
+  stored bytes == source bytes                       YES（逐字节相等）
+  stored SHA256 == source SHA256                     9bb985…342 == 9bb985…342
+  size_bytes                                         359 == 359
+  registry metadata                                  project_id 非空 · relative_path dbc/<asset_id>.dbc ·
+                                                     encoding utf-8-sig · imported_at 可解析
+  load_asset 成功                                    1 message / 3 signals
+
+Runtime health
+  dialogs 前 / 后                                      {"status":"ready","service":"canx-runtime","schema_version":1}
+  Desktop 关闭后                                      sidecar 随 Desktop 退出（health 不可达）
+  app responsiveness                                  YES
+```
+
+判定：23 项 verdict 中 21 项布尔判定全部为 `true`，另两项为 `payloadKeyCount == 2` 与
+`payloadKeys == ["content_base64","source_name"]`。
+
+#### Performance observation（near-limit transport，仅测量）
+
+用真实 `importDbcAsset` 序列化路径，payload 恰好 `MAX_DBC_IMPORT_BYTES`（16 MiB 字节 →
+22,369,624 字符 Base64 → 22,369,732 字节 wire body），网络用 stub 替换但仍支付 body 的
+UTF-8 编码成本：
+
+```text
+                        wall ms    timer lag ms    ticks during call
+baseline（tiny）        0.33       6.76            0
+near-limit #1           52.61      52.72           0
+near-limit #2           51.29      51.49           0
+recovery（tiny）        0.32       0.44            0
+
+JSON.stringify（同步）  22.54
+body UTF-8 编码（合计两次 near-limit）  54.39
+```
+
+判据是**相对**的，不是跨机器毫秒门槛：near-limit 期间 `timerLagMs ≈ wallMs` 且采样
+timer 一次都没有执行，即事件循环在这 ~51-53 ms 内完全不可调度；其中约 22.5 ms 是同步的
+`JSON.stringify`。与 baseline/recovery（0.3 ms 级）相比高出两个数量级。
+
+结论：这是一次**用户发起的、一次性的**主线程占用（≈3 帧 @60fps），发生在 import 按钮被
+触发之后，不在任何实时路径上；Runtime 侧的近限 Base64 解码响应性已由 V0.3-06-FINAL-2
+单独解决，与本项无关。本阶段**没有**引入 Worker，也没有改动 transport contract——记录为
+已知观察。若未来的 DBC Workspace 需要在该请求期间保持动画或进度反馈，最小补救是把请求体
+构造移出主线程（或改用流式/Blob body），届时需要新的测量来证明收益。
+
+#### Known limitations（诚实记录）
+
+```text
+ 1 正式 DBC UI 尚未实现：没有 Import 按钮、没有 asset 列表、没有 project picker。
+   本阶段的链路只在程序化调用与 smoke harness 下可达。
+ 2 Project Workspace 尚未接线：importDbcFromNativeDialog(projectPath) 已经是显式参数式
+   契约，但目前没有生产调用方传入它。
+ 3 active DBC 尚未定义：没有 current DBC 概念，也没有 channel ↔ DBC 绑定。
+ 4 对话框交互由 UI Automation 驱动（按下对话框自身的按钮），不是人手鼠标点击。
+ 5 只覆盖 Cancel 与合法 .dbc 选择两条路径；empty / wrong extension / directory /
+   exactly 16 MiB / 16 MiB + 1 等边界仍由既有 Rust 单测证明，本轮未在打包产物中重跑。
+ 6 macOS 真机验证 NOT VERIFIED。
+ 7 真实 CAN 硬件验证 NOT VERIFIED（本阶段不涉及）。
+ 8 本阶段只在 Windows 打包产物上验证。
+ 9 near-limit 的 ~51 ms 主线程占用是实测观察，不是全部机器上的常量；本项只给出相对判据。
+```
+
+#### Deferred
+
+未实现、且明确不属于本阶段：DBC Workspace UI、DBC Editor、project picker、active DBC、
+channel ↔ DBC 绑定、asset 删除/重命名/替换、拖放、多文件导入、asset 列表 UI、Trace 解码列、
+Plot signal 绑定、Agent `dbc.*` 工具、content dedup、Rust DBC domain、renderer 任意
+filesystem read。下一阶段（V0.3-09）不在本轮范围内。
+
+#### 状态
+
+```text
+Step V0.3-08 — Desktop DBC Import Orchestration Foundation
+
+Implementation complete
+Local verification complete
+Packaged desktop E2E smoke complete
+
+Awaiting independent acceptance
+```
+
+本轮**不自行宣布** Final Acceptance: PASS / Status: CLOSED；最终独立验收由项目负责人执行。
+本轮也不开始 V0.3-09。
+
+---
+
 ### Step V0.3-06-FINAL-2 — Event Loop Responsiveness Verification & Final Remediation
 
 V0.3-06-FINAL 的独立验收指出：那一轮只证明了「decode 运行在 worker thread」，没有证明
