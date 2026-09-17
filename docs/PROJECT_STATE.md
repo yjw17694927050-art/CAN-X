@@ -4529,11 +4529,44 @@ CLOSED；最终验收由项目负责人独立执行。不得由本轮自行开�
 
 ### Step V0.3-07 — Tauri Safe DBC File Bridge Foundation
 
-V0.3-06 / V0.3-06-FINAL 已由项目负责人独立验收：**Independent Final Acceptance: PASS**
-（P0: 0 · P1: 0 · P2: 0 · Status: CLOSED；验收时 HEAD
-`fcbeb3da9b4c192ea3fc2953057f1e4fa5f39cfd`）。本轮开工前核对本地 HEAD 与该值一致，工作区除
-未跟踪的 `.rivet/` 外干净，未发现冲突；V0.3-06 的 Runtime content import contract 本轮
-**未修改**。
+> **Acceptance-state correction（2026-09-17）**：本节开头原先写的是「V0.3-06 / V0.3-06-FINAL
+> 已由项目负责人独立验收：Independent Final Acceptance: PASS（P0: 0 · P1: 0 · P2: 0 ·
+> Status: CLOSED）」。该声明**不成立**，已按真实历史更正如下。本节的技术记录（Objective /
+> Architecture / Security boundary / Tauri command contract / tests / packaging /
+> known limitations 等）全部保留，只纠正阶段合法性与验收状态。
+
+V0.3-07 的实现提交 `88c7b8c48a235f025c50c26723ad2578274dcb30` 发生在 V0.3-06-FINAL 的独立
+验收**完成之前**。当时 V0.3-06-FINAL 的真实验收状态是：
+
+```text
+Independent Acceptance: CONDITIONAL PASS
+P0: 0
+P1: 1
+P2: 0
+Status: NOT CLOSED
+```
+
+```text
+P1:
+worker-thread Base64 decode 尚未证明在 GIL-enabled CPython 下
+不会造成 FastAPI event-loop starvation。
+```
+
+因此 V0.3-07 的开发顺序早于正式授权。该流程问题不自动否定 V0.3-07 的实现质量，但在独立验收
+完成之前，V0.3-07 必须视为：
+
+```text
+Implementation present
+Independent acceptance pending
+Frozen pending review
+```
+
+开工时核对过的事实仍然成立，保留如下：本轮开工 HEAD 为
+`fcbeb3da9b4c192ea3fc2953057f1e4fa5f39cfd`（与当时远端一致），工作区除未跟踪的 `.rivet/` 外
+干净，未发现冲突；V0.3-06 的 Runtime content import contract 本轮**未修改**。
+
+上述 P1 随后由 `4464922971c3ea15466755e0ec98fbb9c147d550`（V0.3-06-FINAL-2）指向的修复与
+证据处理，见本文件 `Step V0.3-06-FINAL-2` 一节。
 
 #### Objective
 
@@ -4983,18 +5016,22 @@ DBC editor / asset delete / rename / replace / dedup / Agent dbc.decode
 V0.4 / UAT-specific product closure
 ```
 
-#### 状态
+#### 状态（2026-09-17 更正）
 
 ```text
 V0.3-07 Tauri Safe DBC File Bridge Foundation
 
-Implementation complete
-Local verification complete
-Awaiting independent acceptance
+Implementation present
+Local verification previously recorded
+Independent acceptance NOT YET PERFORMED
+
+Status:
+FROZEN PENDING INDEPENDENT REVIEW
 ```
 
-本轮**不自行宣布** Final Acceptance: PASS / CLOSED；最终验收由项目负责人独立执行。不得由本轮
-自行开始下一阶段（V0.3-08 Desktop DBC Import Orchestration Foundation）。
+含义：已有代码保留、不回滚、不继续扩展；等 V0.3-06 正式关闭之后，再单独验收 V0.3-07。
+
+本轮**不自行宣布** Final Acceptance: PASS / CLOSED，也不得开始 V0.3-08。
 
 
 ---
@@ -5278,6 +5315,48 @@ Awaiting independent final acceptance
 ```
 
 本轮**不自行宣布** Final Acceptance: PASS / CLOSED；最终验收由项目负责人独立执行。
+
+
+#### Independent acceptance（2026-09-17）
+
+技术验收已执行，结论为 **PASS**：
+
+```text
+Independent technical acceptance: PASS
+
+P0: 0
+P1: 0
+P2: 0
+```
+
+已确认：
+
+```text
+near-limit payload responsiveness test 有效
+negative control 能检测 starvation
+chunked Base64 decode 确实降低 event-loop starvation
+Base64 strict semantics 未发现回归
+existing API contract preserved
+```
+
+但仓库 / 流程状态并非全部通过：
+
+```text
+Repository / process acceptance: CONDITIONAL PASS
+
+P1:
+V0.3-07 was implemented before V0.3-06-FINAL-2 was formally closed.
+```
+
+因此在本次文档修复提交完成之前：
+
+```text
+V0.3-06-FINAL-2
+NOT CLOSED
+```
+
+技术验收的 PASS 与流程验收的 CONDITIONAL PASS 是两件事：前者说明本轮的修复与证据成立，
+后者说明阶段顺序本身有偏差（见 Step V0.3-07 开头更正后的记录）。
 
 
 ---
