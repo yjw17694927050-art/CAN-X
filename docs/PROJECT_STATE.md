@@ -5033,6 +5033,202 @@ FROZEN PENDING INDEPENDENT REVIEW
 
 本轮**不自行宣布** Final Acceptance: PASS / CLOSED，也不得开始 V0.3-08。
 
+---
+
+#### V0.3-07-FINAL — Native Dialog E2E Smoke Verification
+
+##### 为什么上一轮是 CONDITIONAL PASS
+
+```text
+P0: 0
+P1: 1
+P2: 0
+
+P1:
+Packaged Windows native-dialog path has not been interactively
+verified end-to-end.
+
+Status:
+NOT CLOSED
+```
+
+V0.3-07 已经用 Rust 单测（真实文件系统 / bounded read / endless stream）、TypeScript 契约测试
+（mock invoke）、MSI 打包成功，以及「进程存活 + sidecar health 正常」证明了 bridge 的每一段。
+缺的不是证据数量，而是**这四段连起来在打包产物里真的能被用户走通**这一个事实——上一轮把它
+如实记作 `Native dialog interactive smoke: NOT VERIFIED`。
+
+本轮只做这一件事：真实走一遍，并留下可复核的证据。
+
+##### 本轮方法与入口
+
+产品 UI 目前没有 DBC Import 按钮，`dbc-file-bridge.ts` 也尚未被任何 renderer 模块引用——
+tree-shaking 会把它整块丢掉（实测普通构建的 `dist/assets` 中不含该 chunk）。因此按允许的
+「最小 smoke-only harness」路径新增：
+
+```text
+apps/desktop/src/smoke/dbc-dialog-smoke.ts        test-only harness（构建开关控制）
+apps/desktop/src/main.tsx                         一段条件动态 import
+apps/desktop/src/vite-env.d.ts                    VITE_CANX_DBC_SMOKE 类型声明
+scripts/smoke-native-dbc-dialog.ps1               真实对话框驱动 + 证据记录
+```
+
+harness 只在 `VITE_CANX_DBC_SMOKE=1` 时被编译进 bundle：`import.meta.env` 在构建期被静态替换，
+普通构建把该分支折叠掉。实测：
+
+```text
+VITE_CANX_DBC_SMOKE=1   → dist/assets/dbc-dialog-smoke-LV4mN4ou.js (3.23 kB) 存在
+未设置                   → 无 smoke chunk，bundle 中无 CANXSMOKE / canx-dbc-smoke 字样
+```
+
+harness 依次调用 **真实** `selectDbcContent()` 两次（Cancel / Select），再一次裸
+`invoke("select_dbc_file")` 观察 Rust 实际发布的 payload 形状。它不调用 `POST /dbc/assets`，
+不渲染任何 path / directory / 原始内容 / 完整 Base64，只发布
+`cancelled / sourceName / byteCount / sha256 / payloadKeys`。
+
+状态发布通道是 `document.title`：Tauri 不会把 `document.title` 同步到窗口标题，但 WebView2
+把它作为 web 内容 pane 的 UI Automation name 暴露出来，因此可以在**不授予 renderer 任何新
+capability** 的前提下从进程外读到。对话框操作走 UI Automation：**按下对话框自身的 Cancel /
+Open 按钮**（`AutomationId` 1 / 2，跨系统语言稳定），文件名由文件框的 ValuePattern 写入。
+
+##### 实测环境
+
+```text
+Windows             10.0.26200
+Executable tested   apps\desktop\src-tauri\target\release\can-x.exe
+                    9,797,632 bytes · 2026-09-17 11:23:06
+                    SHA256 4e018f1ec462bd447ceef2280d70c96e0c33a4b8918d81daa92729cf1965ce0c
+MSI                 CAN-X_0.1.0_x64_en-US.msi · 63,131,648 bytes
+                    SHA256 14dcabfda47e061531666e98eb1dfe412207d7c93064aab44b45f8f0d4193286
+构建                cmd.exe /c scripts\package-windows.cmd（带 VITE_CANX_DBC_SMOKE=1）exit 0
+Fixture             tests\fixtures\dbc\basic_standard.dbc 的副本
+                    .rivet\scratch\smoke-secret-dir\vehicle.dbc · 359 bytes
+                    SHA256 9bb985aaad3223d5ec81c1928fe544340995a9fdbf101f67dec75572d1996342
+```
+
+fixture 放在名为 `smoke-secret-dir` 的目录里：一旦 payload 泄漏路径，这个目录名会出现在
+返回的 key 或 source name 中。
+
+##### Cancel
+
+```text
+native dialog opened       YES — class #32770，标题「打开」
+cancel pressed             UIA InvokePattern，按的是对话框自身的 Cancel 按钮（AutomationId 2）
+dialog closed              YES
+Rust returned              Ok(None)
+renderer received          null          {"step":"cancel","returnedNull":true}
+app remained responsive    YES
+Runtime health after       {"status":"ready","service":"canx-runtime","schema_version":1}
+```
+
+##### Select
+
+```text
+native dialog opened       YES — 同一路径第二次
+file name set              ValuePattern，对话框文件名输入框（AutomationId 1148）
+open pressed               UIA InvokePattern，按的是对话框自身的 Open 按钮（AutomationId 1）
+dialog closed              YES
+returned sourceName        vehicle.dbc                    （basename，不含分隔符）
+returned byte count        359                            （== fixture 359）
+returned decoded SHA256    9bb985aaad3223d5ec81c1928fe544340995a9fdbf101f67dec75572d1996342
+source SHA256              9bb985aaad3223d5ec81c1928fe544340995a9fdbf101f67dec75572d1996342
+exact bytes equal          YES（SHA256 与字节数同时相等）
+path leaked                NO
+Runtime health after       {"status":"ready","service":"canx-runtime","schema_version":1}
+```
+
+SHA256 由 renderer 侧对**跨 IPC 之后的字节**计算（Web Crypto），与磁盘上 fixture 的摘要比对，
+因此 exact-byte 保证是在链路末端实测的，不是从实现推断的。
+
+##### Path privacy（运行时观测，非静态断言）
+
+第三步刻意绕过该模块自己的字段投影，直接观察 Rust 发布的原始 payload：
+
+```text
+{"step":"payload_shape","returnedNull":false,
+ "payloadKeys":["content_base64","source_name"],"sourceName":"vehicle.dbc"}
+```
+
+恰好两个 key，无 `path` / `absolute_path` / `directory` / `parent` / `canonical_path`；
+`source_name` 是 basename。渲染器权限未扩大：`capabilities/default.json` 仍为
+`["core:default"]`，本轮未改。
+
+##### 本轮实际改动的 product code
+
+```text
+apps/desktop/src/main.tsx            + 一段条件动态 import（构建期可静态消除）
+apps/desktop/src/vite-env.d.ts       + VITE_CANX_DBC_SMOKE 声明
+apps/desktop/src/smoke/              + smoke-only harness（默认不进入构建）
+scripts/smoke-native-dbc-dialog.ps1  + 验证脚本
+apps/desktop/src-tauri/**            未改
+runtime/canx/**                      未改
+capabilities/default.json            未改
+tauri.conf.json                      未改
+```
+
+bridge 本身（Rust 与 TypeScript）一行未动——本轮验证的是既有实现，不是修改后的实现。
+
+##### 回归
+
+```text
+cargo fmt --check                                         exit 0
+cargo clippy --all-targets --all-features -- -D warnings  exit 0
+cargo check                                               exit 0
+cargo test                                                28 passed（lib）+ 3 passed（tests/runtime_sidecar.rs）
+npm test                                                  8 files / 44 tests passed
+npm run lint                                              exit 0
+npm run typecheck                                         exit 0
+npm run build                                             exit 0
+python -m pytest -q                                       1626 passed, 1 skipped in 143.48s
+ruff check runtime tests tools                            All checks passed!
+mypy runtime                                              Success: no issues found in 64 source files
+```
+
+用例如数与 V0.3-06-FINAL-2 基线一致（1626 passed / 1 skipped；1 skipped 为既有 WinError 1314
+目录链接权限项）。Runtime 未修改，本轮只是 regression rerun。
+
+##### Packaging
+
+两次都从零跑通 `cmd.exe /c scripts\package-windows.cmd`，均 exit 0：
+
+```text
+[1/6] runtime build + staged sidecar     PASS（PyInstaller 6.17.0 / Python 3.13.15）
+[2/6] staged sidecar verified            ok
+[3/6] packaged-runtime smoke test        5 passed in 26.84s
+[4/6] Tauri MSI build                    PASS（release 编译 1m24s）
+[5/6] MSI artifact check                 ok: CAN-X_0.1.0_x64_en-US.msi
+[6/6] packaging complete                 exit 0
+```
+
+第一次带 smoke 开关，用于 native dialog smoke；第二次不带开关，用作交付产物，确认默认构建下
+harness 缺席且打包流程不变。
+
+##### Known limitations（诚实记录）
+
+```text
+ 1 对话框交互由 UI Automation 驱动（InvokePattern 按下对话框自身的按钮），不是人手鼠标点击。
+   操作的是操作系统真实控件、真实消息，但不是人类手工操作。
+ 2 只覆盖 Cancel 与合法 .dbc 选择。empty / wrong extension / directory / missing file /
+   exactly 16 MiB / 16 MiB + 1 / endless stream 的边界仍由 Rust 单测证明，本轮未在打包产物中
+   逐项重跑。
+ 3 native dialog smoke 需要专门的构建开关（VITE_CANX_DBC_SMOKE=1）。普通构建不含 harness——
+   这既是设计（不污染产品产物），也是限制（重跑必须先做一次 smoke 构建）。
+ 4 只验证 Windows 打包产物。
+ 5 未对真实 CAN 硬件做任何验证（本阶段不涉及）。
+```
+
+##### 状态
+
+```text
+V0.3-07-FINAL Native Dialog E2E Smoke Verification
+
+Implementation complete
+Local verification complete
+Native dialog smoke complete
+Awaiting independent final acceptance
+```
+
+本轮**不自行宣布** V0.3-07 Final Acceptance: PASS / CLOSED，也不开始 V0.3-08。
+
 
 ---
 
