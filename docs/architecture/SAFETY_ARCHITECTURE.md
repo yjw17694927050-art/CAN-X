@@ -195,6 +195,36 @@ Classification is a pure function over a closed table
 `SafetyUnknownOperationError`, which the policy turns into
 `DENY / safety.unknown_operation`. It never falls through to a default.
 
+### 6.1 Coverage of PRD §7.2
+
+PRD §7.2 names ten operation families that require approval by default. None of
+them is implemented in this stage. What follows is the mapping the taxonomy has
+to support, written down so that the coverage is a design fact rather than an
+assumption someone makes later.
+
+| PRD §7.2 | operation class | risk level | approval demanded |
+| --- | --- | --- | --- |
+| CAN TX | `bus.transmit` | `TX` | required, exact target |
+| Frame injection | `bus.injection` | `TX` | required, exact target |
+| UDS write | `diagnostic.mutation` | `DIAGNOSTIC_MUTATION` | required, single-use |
+| ECU reset | `ecu.mutation` | `ECU_MUTATION` | required, single-use, human issuer |
+| Routine control (dangerous) | `actuation` / `ecu.mutation` | `ACTUATION` / `ECU_MUTATION` | required, single-use |
+| Security access | `ecu.mutation` / `critical` | `ECU_MUTATION` / `CRITICAL` | required, single-use, human issuer |
+| Flash | `ecu.mutation` | `ECU_MUTATION` | required, single-use, human issuer |
+| Fuzzing | `bus.injection` | `TX` | required, exact target |
+| Gateway TX | `bus.transmit` | `TX` | required, exact target |
+| Modify ECU state | `ecu.mutation` | `ECU_MUTATION` | required, single-use, human issuer |
+
+Every row lands on a level whose `ApprovalRequirement.required` is `True`, and
+"PRD §7.2 lists it" is not what decides that — the effect the operation has on
+the vehicle is. Where a family could plausibly sit on two classes, the mapping
+above takes the more consequential one: an ECU reset is an `ECU_MUTATION`, not a
+`DIAGNOSTIC_MUTATION`, because the stronger approval demand is the honest reading
+of what it does.
+
+The taxonomy therefore already carries the shape PRD §7.2 demands. A later task
+adds the capability; it does not add the boundary.
+
 ---
 
 ## 7. Operation model
