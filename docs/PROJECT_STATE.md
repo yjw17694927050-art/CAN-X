@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation implemented and self-verified — awaiting independent acceptance, see §14–§15)
+> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation implemented and self-verified — awaiting independent acceptance, see §17)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -134,14 +134,27 @@ DuckDB  = analytical queries
 - A DBC asset's canonical content has exactly one source of truth: the `.dbc` file.
   SQLite stores only asset registry / provenance / integrity metadata.
 
-**Safety (when TX / mutation exists)**
+**Safety (implemented as the Runtime Safety Kernel — SAFETY-01, §17)**
 
 - All real TX must pass: `TX Policy → ARM State → Permission → Approval → Adapter.send →
-  Audit`. No bypass path.
-- Agent auto-executes `READ` / `COMPUTE` / `WRITE_PROJECT`; `TX` / `ECU_MUTATION` /
-  `CRITICAL` are Runtime-gated and never bypassed on AI request.
-- Agent-generated Python runs in an isolated Sandbox Worker with no raw CAN device handle,
-  no direct `python-can` bus, no TX credentials, no unrestricted host filesystem.
+  Audit`. No bypass path. This is now executable policy, not only prose: see
+  `docs/architecture/SAFETY_ARCHITECTURE.md`.
+- The Runtime Safety Kernel (`runtime/canx/safety/`) is the **policy authority**
+  (invariant S2). Dangerous operations — `TX` / `DIAGNOSTIC_MUTATION` / `ACTUATION` /
+  `ECU_MUTATION` / `CRITICAL` — default to `DENY` (invariant S1). An operation is
+  authorised only when the risk is classified, the runtime is armed within a scoped
+  and unexpired `ArmScope`, the session holds the matching capability, and a
+  conforming approval is presented and consumed.
+- Agent auto-executes `READ` / `COMPUTE` / `WRITE_PROJECT`; the dangerous levels are
+  Runtime-gated and never bypassed on AI request. An Agent, script or automation rule
+  may **request** any operation and may not arm the runtime, issue an approval, widen
+  its own permission set or reach `Adapter.send` (invariants S3, S4).
+- Agent-generated Python runs in an isolated Sandbox Worker with no raw CAN device
+  handle, no direct `python-can` bus, no TX credentials, no unrestricted host
+  filesystem. The kernel exposes no execution primitive a sandbox could reach.
+- There is **no real TX path in this tree**. The absence is asserted by regression
+  test (`tests/unit/safety/test_device_transmit_boundary.py`) rather than promised
+  here, so adding one cannot happen quietly.
 
 **Forbidden legacy patterns**
 
@@ -208,8 +221,15 @@ Maintenance CI-01 — Continuous Integration Baseline Foundation
   Adds .github/workflows/ci.yml only — no product scope change
 
 Maintenance CI-02 — Protected Integration Gate Foundation
+  Final Acceptance: PASS · Status: CLOSED   (independent acceptance)
+  Adds a GitHub Repository Ruleset and docs/engineering/INTEGRATION_POLICY.md —
+  no product scope change
+
+Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
   Implementation complete · self-verification complete · Awaiting independent acceptance
-  Adds a GitHub Repository Ruleset and docs/engineering/INTEGRATION_POLICY.md — no product scope change
+  Adds runtime/canx/safety/ and docs/architecture/SAFETY_ARCHITECTURE.md —
+  safety domain, policy, contracts and tests only. It introduces no dangerous
+  execution capability. See §17.
 ```
 
 The `Final Acceptance: PASS / Status: CLOSED` verdicts recorded here are **project-owner /
@@ -427,6 +447,11 @@ DuckDB query foundation                    ✅
 
 Trace query / filter (HTTP)                ✅
 
+Safety Kernel foundation (risk taxonomy,
+  caller model, ARM state machine, scope,
+  capability permissions, approvals, policy
+  decision engine, audit contract,
+  emergency stop contract)                 ✅ (authorises only — no executor)
 Realtime stream (virtual CAN → batching →
   binary WebSocket → Worker → bounded
   frontend store → virtualized Trace/Plot) ✅
@@ -457,6 +482,16 @@ Agent dbc.* tools                          ❌
 
 real CAN hardware (Vector/PCAN/Kvaser/ZLG) NOT VERIFIED
 macOS real-machine validation              NOT VERIFIED
+real CAN TX safety (SAFETY-01)             NOT VERIFIED — no TX path exists
+real vehicle behaviour / UDS mutation /
+  hardware fail-safe / vehicle
+  qualification (SAFETY-01)                NOT VERIFIED — no dangerous capability
+emergency stop against real hardware       NOT VERIFIED — contract only
+device reconnect / channel change /
+  transport fault auto-disarm (SAFETY-01)  CONTRACT ONLY — no device lifecycle,
+                                           channel binding or transport exists
+audit durability across restart /
+  tamper evidence (SAFETY-01)              NOT IMPLEMENTED — in-memory trail
 ```
 
 The two DBC Workspace rows were annotated while V0.3-10 was still awaiting independent
@@ -485,7 +520,12 @@ canx/devices/     adapter abstraction (python-can)
 canx/dbc/         canonical domain, parser (cantools boundary), service, registry,
                   project_service, asset model
 canx/transport/   MessagePack realtime codec
-canx/agent/       tool registry + trace.summary
+canx/agent/       tool registry + trace.summary (ToolRisk is the canonical
+                  safety RiskLevel, not a second taxonomy)
+canx/safety/      Safety Kernel: risk taxonomy, caller model, ARM state machine,
+                  scope, capability permissions, approvals, policy engine,
+                  audit contract, emergency stop contract — authorises, does
+                  not execute (SAFETY-01, §17)
 canx/api/         FastAPI app + routers (app.py, trace.py, dbc.py, project.py,
                   frame.py, errors.py)
 canx/runtime/     RuntimeService (capture lifecycle, status truthfulness)
@@ -706,10 +746,14 @@ Maintenance CI-01 — Continuous Integration Baseline Foundation   (not a number
           Real GitHub Actions runs executed, RED → GREEN (§14)
 
 Maintenance CI-02 — Protected Integration Gate Foundation   (not a numbered phase)
+          Final Acceptance: PASS · Status: CLOSED   (independent acceptance)
+          main protected by a real GitHub Repository Ruleset (§15)
+
+Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Implementation complete
           Self-verification complete
-          main protected by a real GitHub Repository Ruleset (§15)
           AWAITING INDEPENDENT ACCEPTANCE
+          Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
 ```
 
 V0.3-11 is CLOSED. It added one read-only Runtime endpoint —
@@ -732,8 +776,16 @@ the CI baseline and its real run record.
 Maintenance CI-02 is engineering infrastructure too. It changes no behaviour, no schema, no API
 contract, no dependency and no test. It adds repository-side protection and one policy document,
 and it makes no product claim. Like CI-01, its verdict is external — the development agent did
-not write `Final Acceptance: PASS` for it. See §15 for the protected-integration record and
+not write `Final Acceptance: PASS` for it; the PASS / CLOSED now recorded was supplied by the
+project owner / independent reviewer. See §15 for the protected-integration record and
 `docs/engineering/INTEGRATION_POLICY.md` for the policy itself.
+
+Safety Foundation (SAFETY-01) is not a numbered product phase either. It adds
+`runtime/canx/safety/` (a Runtime domain package) and `docs/architecture/SAFETY_ARCHITECTURE.md`,
+and it changes one existing module — `canx/agent/tools.py`, where `ToolRisk` became an alias of
+the canonical `RiskLevel`. It adds **no** dangerous capability: no TX, no replay send, no
+injection, no diagnostic request, no ECU mutation, no new endpoint and no new UI control. Its own
+verdict is external as well; §17 records what was implemented and what remains unverified.
 
 ---
 
@@ -773,6 +825,13 @@ docs/engineering/INTEGRATION_POLICY.md
     break-glass policy, agent restrictions, and the boundary
     Local Verification ≠ GitHub CI ≠ Protected Merge ≠ Independent Acceptance. Enforced (not
     merely described) by the `main-protected-integration` GitHub Repository Ruleset — see §15.
+
+docs/architecture/SAFETY_ARCHITECTURE.md
+    SAFETY-01 safety architecture. The frozen invariants S1–S14, the risk taxonomy,
+    operation / caller / ARM / scope / permission / approval / audit / emergency-stop
+    contracts, the Agent and script safety boundaries, the adapter boundary, restart
+    and concurrency semantics, the future-integration rules, and the list of items
+    that remain NOT VERIFIED — see §17.
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
@@ -875,8 +934,27 @@ branch / PR flow, red-CI and missing-CI handling, stale-PR and conflict handling
 deletion policy, the break-glass policy, agent restrictions, and the
 `Local Verification ≠ GitHub CI ≠ Protected Merge ≠ Independent Acceptance` boundary.
 
-**Verified (self-verification, before independent acceptance).** Every item below was produced
-against the real GitHub repository, not simulated locally:
+**Verified.** Every item below was produced against the real GitHub repository, not simulated
+locally — by the development agent, as self-verification. The phase was then independently
+reviewed:
+
+```text
+Independent acceptance source:
+Project-owner / independent reviewer
+
+Final Acceptance: PASS
+Status: CLOSED
+
+P0: 0
+P1: 0
+P2: 2 non-blocking
+```
+
+The two non-blocking P2 items are a timing-related recorder-cleanup flake observed once during
+CI-02's own review and the ruleset's lack of a strict "branch must be up to date with `main`"
+requirement. Neither is fixed, and neither was fixed inside SAFETY-01 (§9, §17). This verdict is
+an **external result**: the development agent did not write `Final Acceptance: PASS` for its own
+work at any point.
 
 ```text
 main protection      un-protected (HTTP 404 "Branch not protected") before
@@ -907,11 +985,164 @@ not product code.
 ```text
 Level 1  Local Automated Verification          DONE
 Level 2  Repository Continuous Integration     DONE
-Level 3  Protected Integration Workflow        IMPLEMENTED · AWAITING INDEPENDENT ACCEPTANCE
-Safety Foundation (SAFETY-01)                  NOT STARTED
+Level 3  Protected Integration Workflow        DONE
+Safety Foundation (SAFETY-01)                  IMPLEMENTED · AWAITING INDEPENDENT ACCEPTANCE
 Level 4  Multi-Agent Orchestration             NOT STARTED
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
-A Level 3 verdict — like every acceptance verdict here — is external. This record says what the
-tree contains, not that it has been accepted.
+A Level 3 verdict — like every acceptance verdict here — is external. The `DONE` on Level 3 is the
+project owner / independent reviewer's CI-02 result (P0: 0, P1: 0, P2: 2 non-blocking, see §15),
+not a conclusion this document reached on its own. The Safety Foundation row becomes `DONE` only
+after its own independent acceptance; until then it stays `IMPLEMENTED · AWAITING INDEPENDENT
+ACCEPTANCE`. This record says what the tree contains, not that it has been accepted.
+
+---
+
+## 17. Safety Architecture & Risk Control Foundation (SAFETY-01)
+
+SAFETY-01 is the safety foundation that had to exist **before** CAN-X gains any
+capability that can change a vehicle. It is not a numbered product phase, and it
+adds no product capability.
+
+**Status: implementation complete · self-verification complete · AWAITING INDEPENDENT
+ACCEPTANCE.** The development agent did not write a `Final Acceptance: PASS` for this work.
+
+### 17.1 The question it answers
+
+> Can a caller gain a dangerous vehicle capability by not going through the runtime's
+> safety authority?
+
+Before SAFETY-01 the honest answer was "the rule is written down but nothing enforces it".
+After SAFETY-01 there is a Runtime-owned **Safety Kernel** that is the policy authority
+(invariant S2), dangerous operations default to `DENY` (S1), and the absence of a transmit
+path is asserted by regression test rather than promised in prose (S12).
+
+### 17.2 What was added
+
+```text
+runtime/canx/safety/            a new Runtime domain package (13 modules)
+  risk.py        RiskLevel · Capability · OperationClass · deterministic classification
+  caller.py      CallerKind · CallerIdentity · who may supply authority
+  scope.py       OperationTarget · ArmScope · NaN-safe has_lapsed
+  arm.py         ArmState · ArmController · explicit transition table
+  permission.py  PermissionGrant · PermissionSet (no mutator; empty by default)
+  approval.py    Approval · ApprovalIssuer · ApprovalStore (atomic single-use consumption)
+  operation.py   OperationRequest (parameter digest, never parameters)
+  decision.py    DecisionOutcome · SafetyReason · PolicyDecision
+  policy.py      SafetyPolicy · SafetyContext · ApprovalRequirement
+  audit.py       SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink
+  emergency.py   EmergencyStopController · EmergencyStopState · OperationCanceller
+  kernel.py      SafetyKernel — the authority
+  errors.py      SafetyError family, all codes prefixed `safety.`
+
+docs/architecture/SAFETY_ARCHITECTURE.md   the frozen contract (23 sections, S1–S14)
+tests/unit/safety/                         refusal paths, fault injection, cross-caller
+                                           matrices, anti-escalation, boundary guards
+```
+
+Plus one minimal change to an existing module: `canx/agent/tools.py`'s `ToolRisk` is now an
+**alias** of the canonical `RiskLevel` rather than a second six-level enum. Two enums meaning
+the same thing drift the first time one is edited, and the failure mode is a tool whose
+`risk_level` reads "safe" to the executor and "dangerous" to the policy (AGENTS.md §21).
+
+```text
+Risk levels        READ · COMPUTE · WRITE_PROJECT · TX · DIAGNOSTIC_MUTATION
+                   · ACTUATION · ECU_MUTATION · CRITICAL   (first three safe)
+ARM states         DISARMED → ARMING → ARMED; disarm() idempotent; no DISARMED → ARMED edge
+Permissions        capability-based, scoped, empty by default, no widening method
+Approvals          one capability, expiring, single-use where demanded, atomic consumption
+Scope              device / channel / target address; a blank request coordinate is NOT a wildcard
+Emergency stop     globally disarm · deny new dangerous work · request cancellations · audit
+Audit              ALLOW and DENY both recorded; no field can carry a secret; unrecordable ⇒ fault
+```
+
+### 17.3 What was deliberately NOT added
+
+```text
+real CAN transmit · periodic transmit · replay send · frame injection
+diagnostic requests · UDS · clear DTC · ECU reset · routine control · security access
+flash / download · IO control
+POST /tx · POST /inject · POST /uds · any new endpoint
+Send / Inject / Clear DTC / ECU Reset UI controls
+SQLite schema migration
+```
+
+The kernel **authorises**; it does not execute. There is no `execute`, no `dispatch`, no
+adapter handle and no bus object anywhere in the package. `tests/unit/safety/test_device_transmit_boundary.py`
+fails the moment a transmit primitive appears on `CanAdapter`, a `send`-like method appears on
+`VirtualAdapter`, an execution verb appears on `SafetyKernel`, the safety package imports a
+device or transport module, or the HTTP surface grows a dangerous endpoint.
+
+### 17.4 RED → GREEN evidence
+
+The decision chain was implemented against a test suite written first. The suite was run before
+`SafetyPolicy._decide` existed, and the recorded progression is:
+
+```text
+56 failed / 127 passed      first run — the chain was not implemented
+22 failed / 161 passed      after the approval-refusal mapping was added
+12 failed / 171 passed      after the cross-caller and boundary test expectations were corrected
+ 0 failed / 183 passed      final — all safety tests green
+```
+
+Two real defects were found and fixed by that red run, not by inspection:
+
+- **Approval refusals escaped the decision chain.** `_require_approval` consumed the approval
+  store without translating the store's typed faults, so `SafetyApprovalExpiredError`,
+  `SafetyApprovalReusedError` and an unresolvable reference all fell through to the outermost
+  fail-closed handler and were reported as `safety.policy_failure` — the right verdict for the
+  wrong reason, which would have hidden *why* an approval was unusable from the operator who has
+  to issue another one. Fixed by mapping each fault onto its own reason code
+  (`safety.approval_expired` / `_reused` / `_invalid` / `safety.scope_violation`).
+- **Expiry was fail-open on a broken clock.** The first draft wrote the expired check as
+  `now >= expires_at`. IEEE-754 makes every comparison with `NaN` false, so `NaN >= expires_at`
+  answers "not expired" — a corrupted clock reading would *extend* an authority, which is the one
+  direction expiry must never fail in. Every expiry check now routes through `has_lapsed`, written
+  `not (now < expires_at)`, and a test pins the behaviour.
+
+### 17.5 Verification (local runs, this tree)
+
+```text
+python -m pytest -q            1846 passed, 1 skipped in 149.57 s
+                               (the skip is a Windows directory-link privilege, not a safety test)
+python -m pytest tests/unit/safety -q     183 passed
+python -m ruff check runtime tests tools  All checks passed
+python -m mypy runtime                    Success: no issues found in 79 source files
+```
+
+These are **local** runs. CI-01's Quality Gate re-runs the same three Python checks in the
+`Runtime / Python` job, and the new safety tests are inside `tests/`, so they are covered by the
+existing gate with no change to `.github/workflows/ci.yml` — no separate Safety Gate was added
+(SAFETY-01 §32). A green gate is an automatic quality check and is **not** independent acceptance.
+
+### 17.6 Known limitations and NOT VERIFIED items
+
+```text
+Real CAN TX safety                            NOT VERIFIED — no TX path exists
+Real vehicle behaviour                        NOT VERIFIED
+UDS mutation safety                           NOT VERIFIED
+Emergency stop against real hardware          NOT VERIFIED — contract and state only
+Hardware fail-safe                            NOT VERIFIED
+Vehicle qualification                         NOT VERIFIED
+Device reconnect / channel change /
+  transport fault auto-disarm                 CONTRACT ONLY — no device lifecycle yet
+Audit durability across restart               NOT IMPLEMENTED — in-memory, bounded trail
+Audit tamper evidence                         NOT IMPLEMENTED
+External execution atomic with the decision   NOT IMPLEMENTED — the kernel's lock covers the
+                                              kernel's own state only; a future caller that
+                                              evaluates and then acts still has a gap
+```
+
+### 17.7 Deferred items
+
+```text
+a durable / tamper-evident audit sink (would need a storage decision, not a schema guess)
+an execution path that crosses the kernel (TX, replay, injection, diagnostics)
+atomic execution with the decision (an authorization token, reservation, or in-lock execution)
+device lifecycle events driving auto-disarm
+a cross-platform CI matrix (macOS / Linux remain NOT VERIFIED)
+CI-02's two non-blocking P2 items (§9) — untouched by SAFETY-01
+```
+
+SAFETY-01 stops here. It does **not** start AGENT-01, AGENT-02, CD-01 or V0.3-12.

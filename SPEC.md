@@ -133,6 +133,7 @@ Data Storage
 │ DBC                           │
 │ Query                         │
 │ Automation                    │
+│ Safety Kernel                 │
 └───────┬──────────────┬────────┘
         │              │
 ┌───────▼──────┐ ┌────▼─────────┐
@@ -1149,6 +1150,22 @@ Audit
 ```
 
 禁止 Adapter 被 UI 直接调用发送。
+
+SAFETY-01 已将这条规则实现为 Runtime-owned Safety Kernel：
+
+```text
+Runtime 组件：runtime/canx/safety/
+架构契约：    docs/architecture/SAFETY_ARCHITECTURE.md
+```
+
+Safety Kernel 是权限决策 authority，统一持有 Risk Taxonomy、Caller Model、
+ARM State、Scope、Capability-based Permission、Approval、Policy Decision、
+Audit Contract 与 Emergency Stop Contract。危险操作默认 DENY。
+
+该文档冻结的安全不变量（S1-S14）是架构条款：任何任务指令都不得绕过。
+SAFETY-01 只建立 domain / policy / state machine / contract / test，
+不引入任何真实 TX、replay 发送、UDS 或 ECU 变更能力——
+那些能力由后续任务的 SPEC 变更引入，并且必须经过 Safety Kernel。
 
 ---
 

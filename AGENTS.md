@@ -61,6 +61,8 @@ CAN-Space 已冻结。
 docs/ADR/*                  涉及对应模块时必须读取
 docs/acceptance/*           需要某阶段验收证据时读取
 docs/REUSE_LEDGER.md        第一次实际复用 legacy code 时创建并读取
+docs/architecture/SAFETY_ARCHITECTURE.md
+                            涉及危险操作时必须读取——见 §16
 docs/project-state/*        需要历史细节时才读取（**不是**每次任务的 mandatory read）
 ```
 
@@ -459,6 +461,20 @@ Audit
 
 禁止出现绕过路径。
 
+SAFETY-01 已将这条规则落地为 Runtime-owned **Safety Kernel**：
+
+```text
+Runtime 组件：runtime/canx/safety/
+架构契约：    docs/architecture/SAFETY_ARCHITECTURE.md
+```
+
+任何涉及危险操作（`TX` / `DIAGNOSTIC_MUTATION` / `ACTUATION` / `ECU_MUTATION` /
+`CRITICAL`）的工作，动手前必须读 `SAFETY_ARCHITECTURE.md`。
+
+该文档中的安全不变量 `S1`–`S14` 为**冻结条款**。
+它们不能被任务 prompt 绕过——如果某条指令要求打破不变量，
+正确做法是指出冲突并停止，而不是静默执行。
+
 ---
 
 # 17. Agent Safety
@@ -475,11 +491,21 @@ WRITE_PROJECT
 
 ```text
 TX
+DIAGNOSTIC_MUTATION
+ACTUATION
 ECU_MUTATION
 CRITICAL
 ```
 
 危险工具不能因为 AI 请求就绕过 Approval。
+
+风险等级只有一个定义处：`canx/safety/risk.py` 的 `RiskLevel`。
+Agent tool registry 的 `ToolRisk` 是它的别名，不是第二套体系——
+两者不得漂移。
+
+Agent 只能 *请求* 危险操作。它不得自行 arm、不得自行批准（issue approval）、
+不得扩大自身 permission、不得延长 approval 有效期、不得改 safety policy、
+不得直接调用 `Adapter.send`。这些不是约定，而是没有代码路径可以做到。
 
 ---
 

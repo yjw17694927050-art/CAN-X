@@ -3,24 +3,31 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import IntEnum
 from typing import TypeVar
 
 from pydantic import BaseModel
 
+# ``ToolRisk`` is not a second risk vocabulary — it is the canonical safety
+# taxonomy under the name this module has always used. AGENTS.md §17 and the
+# safety architecture both speak of ``READ``/``COMPUTE``/``WRITE_PROJECT`` and
+# the dangerous levels above them, and there is exactly one enum that defines
+# what those words mean. A local definition that happened to agree today would
+# be a drift waiting to happen: the first edit to one side and the registry
+# would be calling a tool safe while the policy called it dangerous.
+from canx.safety.risk import RiskLevel as ToolRisk
+
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
 
-
-class ToolRisk(IntEnum):
-    """Runtime-enforced Agent operation risk."""
-
-    READ = 1
-    COMPUTE = 2
-    WRITE_PROJECT = 3
-    TX = 4
-    ECU_MUTATION = 5
-    CRITICAL = 6
+__all__ = [
+    "PermissionDeniedError",
+    "ToolDefinition",
+    "ToolError",
+    "ToolExecutor",
+    "ToolRegistry",
+    "ToolRisk",
+    "UnknownToolError",
+]
 
 
 class ToolError(RuntimeError):
@@ -119,7 +126,14 @@ class ToolExecutor:
         tool = self._registry.registered(name)
         definition = tool.definition
         if definition.risk_level > ToolRisk.WRITE_PROJECT:
-            raise PermissionDeniedError("tool requires an approval flow unavailable in V0.1")
+            # Everything above WRITE_PROJECT is a dangerous operation
+            # (invariant S1). It is refused here unconditionally: authorising it
+            # is the safety kernel's decision, and this executor has no arm
+            # state, no approval and no audit trail to make that decision with.
+            raise PermissionDeniedError(
+                "tool risk exceeds the automatic execution ceiling; "
+                "dangerous operations are authorised by the safety kernel"
+            )
         if not definition.permissions.issubset(permissions):
             raise PermissionDeniedError("required tool permission is missing")
         async with asyncio.timeout(definition.timeout_seconds):
