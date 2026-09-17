@@ -2,8 +2,8 @@
 
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
-> **Updated**: 2026-09-16  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-05-FINAL HTTP Frame Input Strictness Remediation
+> **Updated**: 2026-09-17  
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-06-FINAL-2 Event Loop Responsiveness Verification
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -4995,6 +4995,289 @@ Awaiting independent acceptance
 
 本轮**不自行宣布** Final Acceptance: PASS / CLOSED；最终验收由项目负责人独立执行。不得由本轮
 自行开始下一阶段（V0.3-08 Desktop DBC Import Orchestration Foundation）。
+
+
+---
+
+### Step V0.3-06-FINAL-2 — Event Loop Responsiveness Verification & Final Remediation
+
+V0.3-06-FINAL 的独立验收指出：那一轮只证明了「decode 运行在 worker thread」，没有证明
+「decode 期间 FastAPI event loop 仍在被调度」。目标解释器是 GIL-enabled CPython 3.13，
+`binascii.a2b_base64` 在整段调用期间持有 GIL，因此改由线程执行改变的是「在哪条线程」，
+不是「event loop 要等多久」。
+
+#### Independent acceptance finding
+
+```text
+"运行在 worker thread" ≠ "不会阻塞 FastAPI event loop"
+```
+
+#### Interpreter / GIL status（实测，非推断）
+
+```text
+Interpreter:      Python 3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]
+Implementation:   CPython
+GIL:              enabled
+                  sys._is_gil_enabled() → True
+                  sysconfig Py_GIL_DISABLED → 0
+switch interval:  5.0 ms (sys.getswitchinterval())
+```
+
+#### Test methodology
+
+不断言 `worker_thread != event_loop_thread`（该证据 V0.3-06-FINAL 已有），而是直接测
+**event loop 自身的调度间隔**：
+
+```text
+Task A：await decode_import_content(接近 MAX_DBC_IMPORT_BYTES 的合法 Base64)
+Task B：heartbeat —— await asyncio.sleep(0) 后记录 loop.time() 差值
+```
+
+`asyncio.sleep(0)` 不挂定时器，所以每个 gap 是「event loop 两次转圈之间」的延迟，而不是
+平台定时器的精度。同一台机器上空闲 loop 每约 3 微秒转一圈（250 ms 内 76k–89k 圈，
+max_gap 0.16–0.63 ms），因此探针能分辨「loop 被饿死」与「loop 只是没被叫醒」。
+
+测量 payload = `MAX_DBC_IMPORT_BYTES - 3` 字节的 `b"A"` 编成 Base64（22,369,620 字符），
+即该 endpoint 允许的最大合法请求。
+
+#### RED evidence（修复前实测）
+
+修复前 `decode_import_content` 是同步函数，由 `asyncio.to_thread` 整段 offload：
+
+```text
+idle loop            duration_ms=250.1  gaps=79027  max_gap_ms= 0.1  p99_ms= 0.01
+worker decode #1     duration_ms= 38.1  gaps=    5  max_gap_ms=36.9  p50_ms=32.39
+worker decode #2     duration_ms= 35.9  gaps=    1  max_gap_ms=36.0  p50_ms=32.35
+worker decode #3     duration_ms= 35.4  gaps=   30  max_gap_ms=34.2  p50_ms= 0.003
+ON-LOOP decode #1    duration_ms= 36.2  gaps=    1  max_gap_ms=36.4
+ON-LOOP decode #2    duration_ms= 36.5  gaps=    1  max_gap_ms=36.6
+```
+
+**worker 与 control 无实质差别**：`max_gap ≈ decode duration`，即 event loop 现场被整段阻塞，
+无论 decode 在哪条线程。
+
+新增测试在修复前运行（pytest）：
+
+```text
+test_the_event_loop_keeps_running_while_a_near_limit_payload_decodes    FAILED
+  the event loop took only 5 turns during a 36.3 ms decode: it was not running while the decode worked
+  assert 5 >= 10
+  gaps = [0.03518, 0.0000156, 0.0010065, 0.000043, 0.000024]
+
+test_the_probe_reports_starvation_when_a_decode_does_block_the_loop      PASSED（control）
+```
+
+control 通过而生产路径失败 —— 证明该探针有检测能力，不是一个恒真的断言。
+
+#### Root cause
+
+```text
+CPython 的 binascii.a2b_base64 在整段调用期间持有 GIL，且不主动释放
+↓
+asyncio.to_thread 把调用移到 worker thread，但 GIL 仍被该 worker 持有
+↓
+主 event-loop thread 在整个 decode 期间无法执行 Python bytecode
+↓
+16 MiB payload 的 decode 约 35–45 ms，event loop 就停 35–45 ms
+```
+
+**线程位置不是根因，「单次持有 GIL 的时长」才是。**
+
+#### Implementation
+
+`runtime/canx/api/dbc.py`：
+
+```text
++ DECODE_CHUNK_CHARS = 256 * 1024       分块步长（必须是 4 的倍数）
+
+decode_import_content   同步 → async    分块 decode，块间 await 让出 event loop
++ _decode_strict_base64  async          逐块严格 decode
++ _decode_base64_step   同步            单块（可观测的工作单元，供测试打点）
+
+route import_asset：
+    raw = await decode_import_content(request.content_base64)
+    asset = await asyncio.to_thread(_import_asset, request, raw)
+
+_import_asset(request, raw)             不再 decode，只 parse / persist
+```
+
+**保持等价性**（bounded decoder 不得比整体 decoder 更宽松）：
+
+```text
+每块仍是同一个 binascii 调用 + validate=True → 字符集规则不变
+非最后一块不得出现 "="            → 否则会接受整体 decoder 拒绝的 "AA==AAAA"
+每块（除最后）都是 4 的整数倍     → 因为 DECODE_CHUNK_CHARS % 4 == 0，块边界不切割量子
+最后一块交给 binascii 自己判定长度 / padding
+```
+
+等价性先用穷尽对照探针验证，再固化为测试：
+
+```text
+探针对照（payload/chunk 组合）checked: 21570    mismatches: 0
+覆盖：长度 0..40 × 多种重复字符（覆盖每个 % 4 余数与每种 padding 位置）、
+      显式非法样本（AA==AAAA / =AAA / ==== / 换行 / 空格 / URL-safe / 非 ASCII / 空）、
+      4000 条随机串、以及跨块的多块 payload
+```
+
+#### GREEN evidence（修复后实测，生产代码路径）
+
+```text
+python         : 3.13.15
+gil enabled    : True
+chunk chars    : 262144
+payload chars  : 22369620  ->  16777213 bytes
+
+idle #1      duration_ms=250.1  turns=  76499  max_gap_ms=0.160  p99_ms=0.007  ratio=0.001
+idle #2      duration_ms=250.0  turns=  79218  max_gap_ms=0.631  p99_ms=0.006  ratio=0.003
+
+decode #1    duration_ms= 61.3  turns=   207  max_gap_ms=5.751  p99_ms=1.270  ratio=0.094
+decode #2    duration_ms= 65.9  turns=   211  max_gap_ms=6.691  p99_ms=0.996  ratio=0.101
+decode #3    duration_ms= 64.3  turns=   191  max_gap_ms=6.856  p99_ms=1.328  ratio=0.107
+```
+
+```text
+                    修复前            修复后
+event loop turns    1 – 7            191 – 211
+max scheduling gap  39 – 44 ms       5.75 – 6.86 ms
+gap / duration      ≈ 1.00           ≈ 0.10
+decode duration     40 – 45 ms       61 – 66 ms        （分块 + 线程往返代价 ≈ +45%）
+```
+
+heartbeat 在 decode 生命周期内**持续发生**（191–211 次），最大间隔 5.75–6.86 ms 落在任务书
+建议的 5–10 ms 心跳量级内。判据是「max_gap 不再逼近 decode duration」，而不是某个绝对毫秒数。
+
+测试断言刻意不依赖机器绝对性能：
+
+```text
+turns ≥ 10                 → 修复前 5，修复后 191–211
+max_gap < duration * 0.5   → 修复前 ≈ 1.0，修复后 ≈ 0.10
+```
+
+#### Tests added
+
+```text
+tests/unit/api/test_dbc_api.py  +3
+
+test_the_event_loop_keeps_running_while_a_near_limit_payload_decodes
+    接近上限的合法 payload decode 期间，event loop 必须持续被调度
+
+test_the_probe_reports_starvation_when_a_decode_does_block_the_loop
+    test-only control：同一 payload 在 event loop 上直接 decode，必须被同一测量判定为 starvation
+
+test_padding_planted_inside_a_multi_step_payload_is_still_refused
+    跨块人工植入 "="：先断言 reference decoder 拒绝整体，再断言 endpoint 返回 422 且未落盘
+```
+
+#### 既有测试的适配（未弱化）
+
+原有 decode 位置测试 spy 的是 `decode_import_content`（**调度入口**）。分块后该函数在
+event loop 上开始执行，spy 记录到的就变成「谁发起了工作」而不是「工作在哪里发生」——
+正是 V0.3-06-FINAL 那轮刻意避免的观测错误。
+
+`_spy_on_decode` 因此改为打点 `_decode_base64_step`（**真实工作单元**，也是持有 GIL 的那次
+调用），并同时记录每块的字符数：
+
+```text
+test_a_valid_import_decodes_the_content_once_off_the_event_loop
+    len(threads) == 1
+        → spy.decoded_chars == len(提交的 Base64 文本)
+          （「恰好一次」改为对 payload 断言：分块后数调用只会数到块数）
+    threads[0] != event_loop_thread
+        → all(thread != event_loop_thread for thread in spy.threads)
+test_malformed_base64_is_detected_on_a_worker_thread
+    len(threads) == 1  →  len(spy.threads) == 1（15 字符 payload 仍是一块）
+test_content_that_decodes_past_the_bound_is_refused_after_the_decode
+    len(threads) == 1  →  spy.decoded_chars == len(encoded)（该 payload 有 86 块）
+test_empty_content_is_refused_without_any_decode
+test_encoded_text_beyond_the_static_bound_is_refused_without_any_decode
+    threads == []      →  spy.threads == []（未变）
+```
+
+断言强度未降：仍是「decode 不在 event loop 上」与「同一份内容只被 decode 一次」，
+只是从「数调用」改为「数被解码的字符」。
+
+#### Existing behavior preserved
+
+```text
+合法            201 + DbcAssetResponse                                   未变（测试覆盖）
+invalid Base64  422 api.request_validation_failed / source=api / recoverable=false   未变
+empty content   422 api.request_validation_failed                        未变
+oversize content 422 api.request_validation_failed                       未变
+invalid DBC     422 dbc.parse_failed / source=dbc                        未变
+bad encoding    422 dbc.decode_failed / source=dbc                       未变
+source_path extra field / unknown field / strict primitives              未变
+exact bytes persisted / sha256 unchanged / no payload echo /
+no traceback / no filesystem path leak / no parser internals             未变
+```
+
+#### Regression（2026-09-17，全部为实际执行结果）
+
+```text
+python -m pytest tests/unit/api/test_dbc_api.py -q                     145 passed
+python -m pytest tests/unit/api -q                                     246 passed (17.88s)
+python -m pytest tests/unit/dbc -q                                     570 passed, 1 skipped
+python -m pytest tests/integration/test_dbc_api_integration.py -q        14 passed
+python -m pytest tests/integration -q                                   245 passed (88.37s)
+python -m pytest -q                                                   1626 passed, 1 skipped (134.09s)
+ruff check runtime tests tools                                         All checks passed!
+mypy runtime                                                           Success: no issues found in 64 source files
+```
+
+用例总数 1623 → 1626（净增 3，与新增测试数一致）。1 skipped 为既有已知项
+（本机无权限创建目录链接 WinError 1314），非本轮引入。
+
+#### Packaging
+
+```text
+cmd.exe /c scripts\package-windows.cmd                exit 0
+  · [1/6] runtime build + staged sidecar               PASS
+  · [2/6] staged sidecar verified                      ok
+  · [3/6] packaged-runtime smoke test                  5 passed in 23.59s
+  · [4/6] Tauri MSI build                              PASS
+  · [5/6] MSI artifact check                           ok: CAN-X_0.1.0_x64_en-US.msi
+  · [6/6] packaging complete                           exit 0
+
+独立复核（对新构建的 exe 重跑 smoke，不复用旧 exe）
+  CANX_TEST_RUNTIME_EXE=<repo>\build\runtime-dist\canx-runtime.exe \
+    python -m pytest tests\integration\test_packaged_runtime_smoke.py -q
+  → 5 passed in 25.34s
+
+build\runtime-dist\canx-runtime.exe                              60,127,234 bytes（V0.3-06-FINAL: 60,123,803）
+apps\...\binaries\canx-runtime-...-msvc.exe                      60,127,234 bytes（与上一致）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi                    63,131,648 bytes（V0.3-06-FINAL: 62,947,328）
+apps\...\target\release\can-x.exe                                 9,796,096 bytes
+```
+
+packaged 断言仍覆盖 `source_path` extra field → 422 `api.request_validation_failed`；
+分块行为不在 packaged binary 中单独检测（由 source test 证明）。
+
+#### Known limitations（诚实记录）
+
+```text
+1 修复后 decode 时长由 40–45 ms 升到 61–66 ms（+45%），代价是每块一次线程池往返。这是用
+  一次请求的 CPU 时间换 event loop 的调度机会，是有意的取舍，不是副作用。
+2 max_gap 仍有 5.75–6.86 ms 的尖峰，不是 0：每块仍是一次持有 GIL 的 C 调用，另加线程池
+  唤醒延迟。分块把「整段阻塞」变成「若干次短阻塞」，不消除单块内部的阻塞。
+3 结论只在 GIL-enabled CPython 3.13.15 / Windows 上实测。free-threaded 构建未测
+  （本机 Py_GIL_DISABLED = 0）。
+4 heartbeat 探针本身是 `asyncio.sleep(0)` 紧循环，会与 worker 争抢 GIL，因此测得的 gap 是
+  该竞争下的上界；真实负载（loop 上有 IO 而非紧循环）通常更小。
+5 分块正确性依赖 DECODE_CHUNK_CHARS 是 4 的倍数。该约束写在常量注释里，并由「跨块 padding」
+  测试间接守护，但没有一条测试直接断言这个数值性质。
+6 本轮只在 Windows 上验证；macOS / Linux 构建形态与运行时行为未验证。
+```
+
+#### 状态
+
+```text
+V0.3-06-FINAL-2 Event Loop Responsiveness Verification & Final Remediation
+
+Implementation complete
+Local verification complete
+Awaiting independent final acceptance
+```
+
+本轮**不自行宣布** Final Acceptance: PASS / CLOSED；最终验收由项目负责人独立执行。
 
 
 ---

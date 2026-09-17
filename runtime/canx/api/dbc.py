@@ -100,6 +100,21 @@ MAX_DBC_IMPORT_BYTES = 16 * 1024 * 1024
 #: request is refused without first materialising its content in memory.
 MAX_IMPORT_BASE64_CHARS = 4 * ((MAX_DBC_IMPORT_BYTES + 2) // 3)
 
+#: How many Base64 characters are handed to one strict decode step.
+#:
+#: The decode is the largest piece of caller-controlled work on this surface, and
+#: ``binascii.a2b_base64`` holds the GIL for the whole of one call — so offloading it
+#: to a thread moves *where* it runs without changing *how long* the event loop
+#: waits. Bounding the wait means bounding the call: one step is one C call, and the
+#: loop is yielded between steps. 256 KiB of text is well under a millisecond of
+#: decode on the reference machine, comfortably inside the realtime WebSocket's own
+#: batch cadence.
+#:
+#: The value must stay a multiple of four. A step boundary that split a Base64
+#: quantum would present each half as malformed input to a decoder that validates
+#: strictly, so the bound would start refusing payloads the endpoint accepts.
+DECODE_CHUNK_CHARS = 256 * 1024
+
 
 class DbcAssetResponse(BaseModel):
     """One registered project-owned DBC asset.
@@ -168,8 +183,10 @@ class DbcAssetImportRequest(BaseModel):
         deliberately does **not** decode. A Base64 decode of up to
         :data:`MAX_DBC_IMPORT_BYTES` of content is the largest piece of
         caller-controlled work on this surface, and the same event loop serves the
-        realtime WebSocket — so the decode belongs to the worker that serves the
-        request, together with the decoded size that only the decode can reveal.
+        realtime WebSocket — so the decode belongs to
+        :func:`decode_import_content`, which runs it in bounded steps with the loop
+        yielded between them, together with the decoded size that only the decode can
+        reveal.
 
         What it refuses, it refuses as the request contract: the same envelope, code
         and status as a shape failure the framework itself caught.
@@ -186,6 +203,12 @@ _CONTENT_TOO_LARGE_MESSAGE = f"The DBC content must be at most {MAX_DBC_IMPORT_B
 #: The one message for "no content was submitted at all".
 _CONTENT_EMPTY_MESSAGE = "The DBC content must not be empty."
 
+#: The one message for "this text is not the Base64 the contract describes", shared
+#: by every step of the decode so that a payload refused at step seven reads exactly
+#: like one refused at step one — a caller cannot learn where in the text the
+#: trouble was, and has no reason to.
+_CONTENT_NOT_BASE64_MESSAGE = "The DBC content is not valid Base64."
+
 #: Where a content failure is attributed. The location the framework itself would
 #: report for this field, so a caller sees one diagnostic shape whether the refusal
 #: came from the cheap guard or from the decode.
@@ -199,7 +222,7 @@ def _require_importable_transport(content_base64: str) -> None:
     be a DBC document, and text longer than the encoded form of
     :data:`MAX_DBC_IMPORT_BYTES` cannot decode into the bound. Everything else —
     whether the text is canonical Base64 at all, and how many bytes it actually
-    produces — is decided by :func:`decode_import_content`, in the worker.
+    produces — is decided by :func:`decode_import_content`.
 
     Raises:
         ValueError: Naming the rule that failed, never the payload. A plain
@@ -213,14 +236,23 @@ def _require_importable_transport(content_base64: str) -> None:
         raise ValueError(_CONTENT_TOO_LARGE_MESSAGE)
 
 
-def decode_import_content(content_base64: str) -> bytes:
-    """Decode one import payload strictly, in the thread that calls it. Blocking.
+async def decode_import_content(content_base64: str) -> bytes:
+    """Decode one import payload strictly, in bounded steps. Yields the event loop.
 
-    This is the **only** place the submitted Base64 is decoded, and the worker that
-    serves the request is its only caller: the decode never runs during request
-    validation, and never runs twice for one request. The cheap transport rules are
-    re-applied here as well, so a caller that reaches this function without the
-    request model in front of it gets the same refusals.
+    This is the **only** place the submitted Base64 is decoded, and it happens
+    exactly **once** for one request. The cheap transport rules are re-applied here
+    as well, so a caller that reaches this function without the request model in
+    front of it gets the same refusals.
+
+    Being a coroutine is part of the contract rather than a detail of the code.
+    ``binascii.a2b_base64`` holds the GIL for the whole of one call, so a single
+    decode of up to :data:`MAX_DBC_IMPORT_BYTES` would keep the event loop from being
+    scheduled for as long as the decode takes — *no matter which thread the call was
+    made on*, because the loop and the worker cannot both run while the GIL is held.
+    Offloading answers "which thread" and not "how long the loop waits"; only
+    bounding each call and yielding between them answers the second. See
+    :func:`_decode_strict_base64` for what keeps the bounded decoder accepting
+    exactly what the whole-payload decoder accepted.
 
     Three refusals, all of them about the *request* rather than about DBC:
 
@@ -247,15 +279,57 @@ def decode_import_content(content_base64: str) -> bytes:
             never a server error.
     """
     _require_importable_transport(content_base64)
-    try:
-        raw = base64.b64decode(content_base64, validate=True)
-    except (binascii.Error, ValueError) as error:
-        raise _unimportable_content("The DBC content is not valid Base64.") from error
+    raw = await _decode_strict_base64(content_base64)
     if not raw:
         raise _unimportable_content(_CONTENT_EMPTY_MESSAGE)
     if len(raw) > MAX_DBC_IMPORT_BYTES:
         raise _unimportable_content(_CONTENT_TOO_LARGE_MESSAGE)
     return raw
+
+
+async def _decode_strict_base64(content_base64: str) -> bytes:
+    """Decode the payload strictly, one bounded step at a time.
+
+    The accepted language is exactly the whole-payload decoder's. Each step is the
+    same ``binascii`` call under the same ``validate=True``, so the alphabet rule is
+    untouched; the two rules that had to be stated outright are the ones position
+    used to imply:
+
+    * **padding may occur only in the final step.** A decoder that validated each
+      step in isolation would accept ``AA==AAAA``, which the whole-payload decoder
+      refuses because Base64 allows padding only at the end. Refusing ``=`` anywhere
+      but the last step is what keeps the two decoders describing one language
+      instead of two — the bounded decoder is not allowed to be the more permissive
+      one.
+    * **every step but the last is a whole number of Base64 quanta**, because
+      :data:`DECODE_CHUNK_CHARS` is a multiple of four. A boundary that split a
+      quantum would make each half look like a broken tail.
+
+    Steps are decoded on workers and awaited between them; that await is what gives
+    the event loop its turns back.
+    """
+    parts: list[bytes] = []
+    total = len(content_base64)
+    for start in range(0, total, DECODE_CHUNK_CHARS):
+        step = content_base64[start : start + DECODE_CHUNK_CHARS]
+        if "=" in step and start + DECODE_CHUNK_CHARS < total:
+            raise _unimportable_content(_CONTENT_NOT_BASE64_MESSAGE)
+        try:
+            parts.append(await asyncio.to_thread(_decode_base64_step, step))
+        except (binascii.Error, ValueError) as error:
+            raise _unimportable_content(_CONTENT_NOT_BASE64_MESSAGE) from error
+    return b"".join(parts)
+
+
+def _decode_base64_step(step: str) -> bytes:
+    """Strictly decode one bounded step. Blocking by design.
+
+    A named function rather than an inline ``base64.b64decode`` call so that the step
+    itself is observable: the responsiveness tests record which thread ran it, which
+    is how "the decode does not run on the event loop" is asserted about the work
+    rather than about the call that scheduled it.
+    """
+    return base64.b64decode(step, validate=True)
 
 
 def _unimportable_content(message: str) -> ApiRequestError:
@@ -492,11 +566,13 @@ def create_dbc_router() -> APIRouter:
         lookup format.
 
         Nothing about the request is interpreted as a location: the content travels
-        as Base64 and the name travels as provenance. The content is decoded once,
-        in the worker this handler hands the request to — validation itself only
-        applies the rules that need no decoding.
+        as Base64 and the name travels as provenance. The content is decoded here, in
+        bounded steps, so that the decode cannot keep the event loop from being
+        scheduled — and only then handed, as bytes, to the worker that parses and
+        persists it. Validation itself applies only the rules that need no decode.
         """
-        asset = await asyncio.to_thread(_import_asset, request)
+        raw = await decode_import_content(request.content_base64)
+        asset = await asyncio.to_thread(_import_asset, request, raw)
         return _asset_payload(asset)
 
     @router.get("/assets", response_model=DbcAssetListResponse)
@@ -538,20 +614,21 @@ def create_dbc_router() -> APIRouter:
     return router
 
 
-def _import_asset(request: DbcAssetImportRequest) -> DbcAsset:
-    """Import one submitted document as a project-owned asset. Blocking by design.
+def _import_asset(request: DbcAssetImportRequest, raw: bytes) -> DbcAsset:
+    """Import one already-decoded document as a project-owned asset. Blocking.
 
-    Everything expensive about the request happens here, off the event loop: the
-    Base64 decode, the DBC parse, the filesystem write and fsync, and the registry
-    insert. The decode happens **once**, here, and nowhere else: a request that
-    used to verify its payload during validation and then decode it again paid for
-    the same bytes twice, and the first payment was taken from the event loop. The
-    payload is handed on **as bytes** — never turned back into text on the way —
-    because the bytes are what the project owns, and the digest of what the caller
-    sent has to be the digest of what is stored.
+    Everything expensive about the request happens here, off the event loop: the DBC
+    parse, the filesystem write and fsync, and the registry insert. The decode is
+    deliberately *not* here. It is the one piece of caller-controlled work on this
+    surface large enough to matter, and bounding it means yielding the event loop
+    between steps — which a synchronous function cannot do, whichever thread it runs
+    on. It has therefore already happened, exactly once, and the payload arrives **as
+    bytes**: never turned back into text on the way, because the bytes are what the
+    project owns and the digest of what the caller sent has to be the digest of what
+    is stored.
     """
     return ProjectDbcService(Path(request.project_path)).import_asset_bytes(
-        decode_import_content(request.content_base64),
+        raw,
         source_name=request.source_name,
         encoding=request.encoding,
     )

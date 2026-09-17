@@ -23,8 +23,11 @@ Three things are pinned deliberately:
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import binascii
 import hashlib
+import inspect
 import json
 import threading
 from datetime import datetime
@@ -1778,36 +1781,69 @@ async def test_a_refused_import_echoes_no_content_and_no_internals(tmp_path: Pat
 # happens — the thread id is recorded around the real decode rather than inferred
 # from "asyncio.to_thread was called", because the call is not the evidence, the
 # work is.
+#
+# The decode is performed in bounded steps, so the observation point is the *step*:
+# it is the call that holds the GIL, and therefore the only thing whose thread says
+# anything about whether the event loop was left free. The coroutine that schedules
+# the steps necessarily starts on the loop, so watching it would report the call
+# site instead of the work.
 
 
-def _spy_on_decode(monkeypatch: pytest.MonkeyPatch, module: object) -> list[int]:
-    """Record the thread of every strict-decode call, changing nothing else."""
-    threads: list[int] = []
-    original = module.decode_import_content  # type: ignore[attr-defined]
+class _DecodeSpy:
+    """Records the thread and size of every strict-decode step."""
 
-    def counted(content_base64: str) -> bytes:
-        threads.append(threading.get_ident())
-        return original(content_base64)  # type: ignore[no-any-return]
+    def __init__(self) -> None:
+        self.threads: list[int] = []
+        self.step_chars: list[int] = []
 
-    monkeypatch.setattr(module, "decode_import_content", counted)
-    return threads
+    @property
+    def decoded_chars(self) -> int:
+        """Total Base64 characters that passed through a strict decode."""
+        return sum(self.step_chars)
+
+
+def _spy_on_decode(monkeypatch: pytest.MonkeyPatch, module: object) -> _DecodeSpy:
+    """Record every strict-decode step, changing nothing else."""
+    spy = _DecodeSpy()
+    original = module._decode_base64_step  # type: ignore[attr-defined]
+
+    def counted(step: str) -> bytes:
+        spy.threads.append(threading.get_ident())
+        spy.step_chars.append(len(step))
+        return original(step)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(module, "_decode_base64_step", counted)
+    return spy
 
 
 async def test_a_valid_import_decodes_the_content_once_off_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both halves of the finding: one decode, and it ran on a worker thread."""
+    """Both halves of the finding: one decode, and it ran on worker threads.
+
+    "Once" is asserted about the payload rather than about a call, because the decode
+    is now performed in bounded steps and counting calls would count steps. What has
+    to hold either way is that the submitted text is decoded exactly once end to end,
+    and that every step that touched it ran off the event loop.
+    """
     root = _empty_project(tmp_path)
-    threads = _spy_on_decode(monkeypatch, dbc_module)
+    spy = _spy_on_decode(monkeypatch, dbc_module)
     event_loop_thread = threading.get_ident()
     raw = BASIC.read_bytes()
+    submitted = base64.b64encode(raw).decode("ascii")
 
     async with _client() as client:
         response = await client.post("/dbc/assets", json=_import_body(root, content=raw))
 
     assert response.status_code == 201, response.text
-    assert len(threads) == 1, "one request must decode its content exactly once"
-    assert threads[0] != event_loop_thread, "the decode must not run on the event loop"
+    assert spy.decoded_chars == len(submitted), (
+        "one request must decode its content exactly once: "
+        f"{spy.decoded_chars} characters decoded for a {len(submitted)} character payload"
+    )
+    assert spy.threads, "the decode must actually have happened"
+    assert all(thread != event_loop_thread for thread in spy.threads), (
+        "no step of the decode may run on the event loop"
+    )
     assert (root / "dbc" / f"{response.json()['asset_id']}.dbc").read_bytes() == raw
 
 
@@ -1821,7 +1857,7 @@ async def test_malformed_base64_is_detected_on_a_worker_thread(
     detects it is the worker.
     """
     root = _empty_project(tmp_path)
-    threads = _spy_on_decode(monkeypatch, dbc_module)
+    spy = _spy_on_decode(monkeypatch, dbc_module)
     event_loop_thread = threading.get_ident()
 
     async with _client() as client:
@@ -1832,8 +1868,8 @@ async def test_malformed_base64_is_detected_on_a_worker_thread(
 
     body = response.json()
     _assert_validation_envelope(response.status_code, body)
-    assert len(threads) == 1
-    assert threads[0] != event_loop_thread
+    assert len(spy.threads) == 1, "a fifteen-character payload is one bounded step"
+    assert spy.threads[0] != event_loop_thread
     assert "not-base64" not in str(body)
     assert _stored_assets(root) == []
 
@@ -1843,13 +1879,13 @@ async def test_empty_content_is_refused_without_any_decode(
 ) -> None:
     """Emptiness is decidable from the text alone, so it must cost no decode."""
     root = _empty_project(tmp_path)
-    threads = _spy_on_decode(monkeypatch, dbc_module)
+    spy = _spy_on_decode(monkeypatch, dbc_module)
 
     async with _client() as client:
         response = await client.post("/dbc/assets", json=_import_body(root, content=b""))
 
     _assert_validation_envelope(response.status_code, response.json())
-    assert threads == []
+    assert spy.threads == []
     assert _stored_assets(root) == []
 
 
@@ -1858,7 +1894,7 @@ async def test_encoded_text_beyond_the_static_bound_is_refused_without_any_decod
 ) -> None:
     """The cheap guard: text too long to decode into the bound is refused first."""
     root = _empty_project(tmp_path)
-    threads = _spy_on_decode(monkeypatch, dbc_module)
+    spy = _spy_on_decode(monkeypatch, dbc_module)
     oversized = "A" * (MAX_IMPORT_BASE64_CHARS + 4)
 
     async with _client() as client:
@@ -1868,7 +1904,7 @@ async def test_encoded_text_beyond_the_static_bound_is_refused_without_any_decod
         )
 
     _assert_validation_envelope(response.status_code, response.json())
-    assert threads == []
+    assert spy.threads == []
     assert _stored_assets(root) == []
 
 
@@ -1885,7 +1921,7 @@ async def test_content_that_decodes_past_the_bound_is_refused_after_the_decode(
     here, not assumed.
     """
     root = _empty_project(tmp_path)
-    threads = _spy_on_decode(monkeypatch, dbc_module)
+    spy = _spy_on_decode(monkeypatch, dbc_module)
     event_loop_thread = threading.get_ident()
     encoded = "A" * MAX_IMPORT_BASE64_CHARS
 
@@ -1899,6 +1935,168 @@ async def test_content_that_decodes_past_the_bound_is_refused_after_the_decode(
         )
 
     _assert_validation_envelope(response.status_code, response.json())
-    assert len(threads) == 1
-    assert threads[0] != event_loop_thread
+    assert spy.decoded_chars == len(encoded), "the whole payload must be decoded once"
+    assert spy.threads, "the decode must actually have happened"
+    assert all(thread != event_loop_thread for thread in spy.threads)
+
+
+# --- event-loop responsiveness under a near-limit decode ---------------------
+#
+# "The decode ran on a worker thread" answers *where the call was made*. It does
+# not answer whether the event loop kept running while the decode worked, and the
+# two are not the same question: ``binascii.a2b_base64`` holds the GIL for the
+# whole call, so a single 16 MiB decode can keep the loop from being scheduled for
+# as long as the decode takes. A thread id cannot show that; the loop's own
+# scheduling gap can.
+#
+# So these tests measure the gap, not the call graph. The passing case is the
+# production decoder; the control is the *same* payload decoded the same way with
+# the call made on the loop — the shape V0.3-06-FINAL removed from the endpoint —
+# which must trip the identical measurement.
+
+#: A gap at or above this fraction of the decode's own duration means the loop
+#: spent most of the decode not running. Comparing against the decode's duration
+#: rather than a fixed millisecond budget keeps the test meaningful on a machine
+#: that is merely slower than the one it was written on.
+_STARVATION_RATIO = 0.5
+
+#: The loop must take at least this many turns while a near-limit decode runs. A
+#: loop scheduled once at the end of a decode has one gap near the whole duration;
+#: a loop that is genuinely free takes hundreds of turns.
+_MIN_TURNS_DURING_DECODE = 10
+
+
+def _near_limit_content() -> str:
+    """Base64 text that decodes to just under :data:`MAX_IMPORT_BYTES`.
+
+    Three bytes shy of the bound, so this is a legal request of the largest size
+    the endpoint accepts: the decode measured here is the worst case the contract
+    allows rather than a convenient sample.
+    """
+    raw = b"A" * (MAX_IMPORT_BYTES - 3)
+    encoded = base64.b64encode(raw).decode("ascii")
+    assert len(base64.b64decode(encoded, validate=True)) <= MAX_IMPORT_BYTES
+    return encoded
+
+
+async def _decode_as_the_endpoint_does(content: str) -> bytes:
+    """Run the production decoder the way the import endpoint runs it.
+
+    The endpoint hands the decode to a worker and awaits it. While the decoder is a
+    plain function that is ``asyncio.to_thread``; once it manages its own bounded
+    stepping it is awaited directly. Both are "the production path" — what is being
+    measured is the event loop, not the call convention.
+    """
+    if inspect.iscoroutinefunction(dbc_module.decode_import_content):
+        return await dbc_module.decode_import_content(content)
+    return await asyncio.to_thread(dbc_module.decode_import_content, content)
+
+
+async def _record_loop_gaps(stop: asyncio.Event, gaps: list[float]) -> None:
+    """Record the delay between consecutive turns of the event loop.
+
+    ``asyncio.sleep(0)`` yields to the loop without arming a timer, so each gap is
+    the loop's own scheduling latency rather than the platform timer's resolution.
+    An idle loop on this machine turns every few microseconds.
+    """
+    loop = asyncio.get_running_loop()
+    previous = loop.time()
+    while not stop.is_set():
+        await asyncio.sleep(0)
+        now = loop.time()
+        gaps.append(now - previous)
+        previous = now
+
+
+async def test_the_event_loop_keeps_running_while_a_near_limit_payload_decodes() -> None:
+    """The loop must keep being scheduled *during* the decode, not merely around it."""
+    content = _near_limit_content()
+    loop = asyncio.get_running_loop()
+    gaps: list[float] = []
+    stop = asyncio.Event()
+    probe = asyncio.create_task(_record_loop_gaps(stop, gaps))
+    await asyncio.sleep(0)
+
+    started = loop.time()
+    raw = await _decode_as_the_endpoint_does(content)
+    duration = loop.time() - started
+    stop.set()
+    await probe
+
+    assert len(raw) == MAX_IMPORT_BYTES - 3, "the payload must really be decoded"
+    assert duration > 0.0
+    assert len(gaps) >= _MIN_TURNS_DURING_DECODE, (
+        f"the event loop took only {len(gaps)} turns during a {duration * 1000:.1f} ms "
+        "decode: it was not running while the decode worked"
+    )
+    longest = max(gaps)
+    assert longest < duration * _STARVATION_RATIO, (
+        f"the event loop went unscheduled for {longest * 1000:.1f} ms of a "
+        f"{duration * 1000:.1f} ms decode"
+    )
+
+
+async def test_the_probe_reports_starvation_when_a_decode_does_block_the_loop() -> None:
+    """Control: a decode on the loop must trip the same measurement.
+
+    A probe that reported "the loop is fine" whatever happened would be
+    indistinguishable from a passing responsiveness test. This is the same payload
+    decoded the same way, except that the call is made on the loop, and the
+    measurement must notice.
+    """
+    content = _near_limit_content()
+    loop = asyncio.get_running_loop()
+    gaps: list[float] = []
+    stop = asyncio.Event()
+    probe = asyncio.create_task(_record_loop_gaps(stop, gaps))
+    await asyncio.sleep(0)
+
+    started = loop.time()
+    raw = base64.b64decode(content, validate=True)  # deliberately on the loop
+    duration = loop.time() - started
+    stop.set()
+    await probe
+
+    assert raw
+    assert gaps
+    longest = max(gaps)
+    assert longest >= duration * _STARVATION_RATIO, (
+        "the probe failed to notice a decode that blocked the loop outright: "
+        f"longest gap {longest * 1000:.1f} ms against a {duration * 1000:.1f} ms decode"
+    )
+    assert len(gaps) < _MIN_TURNS_DURING_DECODE, (
+        "a blocking decode must not look like a freely-scheduled one: "
+        f"{len(gaps)} turns were observed"
+    )
+
+
+async def test_padding_planted_inside_a_multi_step_payload_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """Bounding the decode must not make it the more permissive decoder.
+
+    ``=`` is legal only at the very end of a Base64 payload. A decoder that validated
+    each bounded step in isolation would accept padding in the middle — the step
+    before it would simply look like a complete, correctly padded payload of its own
+    — and the endpoint would begin accepting text the whole-payload decoder refuses.
+    The payload here spans several steps, and the reference decoder is asked first,
+    so the case cannot quietly degenerate into a single-step one if the step size is
+    ever retuned.
+    """
+    body = base64.b64encode(b"B" * (1024 * 1024)).decode("ascii")
+    middle = len(body) // 2
+    corrupted = body[:middle] + "==" + body[middle + 2 :]
+
+    assert len(corrupted) % 4 == 0, "the payload must fail on padding, not on length"
+    with pytest.raises((binascii.Error, ValueError)):
+        base64.b64decode(corrupted, validate=True)
+
+    root = _empty_project(tmp_path)
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets",
+            json={**_import_body(root, content=b""), "content_base64": corrupted},
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
     assert _stored_assets(root) == []
