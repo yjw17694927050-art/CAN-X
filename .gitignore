@@ -17,3 +17,4 @@ apps/desktop/src-tauri/gen/schemas/
 apps/desktop/src-tauri/binaries/
 .worktrees/
 build/
+.rivet/
