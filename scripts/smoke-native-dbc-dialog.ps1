@@ -513,14 +513,23 @@ try {
 }
 
 $check = $evidence.sourceCheck
+
+# The payload assertion is a set comparison, not a count: three fields where two are
+# expected must fail even if one of them happens to look harmless.
+$expectedPayloadKeys = @('content_base64', 'source_name')
+$observedPayloadKeys = if ($null -ne $payloadStep -and $null -ne $payloadStep.payloadKeys) { @($payloadStep.payloadKeys) } else { @() }
+$payloadKeysAreExpected = ($observedPayloadKeys -join ',') -eq ($expectedPayloadKeys -join ',')
+
 $evidence.verdict = [ordered]@{
   initialAssetCountZero = ($evidence.initialAssetCount -eq 0)
   initialDbcDirectoryEmpty = ($initialDbFiles.Count -eq 0)
   cancelDialogOpened = [bool]$evidence.cancel.dialogOpened
-  cancelReturnedNull = ($null -ne $cancelStep) -and ($cancelStep.returnedNull -eq $true)
+  cancelOrchestratedCancelled = ($null -ne $cancelStep) -and ($cancelStep.outcome -eq 'cancelled')
   cancelStoredNothing = ($evidence.assetsAfterCancel -eq 0)
-  payloadKeyCount = if ($null -ne $payloadStep -and $null -ne $payloadStep.payloadKeys) { $payloadStep.payloadKeys.Count } else { -1 }
-  payloadKeys = if ($null -ne $payloadStep) { $payloadStep.payloadKeys } else { @() }
+  payloadKeyCount = if ($null -ne $payloadStep -and $null -ne $payloadStep.payloadKeys) { @($payloadStep.payloadKeys).Count } else { -1 }
+  payloadKeys = $observedPayloadKeys
+  payloadKeyCountIsTwo = (@($observedPayloadKeys).Count -eq 2)
+  payloadKeysAreExpected = $payloadKeysAreExpected
   importDialogOpened = [bool]$evidence.import.dialogOpened
   orchestrationImported = ($null -ne $importStep) -and ($importStep.outcome -eq 'imported')
   runtimeAssetCountOne = ($evidence.assetsAfterImport -eq 1)
@@ -550,9 +559,10 @@ Set-Content -Path $EvidencePath -Value $evidenceJson -Encoding UTF8
 
 Write-Output ''
 Write-Output 'Cancel dialog opened:              ' + $(if ($evidence.verdict.cancelDialogOpened) { 'PASS' } else { 'FAIL' })
-Write-Output 'Cancel returned null:              ' + $(if ($evidence.verdict.cancelReturnedNull) { 'PASS' } else { 'FAIL' })
+Write-Output 'Cancel orchestrated cancelled:     ' + $(if ($evidence.verdict.cancelOrchestratedCancelled) { 'PASS' } else { 'FAIL' })
 Write-Output 'Cancel stored nothing:             ' + $(if ($evidence.verdict.cancelStoredNothing) { 'PASS' } else { 'FAIL' })
-Write-Output 'IPC payload key count == 2:        ' + $(if ($evidence.verdict.payloadKeyCount -eq 2) { 'PASS' } else { 'FAIL' })
+Write-Output 'IPC payload key count == 2:        ' + $(if ($evidence.verdict.payloadKeyCountIsTwo) { 'PASS' } else { 'FAIL' })
+Write-Output 'IPC payload keys are expected:     ' + $(if ($evidence.verdict.payloadKeysAreExpected) { 'PASS' } else { 'FAIL' })
 Write-Output 'Orchestration imported:            ' + $(if ($evidence.verdict.orchestrationImported) { 'PASS' } else { 'FAIL' })
 Write-Output 'Runtime asset count == 1:          ' + $(if ($evidence.verdict.runtimeAssetCountOne) { 'PASS' } else { 'FAIL' })
 Write-Output 'Runtime SHA256 == fixture:         ' + $(if ($evidence.verdict.runtimeShaMatchesFixture) { 'PASS' } else { 'FAIL' })
@@ -569,3 +579,50 @@ Write-Output 'Runtime stopped with desktop:      ' + $(if ($evidence.verdict.run
 Write-Output 'App responsiveness:                ' + $(if ($evidence.verdict.appResponding) { 'PASS' } else { 'FAIL' })
 Write-Output "EVIDENCE_WRITTEN=$EvidencePath"
 Write-Output "SMOKE_PROJECT=$ProjectPath"
+
+# ---- Verdict enforcement --------------------------------------------------------
+# The exit code is the gate; the console is the explanation. Above this line the
+# script has only *reported* — and a run that printed FAIL while exiting 0 is
+# indistinguishable, to any calling script or CI step, from a run that passed. Every
+# required verdict must hold before this process may claim success.
+#
+# The evidence file is already on disk at this point, so a failing run still leaves a
+# complete record of what was observed; the failure is added to it, not substituted
+# for it.
+$requiredVerdicts = @(
+  'initialAssetCountZero',
+  'initialDbcDirectoryEmpty',
+  'cancelDialogOpened',
+  'cancelOrchestratedCancelled',
+  'cancelStoredNothing',
+  'payloadKeyCountIsTwo',
+  'payloadKeysAreExpected',
+  'importDialogOpened',
+  'orchestrationImported',
+  'runtimeAssetCountOne',
+  'runtimeShaMatchesFixture',
+  'runtimeSizeMatchesFixture',
+  'runtimeNameIsFixtureBasename',
+  'sourceAssetCountOne',
+  'sourceBytesEqualFixture',
+  'sourceStoredSha256MatchesFixture',
+  'sourceSizeMatchesFixture',
+  'sourceNameIsFixtureBasename',
+  'sourceAssetLoads',
+  'rendererPayloadClean',
+  'runtimeHealthyThroughout',
+  'runtimeStoppedWithDesktop',
+  'appResponding'
+)
+
+$failedVerdicts = @($requiredVerdicts | Where-Object { $evidence.verdict[$_] -ne $true })
+if ($failedVerdicts.Count -gt 0) {
+  Write-Output ''
+  Write-Output "FAILED VERDICTS ($($failedVerdicts.Count) of $($requiredVerdicts.Count)):"
+  foreach ($name in $failedVerdicts) {
+    Write-Output "  - $name = $($evidence.verdict[$name])"
+  }
+  throw "V0.3-08 packaged DBC smoke failed: $($failedVerdicts -join ', ')"
+}
+Write-Output ''
+Write-Output "ALL REQUIRED VERDICTS PASSED ($($requiredVerdicts.Count))"
