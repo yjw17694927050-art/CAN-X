@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline added and executed on GitHub Actions — awaiting independent acceptance, see §14)
+> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation implemented and self-verified — awaiting independent acceptance, see §14–§15)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -202,10 +202,14 @@ V0.3-10 — Read-Only DBC Workspace UI Foundation   (Final Acceptance: PASS, Sta
 Current step:
 None. No V0.3-12 implementation has been started.
 
-Engineering infrastructure (not a numbered product phase):
+Engineering infrastructure (not numbered product phases):
 Maintenance CI-01 — Continuous Integration Baseline Foundation
-  Implementation complete · self-verification complete · Awaiting independent acceptance
+  Final Acceptance: PASS · Status: CLOSED   (independent acceptance)
   Adds .github/workflows/ci.yml only — no product scope change
+
+Maintenance CI-02 — Protected Integration Gate Foundation
+  Implementation complete · self-verification complete · Awaiting independent acceptance
+  Adds a GitHub Repository Ruleset and docs/engineering/INTEGRATION_POLICY.md — no product scope change
 ```
 
 The `Final Acceptance: PASS / Status: CLOSED` verdicts recorded here are **project-owner /
@@ -609,6 +613,18 @@ that gate:
   hardware, so the rows above stay `NOT VERIFIED`. A cross-platform CI matrix is a later
   maintenance task.
 
+Maintenance CI-02 then turned that gate into a **protected integration gate**: `main` now
+carries a GitHub Repository Ruleset (`main-protected-integration`) that requires a Pull Request
+and a `success` `Quality Gate` before any normal merge, blocks force-push and deletion, and
+grants no bypass actor. See §15. Two limits stay attached to it:
+
+- The ruleset is **repository-side configuration**, not a product feature. Changing it needs
+  repository-administration rights — the break-glass path in
+  `docs/engineering/INTEGRATION_POLICY.md` §13. Protection removes the *normal* merge bypass; it
+  cannot remove the owner's inherent ability to edit the configuration itself.
+- Protection covers **`main` only**. macOS / Linux and real CAN hardware stay `NOT VERIFIED`, and
+  a cross-platform CI matrix is still a later maintenance task.
+
 ---
 
 ## 10. Deferred Capabilities
@@ -686,9 +702,13 @@ V0.3-11 — Project Runtime Read Model API Foundation
 V0.3-12 — NOT STARTED. No V0.3-12 implementation exists in this tree.
 
 Maintenance CI-01 — Continuous Integration Baseline Foundation   (not a numbered phase)
+          Final Acceptance: PASS · Status: CLOSED   (independent acceptance)
+          Real GitHub Actions runs executed, RED → GREEN (§14)
+
+Maintenance CI-02 — Protected Integration Gate Foundation   (not a numbered phase)
           Implementation complete
           Self-verification complete
-          Real GitHub Actions runs executed, RED → GREEN (§14)
+          main protected by a real GitHub Repository Ruleset (§15)
           AWAITING INDEPENDENT ACCEPTANCE
 ```
 
@@ -708,6 +728,12 @@ Maintenance CI-01 is engineering infrastructure, not a product phase. It changes
 schema, no API contract and no dependency, and it makes no product claim. Its own verdict is
 still external — the development agent did not write `Final Acceptance: PASS` for it. See §14 for
 the CI baseline and its real run record.
+
+Maintenance CI-02 is engineering infrastructure too. It changes no behaviour, no schema, no API
+contract, no dependency and no test. It adds repository-side protection and one policy document,
+and it makes no product claim. Like CI-01, its verdict is external — the development agent did
+not write `Final Acceptance: PASS` for it. See §15 for the protected-integration record and
+`docs/engineering/INTEGRATION_POLICY.md` for the policy itself.
 
 ---
 
@@ -740,6 +766,13 @@ docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md
     Maintenance CI-01 continuous-integration baseline. Three independent Windows quality jobs
     (Runtime / Python, Frontend / TypeScript, Desktop System / Rust) plus a fail-closed Quality
     Gate. The operational record of its first real GitHub Actions runs is in §14.
+
+docs/engineering/INTEGRATION_POLICY.md
+    Maintenance CI-02 integration policy. The protected-integration rules around `main`: the
+    required `Quality Gate`, force-push / deletion / conversation-resolution rules, the
+    break-glass policy, agent restrictions, and the boundary
+    Local Verification ≠ GitHub CI ≠ Protected Merge ≠ Independent Acceptance. Enforced (not
+    merely described) by the `main-protected-integration` GitHub Repository Ruleset — see §15.
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
@@ -809,3 +842,76 @@ The Rust toolchain is the runner's preinstalled stable (1.98.1 at the time of th
 not pinned by this repository, unlike Python, Node and pnpm.
 `tests/integration/test_packaged_runtime_smoke.py` (6 tests) skips on CI because no packaged
 `canx-runtime.exe` is staged there; it runs locally after `scripts\package-windows.cmd`.
+
+---
+
+## 15. Protected Integration Workflow (Maintenance CI-02)
+
+`.github/workflows/ci.yml` (CI-01) answered *"does CI check the code?"*. Maintenance CI-02 adds
+the stronger boundary: **code that the required gate has not passed cannot reach `main` through
+the normal process.**
+
+> **No green required Quality Gate = no normal merge into `main`.**
+
+**Mechanism.** A GitHub **Repository Ruleset** named `main-protected-integration` (id `23600372`,
+target: the default branch `main`, enforcement `active`, `bypass_actors: []`). This is real
+platform enforcement, not documentation:
+
+```text
+deletion                block deleting main
+non_fast_forward        block force-push to main
+pull_request            require a PR; 0 required approvals (sole-author);
+                        all review conversations must be resolved
+required_status_checks  require the "Quality Gate" check to report `success`
+```
+
+**Required check.** Only `Quality Gate` is required — it already fails closed unless all three
+domain jobs report `success`, so the aggregate is sufficient and cannot be satisfied by a partial
+run. Its exact context string (`Quality Gate`) was read from the real check runs already present
+on `main`, not assumed.
+
+**Policy.** `docs/engineering/INTEGRATION_POLICY.md` states the rules on top of the mechanism —
+branch / PR flow, red-CI and missing-CI handling, stale-PR and conflict handling, force-push and
+deletion policy, the break-glass policy, agent restrictions, and the
+`Local Verification ≠ GitHub CI ≠ Protected Merge ≠ Independent Acceptance` boundary.
+
+**Verified (self-verification, before independent acceptance).** Every item below was produced
+against the real GitHub repository, not simulated locally:
+
+```text
+main protection      un-protected (HTTP 404 "Branch not protected") before
+                     → ruleset main-protected-integration active after
+                     (verified with GET /repos/{owner}/{repo}/rules/branches/main)
+direct push to main  REJECTED — "remote: error: GH013: Repository rule violations found for
+                     refs/heads/main" — the repository owner is not exempt; remote main unchanged
+merge blocked        a temporary probe PR carrying an intentionally failing check could not be
+                     merged — blocked by "the base branch policy prohibits the merge" while the
+                     required check was not `success`
+post-merge CI        a merge into `main` is itself a `push → main` event and produces a fresh CI
+                     run on the merge commit
+```
+
+The run IDs, PR numbers and exact probe output for these checks are recorded in the CI-02 task
+handoff record and remain queryable in the GitHub Actions history; they are deliberately not
+duplicated here as self-referential numbers.
+
+**What CI-02 does not do.** It adds no CD, release, packaging, signing, updater or any product
+capability, and it starts no SAFETY-01, AGENT-01, V0.3-12 or CD work. The ruleset is repository
+configuration — owner-editable by design, which is exactly the break-glass path in the policy —
+not product code.
+
+---
+
+## 16. Engineering Maturity Record
+
+```text
+Level 1  Local Automated Verification          DONE
+Level 2  Repository Continuous Integration     DONE
+Level 3  Protected Integration Workflow        IMPLEMENTED · AWAITING INDEPENDENT ACCEPTANCE
+Safety Foundation (SAFETY-01)                  NOT STARTED
+Level 4  Multi-Agent Orchestration             NOT STARTED
+Level 5  Controlled Delivery / Qualification   NOT STARTED
+```
+
+A Level 3 verdict — like every acceptance verdict here — is external. This record says what the
+tree contains, not that it has been accepted.
