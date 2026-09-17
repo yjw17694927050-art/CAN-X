@@ -46,20 +46,28 @@ CAN-Space 已冻结。
 开始任何开发任务前，按顺序阅读：
 
 ```text
-1. AGENTS.md
-2. PRD.md
-3. SPEC.md
-4. docs/PROJECT_STATE.md（需要项目当前状态时）
+1. AGENTS.md                 执行规则（必读）
+2. PRD.md                    产品目标与范围（必读；读相关章节）
+3. SPEC.md                   技术架构与强制边界（必读；读相关章节）
+4. docs/PROJECT_STATE.md     当前项目状态（必读——高密度 current-state 文件）
 ```
 
-如果存在：
+`docs/PROJECT_STATE.md` 自 2026-09-17 起是**当前状态**文件，不再是历史日志。
+它回答“CAN-X 现在是什么状态”，是每次 Agent 启动的 mandatory context。
+
+按任务相关性，再读取：
 
 ```text
-docs/ADR/
-docs/REUSE_LEDGER.md
+docs/ADR/*                  涉及对应模块时必须读取
+docs/acceptance/*           需要某阶段验收证据时读取
+docs/REUSE_LEDGER.md        第一次实际复用 legacy code 时创建并读取
+docs/project-state/*        需要历史细节时才读取（**不是**每次任务的 mandatory read）
 ```
 
-涉及对应模块时也必须读取。
+关键规则：**历史归档（`docs/project-state/`）不是每次任务都必须完整读取的内容。**
+完整的历史实现日志、RED→GREEN 原始输出、packaging 数字与多轮 FINAL 修复细节已归档到
+`docs/project-state/`（见该目录 `README.md`）；只有在任务确实需要某阶段的详细历史或
+验收证据时才读取对应的归档段落，而不是每次启动都整体加载。
 
 ---
 
