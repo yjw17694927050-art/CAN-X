@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (Maintenance — PROJECT_STATE Documentation Compaction)
+> **Updated**: 2026-09-17 (V0.3-10 — Read-Only DBC Workspace UI Foundation — awaiting independent acceptance)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -195,15 +195,23 @@ V0.3 — Professional Trace & DBC Foundation
 Latest CLOSED step:
 V0.3-09 — Desktop DBC Read Model Client Foundation   (Final Acceptance: PASS, Status: CLOSED)
 
-Next implementation step:
+Current step:
 V0.3-10 — Read-Only DBC Workspace UI Foundation
+  Implementation complete
+  Local verification complete
+  Awaiting independent acceptance
 
-V0.3-10 implementation has NOT started.
+No further implementation step has been started.
 ```
 
 The `V0.3-09 Final Acceptance: PASS / Status: CLOSED` verdict is a **project-owner /
 independent acceptance result** — not a self-granted agent conclusion. This document only
 *records* an acceptance result that already happened; it did not produce it.
+
+V0.3-10 was implemented and self-verified by a development agent. Its evidence is in
+`docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md`. It carries **no** verdict
+here: the status above is `Awaiting independent acceptance`, and the agent did not write
+`Final Acceptance: PASS` for it.
 
 This document's own maintenance task (*Maintenance — PROJECT_STATE Documentation Compaction*)
 is a documentation-only task, **not** a numbered development phase, and did not touch any
@@ -354,8 +362,10 @@ Desktop native DBC file bridge (Tauri)     ✅
 Desktop DBC import orchestration           ✅
 Desktop DBC read-model client              ✅
 
-DBC Workspace UI                           ❌
-DBC asset browser UI                       ❌
+DBC Workspace UI (read-only)               ✅ implemented, locally verified —
+                                             awaiting independent acceptance
+DBC asset browser UI (read-only)           ✅ implemented, locally verified —
+                                             awaiting independent acceptance
 DBC editor                                 ❌
 active DBC                                 ❌
 channel ↔ DBC binding                      ❌
@@ -367,6 +377,10 @@ Agent dbc.* tools                          ❌
 real CAN hardware (Vector/PCAN/Kvaser/ZLG) NOT VERIFIED
 macOS real-machine validation              NOT VERIFIED
 ```
+
+The two DBC Workspace rows are annotated deliberately: they are **implemented and locally
+verified** by V0.3-10 but are **awaiting independent acceptance** — unlike the rows inherited
+from CLOSED phases, they are not yet an accepted capability.
 
 ---
 
@@ -425,9 +439,11 @@ workers/        WebSocket MessagePack worker
 smoke/          build-gated smoke harness (not in normal production builds)
 ```
 
-The desktop currently renders a Dockview workspace with Trace, Plot and a placeholder Agent
-panel. There is **no DBC UI**. The DBC import / read-model clients exist but have no
-production caller yet — they are exercised only by tests and the smoke harness.
+The desktop renders a Dockview workspace with Trace, Plot, a placeholder Agent panel and a
+read-only **DBC** panel. The DBC read-model client (`runtime/dbc-client.ts`) now has a real
+production caller — `components/dbc/` — while the DBC **import** client
+(`orchestration/dbc-import.ts` + `desktop/dbc-file-bridge.ts`) still has no production caller
+and is exercised only by tests and the smoke harness.
 
 **Persisted schema baseline (current):**
 
@@ -504,8 +520,7 @@ regression number; all recorded test numbers are local runs.
 Not implemented, in scope for later increments (actual repo state, not aspiration):
 
 ```text
-DBC Workspace UI
-DBC asset browser / import button / project picker
+DBC import button / project picker / project create-open UI
 DBC editor
 active DBC
 channel ↔ DBC binding
@@ -565,11 +580,13 @@ independent acceptance result" — and must not present its own conclusion as th
 
 ```text
 V0.3-09 — Final Acceptance: PASS · Status: CLOSED
-V0.3-10 — Read-Only DBC Workspace UI Foundation — NOT STARTED
+V0.3-10 — Read-Only DBC Workspace UI Foundation — IMPLEMENTED · AWAITING INDEPENDENT ACCEPTANCE
 ```
 
-No implementation work on V0.3-10 has begun. The next real development step is V0.3-10, but it
-must not start until the project owner authorizes it.
+V0.3-10 has been implemented and locally verified; the evidence is in
+`docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md`. It must not be recorded as
+PASS / CLOSED until an independent acceptance result exists, and no later phase may start
+before that.
 
 ---
 
@@ -586,6 +603,9 @@ docs/project-state/README.md
 docs/acceptance/README.md
     Policy for per-phase acceptance reports (in force from V0.3-10 onward).
     Historical phases were NOT back-filled as a bulk rewrite — the archive is the record.
+
+docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md
+    V0.3-10 acceptance evidence (self-verified; awaiting independent acceptance).
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
