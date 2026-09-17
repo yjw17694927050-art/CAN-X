@@ -36,7 +36,13 @@ what must not be broken; this package is its implementation.
 
 from __future__ import annotations
 
-from canx.safety.approval import Approval, ApprovalIssuer, ApprovalStore
+from canx.safety.approval import (
+    Approval,
+    ApprovalIssuer,
+    ApprovalSpec,
+    ApprovalStore,
+    issuer_for,
+)
 from canx.safety.arm import ArmController, ArmState
 from canx.safety.audit import (
     DEFAULT_AUDIT_CAPACITY,
@@ -54,6 +60,7 @@ from canx.safety.emergency import (
 from canx.safety.errors import (
     SafetyApprovalError,
     SafetyApprovalExpiredError,
+    SafetyApprovalProvenanceError,
     SafetyApprovalReusedError,
     SafetyAuditError,
     SafetyCallerError,
@@ -73,19 +80,25 @@ from canx.safety.policy import (
     approval_requirement_for,
 )
 from canx.safety.risk import (
+    DANGEROUS_CAPABILITIES,
     Capability,
     OperationClass,
+    OperationPolicy,
     RiskLevel,
+    approval_capability_for,
     classify_operation,
-    required_capability,
+    is_dangerous_capability,
+    operation_policy,
 )
 from canx.safety.scope import ArmScope, OperationTarget, has_lapsed
 
 __all__ = [
+    "DANGEROUS_CAPABILITIES",
     "DEFAULT_AUDIT_CAPACITY",
     "Approval",
     "ApprovalIssuer",
     "ApprovalRequirement",
+    "ApprovalSpec",
     "ApprovalStore",
     "ArmController",
     "ArmScope",
@@ -99,6 +112,7 @@ __all__ = [
     "InMemoryAuditSink",
     "OperationCanceller",
     "OperationClass",
+    "OperationPolicy",
     "OperationRequest",
     "OperationTarget",
     "PermissionGrant",
@@ -107,6 +121,7 @@ __all__ = [
     "RiskLevel",
     "SafetyApprovalError",
     "SafetyApprovalExpiredError",
+    "SafetyApprovalProvenanceError",
     "SafetyApprovalReusedError",
     "SafetyAuditError",
     "SafetyAuditEvent",
@@ -122,9 +137,12 @@ __all__ = [
     "SafetyStateError",
     "SafetyUnknownOperationError",
     "allow",
+    "approval_capability_for",
     "approval_requirement_for",
     "classify_operation",
     "deny",
     "has_lapsed",
-    "required_capability",
+    "is_dangerous_capability",
+    "issuer_for",
+    "operation_policy",
 ]

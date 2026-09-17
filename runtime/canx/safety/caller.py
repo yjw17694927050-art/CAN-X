@@ -53,6 +53,20 @@ _AUTHORITY_BEARING_KINDS: frozenset[CallerKind] = frozenset(
     {CallerKind.HUMAN_UI, CallerKind.SYSTEM}
 )
 
+#: A caller name is a **label**, not a payload, and it is bounded so it cannot
+#: become one (invariant S19). Sixty-four characters of letters, digits and
+#: ``. _ : -`` is enough for every identifier this runtime constructs
+#: (``ui.main``, ``agent.session-1``, ``runtime.host``) and is not enough to
+#: carry a token, a base64 blob or a key.
+MAX_CALLER_NAME_LENGTH = 64
+
+_CALLER_NAME_ALPHABET: frozenset[str] = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "._:-"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CallerIdentity:
@@ -61,9 +75,12 @@ class CallerIdentity:
     ``name`` is a label for the audit trail — ``"ui.main"``, ``"agent.session-7"``,
     ``"script.cleanup"``. It is deliberately not a credential: the kernel decides
     from ``kind``, and the audit trail records the name so a decision can be
-    attributed after the fact. Nothing here is a secret, a token or a key, and
-    nothing here is written into an audit event unredacted beyond these two
-    fields.
+    attributed after the fact.
+
+    It is also deliberately not free text. A bounded alphabet and length are
+    enforced at construction, because this name is one of the few strings that
+    reaches the audit trail, and "do not put a secret in the caller name" is a
+    rule nobody can be relied on to remember (invariant S19).
     """
 
     kind: CallerKind
@@ -79,6 +96,19 @@ class CallerIdentity:
             raise SafetyCallerError(
                 "The caller kind is not part of the CAN-X caller vocabulary.",
                 details={"kind": type(self.kind).__name__},
+            )
+        if len(self.name) > MAX_CALLER_NAME_LENGTH or not set(self.name) <= (
+            _CALLER_NAME_ALPHABET
+        ):
+            # The offending text is deliberately not echoed: an error message
+            # that repeats a payload is the same leak in a different channel.
+            raise SafetyCallerError(
+                "A caller name must be a bounded label, not arbitrary text.",
+                details={
+                    "kind": str(self.kind),
+                    "length": len(self.name),
+                    "limit": MAX_CALLER_NAME_LENGTH,
+                },
             )
 
     @property

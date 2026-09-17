@@ -2,7 +2,7 @@
 
 > **Document**: `docs/architecture/SAFETY_ARCHITECTURE.md`
 > **Applies To**: every capability that can change a vehicle, and every caller that might ask for one
-> **Status**: implemented and self-verified; awaiting independent acceptance (SAFETY-01)
+> **Status**: implemented, remediated after the first independent review returned NOT PASS, and awaiting independent re-acceptance (SAFETY-01-FIX-1; see §24)
 > **Authority**: the invariants in §5 are frozen. Later tasks may add to them; none may be removed or weakened.
 
 This document is the authority on what CAN-X's safety boundary *is*. The code in
@@ -136,16 +136,30 @@ S11  Approval cannot increase permission.
 S12  Future Adapter.send paths must not bypass the Safety Kernel.
 S13  Emergency stop has authority over every dangerous operation family.
 S14  Safety-critical errors cannot be silently swallowed.
+S15  Any operation that transmits to a live vehicle requires explicit CAN_TX
+     authority regardless of its semantic effect risk.
+S16  Approval provenance is derived from trusted caller identity, and cannot be
+     self-declared.
+S17  Audit failure may remove authority, but must never create, retain or
+     restore unaudited authority.
+S18  A permission grant that opens any dangerous capability must carry a finite
+     expiry.
+S19  No arbitrary caller-controlled text may be persisted in a safety audit
+     event. A reason is recorded as a digest and a bounded label, never as text.
 ```
+
+S1–S14 were frozen by SAFETY-01. S15–S19 were added by SAFETY-01-FIX-1 after the
+first independent review returned `NOT PASS`, and they are the five things that
+review found the model could not yet hold (§24).
 
 ### How each invariant is held
 
 | # | Held by | Where |
 | --- | --- | --- |
-| S1 | `RiskLevel.is_dangerous` gates the whole chain; the only `ALLOW` is the last statement | `safety/risk.py`, `safety/policy.py` |
+| S1 | `RiskLevel.is_dangerous` and `OperationPolicy.requires_arm` gate the chain; the only `ALLOW` is the last statement | `safety/risk.py`, `safety/policy.py` |
 | S2 | `SafetyKernel.evaluate` is the only decision surface in the runtime | `safety/kernel.py` |
 | S3 | `PermissionSet` has no mutator; `arm`/`confirm_arm` require an authority-bearing caller | `safety/permission.py`, `safety/kernel.py` |
-| S4 | `ApprovalStore.grant` refuses a machine caller; `ApprovalIssuer` has no machine member | `safety/approval.py` |
+| S4 | `SafetyKernel.grant_approval` refuses a machine caller; `ApprovalIssuer` has no machine member | `safety/approval.py`, `safety/kernel.py` |
 | S5 | Documented boundary + `CanAdapter` has no transmit primitive + the sandbox contract in `SPEC.md` §26 | §15 below, `tests/unit/safety/test_device_transmit_boundary.py` |
 | S6 | Capability-based grants with targets; empty set by default | `safety/permission.py` |
 | S7 | Three-state machine, `ArmScope` with expiry, idempotent disarm | `safety/arm.py`, `safety/scope.py` |
@@ -156,13 +170,21 @@ S14  Safety-critical errors cannot be silently swallowed.
 | S12 | A boundary test that fails if a transmit primitive appears in the device contracts | `tests/unit/safety/test_device_transmit_boundary.py` |
 | S13 | `EmergencyStopController` disarms, refuses new dangerous work and requests cancellations | `safety/emergency.py` |
 | S14 | A broken audit sink raises instead of returning a verdict; cancellation failures are reported | `safety/kernel.py`, `safety/emergency.py` |
+| S15 | `required_capabilities` includes `CAN_TX` on every transmitting operation; the chain checks all of them | `safety/risk.py`, `safety/policy.py` |
+| S16 | `ApprovalSpec` has no issuer field; `issuer_for` derives it from the caller; the store checks the match | `safety/approval.py`, `safety/kernel.py` |
+| S17 | `_record_or_rollback` commits then rolls back a failed audit to a *reducing* action | `safety/kernel.py` |
+| S18 | `PermissionGrant.__post_init__` refuses a dangerous grant without a finite expiry | `safety/permission.py` |
+| S19 | `reason_digest` replaces raw reasons; `CallerIdentity` bounds its name | `safety/audit.py`, `safety/caller.py`, `safety/emergency.py` |
 
 ---
 
-## 6. Risk taxonomy
+## 6. Risk taxonomy — effect risk and execution authority
 
-Risk describes **what an operation does to the vehicle**, never which protocol it
-speaks.
+Two independent axes, and keeping them independent is the correction
+SAFETY-01-FIX-1 made (invariant S15).
+
+**Effect risk** describes what an operation does to the vehicle, never which
+protocol it speaks.
 
 ```text
 READ                  observe existing data
@@ -175,8 +197,59 @@ ECU_MUTATION          change ECU configuration or firmware state
 CRITICAL              an operation whose failure mode is not bounded
 ```
 
-The first three are `is_dangerous == False`; the last five are `True`. That single
-predicate is the boundary the rest of the kernel hangs from.
+**Required capabilities** describe what authority executing it costs. It is a
+set, and every operation that frames a live bus has `CAN_TX` in it:
+
+```text
+operation class          effect risk           required capabilities
+engineering.read         READ                  READ
+engineering.compute      COMPUTE               COMPUTE
+project.write            WRITE_PROJECT         WRITE_PROJECT
+bus.transmit             TX                    CAN_TX
+bus.replay               TX                    CAN_TX
+bus.injection            TX                    CAN_TX
+diagnostic.read          READ                  READ · CAN_TX      ← the split
+diagnostic.mutation      DIAGNOSTIC_MUTATION   CAN_TX · DIAGNOSTIC_MUTATION
+actuation                ACTUATION             CAN_TX · ACTUATION
+ecu.mutation             ECU_MUTATION          CAN_TX · ECU_MUTATION
+critical                 CRITICAL              CAN_TX · CRITICAL_OPERATION
+```
+
+**Why the two axes exist.** `diagnostic.read` observes — its effect risk is
+`READ`, and that must stay true, because it is what decides whether an approval
+is needed. But it still puts frames on the vehicle's bus. Under a one-axis model
+(``operation → risk → exactly one capability``) it landed on ``Capability.READ``
+alone, and a future would have been free to let it ride the low-risk automatic
+path — past the ARM state, the `CAN_TX` grant and the audit trail that every
+other real transmission has to cross.
+
+Relabelling it `TX` would have been the other wrong answer: it would throw away a
+read-only effect risk that is real. Both answers are kept, and both are checked.
+
+**The two predicates, and what each decides:**
+
+```text
+effect_risk.is_dangerous     →  is an approval required?
+requires_arm                 →  is the ARM state required?
+                                (dangerous effect  OR  transmits to the vehicle)
+required_capabilities        →  may the session execute it at all?
+                                (every capability, checked individually)
+```
+
+The `.is_dangerous` boundary: the first three levels are `False`, the last five
+are `True`.
+
+**What an approval is about.** An approval names the operation's **effect
+capability** — what will be done — not its full authority. An operator approves
+"read this diagnostic" or "change this ECU state"; the standing `CAN_TX` grant is
+what makes transmitting possible at all. Both are checked before anything runs.
+
+**ARM covers the vehicle capabilities, not the whole set.** Requiring an arm scope
+to also list `READ` would turn "may we touch the bus?" into "may we read data?",
+which is the standing permission's question, answered separately. A diagnostic
+read therefore needs `CAN_TX` inside the arm scope — that is the vehicle
+capability it uses — and `READ` in the permission set, because that is who may
+read.
 
 **On protocol-keyed risk.** `DIAGNOSTIC_READ` and `DIAGNOSTIC_MUTATION` exist as
 *separate operation classes that land on opposite sides of the boundary* —
@@ -240,6 +313,23 @@ requested_at        the instant the caller asked
 approval_id         optional reference to an approval to spend
 parameters_digest   sha256 of the parameters, never the parameters
 ```
+
+Alongside it sits the **operation policy** — the table row that answers both
+questions for an operation class:
+
+```text
+OperationPolicy
+  operation_class          diagnostic.read
+  effect_risk              READ
+  required_capabilities    {READ, CAN_TX}
+  transmits_to_vehicle     True      (derived from the capability set)
+  requires_arm             True      (derived: dangerous effect OR transmits)
+```
+
+The table is closed, total over `OperationClass`, and validates itself at import:
+a policy whose effect capability is missing from its own required set, or a
+dangerous effect that does not claim `CAN_TX`, raises rather than being loaded. A
+table row that contradicts itself is a row nobody can reason about later.
 
 Three deliberate exclusions:
 
@@ -366,7 +456,7 @@ a state whose only effect is to be misread by whoever looks at it next.
 
 ## 11. Permission and approval model
 
-### Permission — standing authority
+### Permission — standing authority, bounded where it matters
 
 Capability-based, least-privilege, scoped, and **empty by default**:
 
@@ -375,12 +465,32 @@ Capability: READ · COMPUTE · WRITE_PROJECT · CAN_TX
             DIAGNOSTIC_MUTATION · ACTUATION · ECU_MUTATION · CRITICAL_OPERATION
 ```
 
-Every capability is reachable from exactly one risk level
-(`required_capability`). A capability no risk level requires would be a grant an
-operator could hand out that changes nothing — a control that looks real and is
-not. That is why there is no separate `DIAGNOSTIC_READ` token: reading diagnostic
-data is authorised by `READ`, because the *authority to read* is the same
-authority, even though the *risk of a transmit* is not.
+Every capability is reachable from some operation in the table. A capability no
+operation requires would be a grant an operator could hand out that changes
+nothing — a control that looks real and is not.
+
+**Dangerous grants expire.** A grant that opens any of `CAN_TX`,
+`DIAGNOSTIC_MUTATION`, `ACTUATION`, `ECU_MUTATION` or `CRITICAL_OPERATION` must
+carry a finite expiry, and the check lives in the grant itself rather than in
+policy (invariant S18):
+
+```text
+PermissionGrant({READ})                          valid, unbounded
+PermissionGrant({CAN_TX}, expires_at=None)       refused
+PermissionGrant({CAN_TX}, expires_at=inf)        refused
+PermissionGrant({READ, CAN_TX}, expires_at=None) refused — dangerous as a whole
+```
+
+Enforced at construction because a rule that lives only in its consumer is a rule
+the next consumer does not have: a grant that cannot be built cannot be handed to
+a policy that forgot to ask. A caller that wants an unbounded read grant and a
+temporary transmit grant holds two grants, which is also the more honest
+description of what it has.
+
+There is no separate `DIAGNOSTIC_READ` capability, and that remains true under the
+two-axis model — reading diagnostic data needs `READ` *and* `CAN_TX`, not a
+purpose-built token. The authority to read is the same authority; what
+SAFETY-01-FIX-1 changed is that the transmit it costs is now required as well.
 
 `PermissionSet` has no mutator. A caller cannot widen its own authority; widening
 is a host action that constructs a new set.
@@ -391,6 +501,26 @@ is a host action that constructs a new set.
 approval_id · capability (exactly one) · target
 issued_at · expires_at · issuer · single_use
 ```
+
+**Provenance is derived, never declared.** The issuer is not a field a caller
+fills in — the kernel decides it from the identity that is granting:
+
+```text
+CallerKind.HUMAN_UI  →  ApprovalIssuer.HUMAN_OPERATOR
+CallerKind.SYSTEM    →  ApprovalIssuer.HOST_SYSTEM
+```
+
+A caller requests an approval with an `ApprovalSpec`, which has **no issuer field
+at all**. The absence of the field is the control (invariant S16): a parameter
+that does not exist cannot be forged, which is a stronger guarantee than a
+validator that is supposed to catch a forged one.
+
+Before SAFETY-01-FIX-1 the store checked only that the grantor *may* issue
+approvals. The host may — so a host-supplied approval labelled `HUMAN_OPERATOR`
+was stored as a human one and went on to satisfy `human_issuer_required`. The
+label was doing the work of a credential. Now `ApprovalStore.grant` independently
+refuses a label that does not match its grantor, and the kernel refuses anything
+that is not an `ApprovalSpec`.
 
 Default model:
 
@@ -432,25 +562,41 @@ Both verdicts are recorded — the refusals are the part of the trail that shows
 the kernel was working. So are the actions that move authority.
 
 ```text
-timestamp · caller kind · caller name
+timestamp · caller kind · caller name (bounded label)
 operation id · operation class · risk level
 device / channel / target address
-decision · reason code · message · detail
-approval reference · parameters digest
+decision · reason code · message (kernel text) · detail (kernel coordinates)
+approval reference · parameters digest · reason digest
 arm state · arm scope expired · emergency stop engaged
 outcome
 ```
 
-**The event shape cannot carry a secret.** Every field is a declared scalar, enum
-value or digest; there is no dict catch-all and no free-text slot. Operation
-parameters are exactly where a security-access key, seed, token or unlock payload
-would travel, and this shape was frozen before any such operation exists.
+**The event shape cannot carry a secret** — and since SAFETY-01-FIX-1 that is a
+property rather than a claim. The event once had three free-text slots
+(`caller_name`, `message`, `detail`) while this document described it as having
+none; an operator reason travelled through two of them verbatim. The correction
+(invariant S19):
+
+```text
+caller_name      a bounded label: ≤64 chars of [A-Za-z0-9._:-], refused otherwise
+message          kernel text — a fixed sentence per action, never caller input
+detail           kernel-rendered coordinates (enums, numbers, coordinates)
+reason_digest    sha256 of an operator reason; the reason text is not stored
+*_digest         sha256 of a parameter bag; the parameters are not stored
+```
+
+A reason is still attributable — the same reason always hashes the same way, so
+two records can be matched, and a reason can be confirmed after the fact by
+whoever already knows it — without the trail ever holding it. Operation parameters
+are exactly where a security-access key, seed, token or unlock payload would
+travel, and this shape was frozen before any such operation exists.
 
 Rules for any future extension of the trail:
 
 ```text
 never record credentials, security keys, auth tokens or seed material;
 never record raw operation parameters — record a digest;
+never record an operator reason as text — record reason_digest;
 never add a free-text field a future caller could fill with a payload;
 record ALLOW and DENY, never only the operations that proceeded;
 never let a sink failure turn into a silent absence of a record.
@@ -602,6 +748,14 @@ R7   An expired or lapsed authority is no authority, not a stale one
 R8   A non-finite clock reading expires authority rather than extending it
 R9   An unrecordable decision is not returned
 R10  A cancellation that could not be confirmed is reported
+R11  A read that transmits needs transmission authority (S15): semantic effect
+     risk never substitutes for the capability the execution costs
+R12  A provenance label that does not match its source is refused (S16)
+R13  A failed audit rolls authority back — downwards only (S17). A reduction
+     that could not be recorded stands; a grant that could not be recorded does
+     not
+R14  A dangerous grant without a finite expiry cannot be constructed (S18)
+R15  Caller-controlled text does not reach the trail (S19)
 ```
 
 R8 deserves its own line because it is the least obvious. `NaN` compares false
@@ -761,3 +915,131 @@ this document              what the safety boundary IS, frozen
 If the code and an invariant here disagree, the code is wrong. If a new need and
 an invariant disagree, this document and `SPEC.md` change first — deliberately,
 in the open — and then the code.
+
+---
+
+## 24. Acceptance remediation (SAFETY-01-FIX-1)
+
+SAFETY-01's first independent review returned **NOT PASS**:
+
+```text
+Final Acceptance: NOT PASS
+Status: AWAITING FIX
+
+P0 = 3
+P1 = 2
+P2 = 1
+```
+
+All six findings were correct. Each is recorded here with what it was, why the
+model could not hold it, and what now does. S1–S14 were not weakened; S15–S19
+were added for the properties the review found missing.
+
+### P0-1 — READ effect and physical TX authority were conflated
+
+The model was `operation → risk → exactly one capability`, which cannot express an
+operation that **observes** and still **transmits**. `diagnostic.read` landed on
+`Capability.READ` alone, so a future would have been free to let it ride the
+low-risk automatic path — past the ARM state, the `CAN_TX` grant and the audit
+trail that every other real transmission crosses.
+
+Fixed by splitting the axes (§6): `OperationPolicy` carries `effect_risk` and
+`required_capabilities` separately, the chain checks **every** required
+capability, and `requires_arm` is true for anything dangerous *or* transmitting.
+`ToolDefinition.required_capabilities` replaced the agent registry's permission
+strings, and `ToolExecutor` refuses any tool whose set contains `CAN_TX` —
+whatever its effect risk says.
+
+```text
+RED    5 failed / 19 passed   diagnostic.read returned ALLOW without CAN_TX,
+                              while DISARMED, and outside the arm scope
+GREEN  24 passed
+```
+
+### P0-2 — Approval provenance could be forged
+
+`Approval.issuer` was carried by the approval payload, and `ApprovalStore.grant`
+checked only that the grantor *may* issue approvals — never that the label matched
+the grantor. The host system could therefore hand over an approval labelled
+`HUMAN_OPERATOR`, have it stored as a human one, and satisfy
+`human_issuer_required` for actuation, ECU mutation and critical operations.
+
+Fixed by deriving provenance instead of accepting it (§11): `ApprovalSpec` has no
+issuer field, `issuer_for` maps the caller kind to the issuer, and the store
+independently refuses a mismatch.
+
+```text
+RED    probe: caller=system, payload issuer=human.operator
+              → ACCEPTED - stored issuer = human.operator
+GREEN  probe: → REFUSED (safety.approval_provenance)
+```
+
+### P0-3 — Authority could survive a failed audit
+
+`arm`, `confirm_arm`, `grant_approval` and `release_emergency_stop` all mutated
+authority and *then* wrote the trail. A sink failure raised `SafetyAuditError`
+while the authority stayed changed: the operation looked failed and its effect
+survived, leaving the runtime holding authority no record accounted for.
+
+Fixed by `_record_or_rollback` (§17, invariant S17): the mutation commits, the
+audit is written, and a failure rolls the authority back — always to a *reducing*
+action, so a rollback can never itself create authority. A failed `confirm_arm`
+lands on `DISARMED` rather than back on `ARMING`, so a confirmation nobody saw
+cannot be completed by the next caller. The reducing operations (disarm, engage,
+revoke) are deliberately not wrapped: for them the authority is already gone and
+undoing it would be the failure rather than the fix.
+
+```text
+RED    6 failed / 4 passed   an armed state, a granted approval and a released
+                             stop all survived their own failed audit
+GREEN  10 passed
+```
+
+### P1-1 — The audit trail still had caller-controlled text
+
+This document claimed the event "cannot carry a secret" while three fields could:
+`caller_name`; `message`, which carried `disarm(reason=…)` and
+`engage_emergency_stop(reason=…)` verbatim; and `detail`, which rendered
+`EmergencyStopState.reason`. A stop reason is exactly where a token ends up.
+
+Fixed by removing the text rather than the claim (§12, invariant S19):
+`reason_digest` replaces raw reasons, a control event's `message` is kernel text,
+and `CallerIdentity.name` is bounded to a label alphabet and length.
+
+```text
+RED    13 failed / 2 passed
+GREEN  15 passed
+```
+
+### P1-2 — The dangerous-permission expiry contract was documentation only
+
+`PermissionGrant`'s docstring said dangerous grants were "deliberately not
+optional" and that "policy enforces that distinction"; policy had no such check. A
+`CAN_TX` grant could exist with `expires_at=None` — an authority to transmit that
+outlives the reason it was issued.
+
+Fixed by enforcing it at construction (§11, invariant S18), where a grant that
+cannot be built cannot be handed to a consumer that forgot to ask.
+
+```text
+RED    10 failed / 6 passed
+GREEN  16 passed
+```
+
+### P2-1 — PR handoff metadata was stale
+
+The pull request body described the head commit from before the last push. It is
+regenerated from the live GitHub state rather than from memory.
+
+### What the remediation did not change
+
+```text
+S1–S14      unchanged, and none weakened
+tests       none deleted, skipped or loosened
+ci.yml      untouched
+ruleset     untouched
+TX / UDS    still absent — the boundary is enforced; no capability was added
+```
+
+The five properties the review was reasoning about are now frozen as S15–S19, and
+each is asserted by tests rather than by this document.

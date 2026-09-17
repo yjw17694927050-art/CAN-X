@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation implemented and self-verified — awaiting independent acceptance, see §17)
+> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediation complete, awaiting independent re-acceptance, see §17)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -226,7 +226,9 @@ Maintenance CI-02 — Protected Integration Gate Foundation
   no product scope change
 
 Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
-  Implementation complete · self-verification complete · Awaiting independent acceptance
+  Implementation complete · remediation complete · Awaiting independent re-acceptance
+  First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — all six fixed by
+  SAFETY-01-FIX-1; the first verdict is preserved in §17.
   Adds runtime/canx/safety/ and docs/architecture/SAFETY_ARCHITECTURE.md —
   safety domain, policy, contracts and tests only. It introduces no dangerous
   execution capability. See §17.
@@ -751,8 +753,9 @@ Maintenance CI-02 — Protected Integration Gate Foundation   (not a numbered ph
 
 Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Implementation complete
-          Self-verification complete
-          AWAITING INDEPENDENT ACCEPTANCE
+          Remediation complete (SAFETY-01-FIX-1)
+          AWAITING INDEPENDENT RE-ACCEPTANCE
+          First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — preserved in §17
           Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
 ```
 
@@ -986,7 +989,8 @@ not product code.
 Level 1  Local Automated Verification          DONE
 Level 2  Repository Continuous Integration     DONE
 Level 3  Protected Integration Workflow        DONE
-Safety Foundation (SAFETY-01)                  IMPLEMENTED · AWAITING INDEPENDENT ACCEPTANCE
+Safety Foundation (SAFETY-01)                  IMPLEMENTED · REMEDIATED ·
+                                               AWAITING INDEPENDENT RE-ACCEPTANCE
 Level 4  Multi-Agent Orchestration             NOT STARTED
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
@@ -1005,8 +1009,27 @@ SAFETY-01 is the safety foundation that had to exist **before** CAN-X gains any
 capability that can change a vehicle. It is not a numbered product phase, and it
 adds no product capability.
 
-**Status: implementation complete · self-verification complete · AWAITING INDEPENDENT
-ACCEPTANCE.** The development agent did not write a `Final Acceptance: PASS` for this work.
+```text
+Initial independent acceptance:
+Project-owner / independent reviewer
+
+Final Acceptance: NOT PASS
+Status: AWAITING FIX
+
+P0 = 3
+P1 = 2
+P2 = 1
+```
+
+All six findings were correct. SAFETY-01-FIX-1 remediated them (§17.8 below). The
+first `NOT PASS` is kept rather than replaced — it is the record of what the review
+found, and the phase is judged on the tree that exists now, not on the one that was
+submitted.
+
+**Status: implementation complete · remediation complete · self-verification
+complete · AWAITING INDEPENDENT RE-ACCEPTANCE.** The development agent did not write
+a `Final Acceptance: PASS` for this work at any point — not on the first submission,
+and not after the remediation.
 
 ### 17.1 The question it answers
 
@@ -1144,5 +1167,52 @@ device lifecycle events driving auto-disarm
 a cross-platform CI matrix (macOS / Linux remain NOT VERIFIED)
 CI-02's two non-blocking P2 items (§9) — untouched by SAFETY-01
 ```
+
+### 17.8 Remediation (SAFETY-01-FIX-1)
+
+The first independent review found six defects. All were real, and each is
+recorded in `docs/architecture/SAFETY_ARCHITECTURE.md` §24 with its RED → GREEN
+evidence.
+
+```text
+P0-1  READ effect risk and physical TX authority were conflated
+      diagnostic.read landed on Capability.READ alone, so a future could have let
+      it bypass the ARM state, the CAN_TX grant and the audit trail
+      → effect risk and required capabilities split into two axes (S15)
+
+P0-2  Approval provenance could be forged
+      the issuer was carried by the approval payload and the store checked only
+      that the grantor may issue approvals, never that the label matched it, so
+      the host could speak as the operator
+      → ApprovalSpec has no issuer field; issuer_for derives it; the store
+        independently checks the match (S16)
+
+P0-3  Authority could survive a failed audit
+      arm / confirm / grant / e-stop release mutated authority before writing the
+      trail, so a sink failure left authority that no record accounted for
+      → _record_or_rollback, rolling back to a reducing action only (S17)
+
+P1-1  The audit trail still had caller-controlled text
+      caller_name; message, which carried the operator's reason verbatim; and
+      detail, which rendered the emergency stop's reason
+      → reason_digest replaces raw reasons; a control event's message is kernel
+        text; caller_name is a bounded label (S19)
+
+P1-2  The dangerous-permission expiry contract was documentation only
+      PermissionGrant allowed expires_at=None while its docstring claimed policy
+      enforced otherwise, and policy had no such check
+      → enforced at construction, where a grant that cannot be built cannot be
+        handed to a consumer that forgot to ask (S18)
+
+P2-1  The PR handoff metadata was stale
+      → regenerated from live GitHub state
+```
+
+The remediation added S15–S19 to the frozen invariant set, replaced
+`ToolDefinition.permissions` (strings) with `ToolDefinition.required_capabilities`
+(typed, and checked for vehicle transmission authority), and touched no CI
+configuration, no ruleset and no test in a weakening direction. It introduced
+**no** dangerous capability: still no TX, no replay send, no injection, no
+diagnostic request, no ECU mutation, no new endpoint and no new UI control.
 
 SAFETY-01 stops here. It does **not** start AGENT-01, AGENT-02, CD-01 or V0.3-12.

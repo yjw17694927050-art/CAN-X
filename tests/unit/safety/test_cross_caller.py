@@ -28,12 +28,12 @@ from safety_builders import (
     OPERATOR,
     SCRIPT,
     MovableClock,
-    approval,
     armed_kernel,
     kernel,
     permissions,
     request,
     scope,
+    spec,
 )
 
 
@@ -64,7 +64,7 @@ def test_a_dangerous_operation_with_every_authority_is_allowed_for_every_caller(
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     decision = safety.evaluate(
@@ -123,7 +123,7 @@ def test_a_machine_caller_cannot_confirm_an_arm(caller: object) -> None:
 def test_a_machine_caller_cannot_issue_an_approval(caller: object) -> None:
     safety = kernel()
     with pytest.raises(SafetyCallerError):
-        safety.grant_approval(approval(), granted_by=caller)  # type: ignore[arg-type]
+        safety.grant_approval(spec(), granted_by=caller)  # type: ignore[arg-type]
     assert safety.approvals.outstanding() == ()
 
 
@@ -139,7 +139,7 @@ def test_an_agent_cannot_self_approve_then_spend_its_own_approval() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     with pytest.raises(SafetyCallerError):
-        safety.grant_approval(approval(), granted_by=AGENT)
+        safety.grant_approval(spec(), granted_by=AGENT)
     decision = safety.evaluate(request(DANGEROUS, caller=AGENT, approval_id="appr-1"))
     assert decision.denied
     assert decision.reason_code is SafetyReason.APPROVAL_INVALID

@@ -46,7 +46,13 @@ from canx.safety.errors import (
 )
 from canx.safety.operation import OperationRequest
 from canx.safety.permission import PermissionSet
-from canx.safety.risk import Capability, RiskLevel, classify_operation, required_capability
+from canx.safety.risk import (
+    DANGEROUS_CAPABILITIES,
+    Capability,
+    OperationPolicy,
+    RiskLevel,
+    operation_policy,
+)
 from canx.safety.scope import ArmScope
 
 
@@ -215,44 +221,47 @@ class SafetyPolicy:
         rule can fall through into an ``ALLOW`` by forgetting a return. The
         single ``ALLOW`` is the last statement of the chain.
         """
-        risk = self._classify(request)
+        policy = self._operation_policy(request)
         self._require_known_caller(request)
-        capability = required_capability(risk)
+        effect_risk = policy.effect_risk
 
-        if not risk.is_dangerous:
-            # The three levels below the boundary are authorised by their
-            # capability alone. No arm state, no approval: they observe the
-            # project or compute from it.
-            self._require_permission(capability, risk, request, context)
-            return allow(risk_level=risk)
-
-        # Emergency stop comes before the arm state on purpose. A stop that has
-        # engaged has already disarmed, so the arm check would refuse too — but
-        # it would refuse with "not armed", which names the wrong cause and
-        # would send an operator looking at the arm state instead of at the stop
-        # they pulled.
-        if context.emergency_stop_engaged:
-            raise _Refusal(
-                deny(
-                    SafetyReason.EMERGENCY_STOP,
-                    "The global emergency stop is engaged; no dangerous operation is authorised.",
-                    risk_level=risk,
-                    required_conditions=("emergency_stop_released",),
+        if policy.requires_arm:
+            # Emergency stop comes before the arm state on purpose. A stop that
+            # has engaged has already disarmed, so the arm check would refuse
+            # too — but it would refuse with "not armed", which names the wrong
+            # cause and would send an operator looking at the arm state instead
+            # of at the stop they pulled.
+            if context.emergency_stop_engaged:
+                raise _Refusal(
+                    deny(
+                        SafetyReason.EMERGENCY_STOP,
+                        "The global emergency stop is engaged; no vehicle operation is authorised.",
+                        risk_level=effect_risk,
+                        required_conditions=("emergency_stop_released",),
+                    )
                 )
-            )
+            self._require_arm(policy, request, context)
 
-        self._require_arm(capability, risk, request, context)
-        self._require_permission(capability, risk, request, context)
-        self._require_approval(capability, risk, request, context)
-        return allow(risk_level=risk)
+        self._require_permissions(policy, request, context)
+
+        if effect_risk.is_dangerous:
+            self._require_approval(policy, request, context)
+
+        return allow(risk_level=effect_risk)
 
     # -- Chain rules ------------------------------------------------------
 
     @staticmethod
-    def _classify(request: OperationRequest) -> RiskLevel:
-        """Return the operation's risk level, refusing an unclassifiable one."""
+    def _operation_policy(request: OperationRequest) -> OperationPolicy:
+        """Return the operation's policy, refusing an unclassifiable operation.
+
+        The policy carries both answers — the effect risk and the authority
+        executing the operation costs — and the chain below uses each where it
+        belongs. A caller that could supply its own answers could declare a
+        diagnostic read to be free of ``CAN_TX``.
+        """
         try:
-            return classify_operation(request.operation_class)
+            return operation_policy(request.operation_class)
         except SafetyUnknownOperationError as error:
             raise _Refusal(
                 deny(
@@ -285,12 +294,16 @@ class SafetyPolicy:
 
     @staticmethod
     def _require_arm(
-        capability: Capability,
-        risk: RiskLevel,
+        policy: OperationPolicy,
         request: OperationRequest,
         context: SafetyContext,
     ) -> None:
-        """Refuse unless the runtime is armed and its scope reaches this operation."""
+        """Refuse unless the runtime is armed and its scope reaches everything.
+
+        Every required capability is checked, not just the effect capability: a
+        scope armed for ``READ`` but not for ``CAN_TX`` must not authorise a
+        diagnostic read, because the operation would transmit.
+        """
         if context.arm_state is not ArmState.ARMED or context.arm_scope is None:
             # ``arm_scope`` is None when the state is not ARMED *or* when the
             # scope has lapsed. Both mean the same thing to a caller: there is
@@ -299,47 +312,73 @@ class SafetyPolicy:
                 deny(
                     SafetyReason.NOT_ARMED,
                     "The runtime is not armed for this operation.",
-                    risk_level=risk,
+                    risk_level=policy.effect_risk,
                     required_conditions=("runtime_armed",),
                 )
             )
-        if not context.arm_scope.covers(capability, request.target, context.now):
+        uncovered = _uncovered_by_arm_scope(policy, request, context)
+        if uncovered:
             raise _Refusal(
                 deny(
                     SafetyReason.SCOPE_VIOLATION,
-                    "The arm scope does not cover this capability at this target.",
-                    risk_level=risk,
-                    required_conditions=("arm_scope_covers_operation",),
+                    "The arm scope does not cover "
+                    f"{', '.join(capability.value for capability in uncovered)} at this target.",
+                    risk_level=policy.effect_risk,
+                    required_conditions=tuple(
+                        f"arm_scope:{capability.value}" for capability in uncovered
+                    ),
                 )
             )
 
     @staticmethod
-    def _require_permission(
-        capability: Capability,
-        risk: RiskLevel,
+    def _require_permissions(
+        policy: OperationPolicy,
         request: OperationRequest,
         context: SafetyContext,
     ) -> None:
-        """Refuse unless the session holds a capability grant that reaches the target."""
-        if not context.permissions.covers(capability, request.target, context.now):
+        """Refuse unless the session holds every capability the operation requires.
+
+        All of them, not the most permissive one. Holding ``READ`` is not
+        permission to transmit, and holding ``CAN_TX`` is not permission to read.
+        """
+        missing = tuple(
+            sorted(
+                (
+                    capability
+                    for capability in policy.required_capabilities
+                    if not context.permissions.covers(capability, request.target, context.now)
+                ),
+                key=_capability_order,
+            )
+        )
+        if missing:
             raise _Refusal(
                 deny(
                     SafetyReason.PERMISSION_DENIED,
-                    f"The session holds no {capability.value} grant for this target.",
-                    risk_level=risk,
-                    required_conditions=(f"permission:{capability.value}",),
+                    "The session holds no grant for "
+                    f"{', '.join(capability.value for capability in missing)} at this target.",
+                    risk_level=policy.effect_risk,
+                    required_conditions=tuple(
+                        f"permission:{capability.value}" for capability in missing
+                    ),
                 )
             )
 
     def _require_approval(
         self,
-        capability: Capability,
-        risk: RiskLevel,
+        policy: OperationPolicy,
         request: OperationRequest,
         context: SafetyContext,
     ) -> None:
-        """Refuse unless a suitable approval is presented, and consume it."""
-        requirement = self.approval_requirement(risk)
+        """Refuse unless a suitable approval is presented, and consume it.
+
+        The approval is asked to name the operation's **effect capability**, not
+        its full authority: an operator approves "read this diagnostic" or
+        "change this ECU state", while the standing ``CAN_TX`` grant is what
+        makes transmitting possible at all. Both are still checked — this method
+        only decides which of them the approval is about.
+        """
+        requirement = self.approval_requirement(policy.effect_risk)
         if not requirement.required:
             return
         if request.approval_id is None:
@@ -347,14 +386,16 @@ class SafetyPolicy:
                 deny(
                     SafetyReason.APPROVAL_REQUIRED,
                     "This operation requires an approval and none was presented.",
-                    risk_level=risk,
+                    risk_level=policy.effect_risk,
                     required_conditions=("approval",),
                 )
             )
         try:
             context.approvals.consume(
                 request.approval_id,
-                check=self._approval_check(capability, requirement, request, context),
+                check=self._approval_check(
+                    policy.effect_capability, requirement, request, context
+                ),
             )
         except SafetyApprovalExpiredError as error:
             # Most specific first: both of these are SafetyApprovalError
@@ -365,7 +406,7 @@ class SafetyPolicy:
                 deny(
                     SafetyReason.APPROVAL_EXPIRED,
                     "The approval expired before this operation was requested.",
-                    risk_level=risk,
+                    risk_level=policy.effect_risk,
                     required_conditions=("approval_valid",),
                 )
             ) from error
@@ -374,7 +415,7 @@ class SafetyPolicy:
                 deny(
                     SafetyReason.APPROVAL_REUSED,
                     "This approval has already been consumed by an earlier operation.",
-                    risk_level=risk,
+                    risk_level=policy.effect_risk,
                     required_conditions=("unspent_approval",),
                 )
             ) from error
@@ -383,7 +424,7 @@ class SafetyPolicy:
                 deny(
                     SafetyReason.SCOPE_VIOLATION,
                     "The approval does not cover exactly this operation's target.",
-                    risk_level=risk,
+                    risk_level=policy.effect_risk,
                     required_conditions=("approval_covers_operation",),
                 )
             ) from error
@@ -395,7 +436,7 @@ class SafetyPolicy:
                 deny(
                     SafetyReason.APPROVAL_INVALID,
                     "The presented approval does not authorise this operation.",
-                    risk_level=risk,
+                    risk_level=policy.effect_risk,
                     required_conditions=("approval_valid",),
                 )
             ) from error
@@ -469,6 +510,44 @@ class SafetyPolicy:
                 )
 
         return check
+
+
+def _capability_order(capability: Capability) -> str:
+    """Sort key for capabilities, so refusal reports are stable across runs."""
+    return capability.value
+
+
+def _uncovered_by_arm_scope(
+    policy: OperationPolicy,
+    request: OperationRequest,
+    context: SafetyContext,
+) -> tuple[Capability, ...]:
+    """Return the required **vehicle** capabilities the arm scope does not reach.
+
+    Only the vehicle capabilities are compared here, not the whole required set.
+    Arming is a statement about what may be done *to the vehicle*; requiring an
+    arm scope to also list ``READ`` would turn "may we touch the bus?" into "may
+    we read data?", which is the standing permission's question, checked
+    separately and unconditionally (SAFETY-01-FIX-1, P0-1).
+
+    A diagnostic read therefore needs ``CAN_TX`` inside the arm scope — because
+    that is the vehicle capability it uses — and needs ``READ`` in the permission
+    set, because that is who may read.
+    """
+    vehicle_capabilities = policy.required_capabilities & DANGEROUS_CAPABILITIES
+    scope = context.arm_scope
+    if scope is None:  # pragma: no cover - the caller checks the state first
+        return tuple(sorted(vehicle_capabilities, key=_capability_order))
+    return tuple(
+        sorted(
+            (
+                capability
+                for capability in vehicle_capabilities
+                if not scope.covers(capability, request.target, context.now)
+            ),
+            key=_capability_order,
+        )
+    )
 
 
 class _Refusal(Exception):

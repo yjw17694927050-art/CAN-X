@@ -21,11 +21,12 @@ can be inferred from another.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from canx.safety.errors import SafetyScopeError
-from canx.safety.risk import Capability
+from canx.safety.risk import DANGEROUS_CAPABILITIES, Capability
 from canx.safety.scope import OperationTarget, has_lapsed
 
 
@@ -33,12 +34,25 @@ from canx.safety.scope import OperationTarget, has_lapsed
 class PermissionGrant:
     """One bounded capability grant held for a runtime session.
 
-    ``target`` scopes where the capabilities reach. ``expires_at`` is optional
-    because a session-scoped read grant reasonably lasts as long as the session;
-    it is deliberately *not* optional for the dangerous capabilities, where a
-    grant without an expiry would outlive the reason it was issued — policy
-    enforces that distinction rather than this dataclass, so the reason is
-    visible where it is decided.
+    ``target`` scopes where the capabilities reach. ``expires_at`` is optional —
+    but only for the safe capabilities. A grant that opens **any** dangerous
+    capability must carry a finite expiry (invariant S18), and that rule is
+    enforced here, at construction, rather than in a policy that might forget to
+    ask:
+
+```text
+PermissionGrant({READ})                      valid, unbounded
+PermissionGrant({CAN_TX}, expires_at=None)   refused
+PermissionGrant({READ, CAN_TX}, expires_at=None)  refused — dangerous as a whole
+```
+
+    A grant that cannot be constructed cannot be handed to a consumer that does
+    not check. A rule that lives only in its consumer is a rule the next consumer
+    does not have.
+
+    The caller that wants an unbounded read grant and a temporary transmit grant
+    should hold two grants, which is also the more honest description of what it
+    has.
     """
 
     capabilities: frozenset[Capability]
@@ -56,6 +70,22 @@ class PermissionGrant:
                 "A permission grant's capabilities must be an immutable set.",
                 details={"type": type(self.capabilities).__name__},
             )
+        dangerous = self.capabilities & DANGEROUS_CAPABILITIES
+        if dangerous:
+            if self.expires_at is None:
+                raise SafetyScopeError(
+                    "A grant that opens a dangerous capability must be bounded by an expiry.",
+                    details={
+                        "dangerous_capabilities": sorted(
+                            capability.value for capability in dangerous
+                        )
+                    },
+                )
+            if not math.isfinite(self.expires_at):
+                raise SafetyScopeError(
+                    "A dangerous capability grant must expire at a finite instant.",
+                    details={"expires_at": repr(self.expires_at)},
+                )
 
     def covers(self, capability: Capability, target: OperationTarget, now: float) -> bool:
         """Whether this grant authorises ``capability`` at ``target`` right now."""

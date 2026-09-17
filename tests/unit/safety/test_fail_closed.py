@@ -26,11 +26,11 @@ from safety_builders import (
     OPERATOR,
     SAFE,
     MovableClock,
-    approval,
     armed_kernel,
     kernel,
     permissions,
     request,
+    spec,
 )
 
 
@@ -41,7 +41,7 @@ def test_a_non_finite_clock_reading_disarms_rather_than_preserving_the_arm() -> 
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     assert (
@@ -59,7 +59,7 @@ def test_a_non_finite_clock_reading_expires_an_approval() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     clock.set(float("inf"))

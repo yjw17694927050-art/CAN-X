@@ -104,7 +104,9 @@ def test_only_an_authority_bearing_caller_may_issue_an_approval() -> None:
         with pytest.raises(SafetyCallerError):
             store.grant(approval(), granted_by=machine)
     store.grant(approval(), granted_by=OPERATOR)
-    store.grant(approval(approval_id="appr-2"), granted_by=HOST)
+    # The host issues host approvals: its provenance is its own, not the
+    # operator's (invariant S16).
+    store.grant(approval(approval_id="appr-2", issuer=ApprovalIssuer.HOST_SYSTEM), granted_by=HOST)
     assert len(store.outstanding()) == 2
 
 

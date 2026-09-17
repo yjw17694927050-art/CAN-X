@@ -62,13 +62,22 @@ import time
 import uuid
 from collections.abc import Callable
 
-from canx.safety.approval import Approval, ApprovalStore
+from canx.safety.approval import Approval, ApprovalSpec, ApprovalStore, issuer_for
 from canx.safety.arm import ArmController, ArmState
-from canx.safety.audit import InMemoryAuditSink, SafetyAuditEvent, SafetyAuditSink
+from canx.safety.audit import (
+    InMemoryAuditSink,
+    SafetyAuditEvent,
+    SafetyAuditSink,
+    digest_reason,
+)
 from canx.safety.caller import CallerIdentity
 from canx.safety.decision import PolicyDecision, SafetyReason
 from canx.safety.emergency import EmergencyStopController, EmergencyStopState, OperationCanceller
-from canx.safety.errors import SafetyAuditError, SafetyCallerError
+from canx.safety.errors import (
+    SafetyApprovalProvenanceError,
+    SafetyAuditError,
+    SafetyCallerError,
+)
 from canx.safety.operation import OperationRequest
 from canx.safety.permission import PermissionSet
 from canx.safety.policy import SafetyContext, SafetyPolicy
@@ -148,12 +157,15 @@ class SafetyKernel:
         self._require_arm_authority(caller)
         with self._lock:
             state = self._arm.request(scope)
-            self._record_control(
-                action="arm.requested",
-                caller=caller,
-                reason_code=SafetyReason.ALLOWED,
-                message="Arming was requested with a bounded scope.",
-                detail=_render(scope.describe()),
+            self._record_or_rollback(
+                record=lambda: self._record_control(
+                    action="arm.requested",
+                    caller=caller,
+                    reason_code=SafetyReason.ALLOWED,
+                    message="Arming was requested with a bounded scope.",
+                    detail=_render(scope.describe()),
+                ),
+                rollback=self._arm.disarm,
             )
             return state
 
@@ -168,12 +180,15 @@ class SafetyKernel:
         self._require_arm_authority(caller)
         with self._lock:
             state = self._arm.confirm()
-            self._record_control(
-                action="arm.confirmed",
-                caller=caller,
-                reason_code=SafetyReason.ALLOWED,
-                message="The runtime is armed within its scope.",
-                detail=None,
+            self._record_or_rollback(
+                record=lambda: self._record_control(
+                    action="arm.confirmed",
+                    caller=caller,
+                    reason_code=SafetyReason.ALLOWED,
+                    message="The runtime is armed within its scope.",
+                    detail=None,
+                ),
+                rollback=self._arm.disarm,
             )
             return state
 
@@ -191,8 +206,9 @@ class SafetyKernel:
                 action="disarm",
                 caller=caller,
                 reason_code=SafetyReason.NOT_ARMED,
-                message=reason,
+                message="The runtime was disarmed.",
                 detail=None,
+                reason_digest=digest_reason(reason),
             )
             return state
 
@@ -208,22 +224,62 @@ class SafetyKernel:
         """
         return self._approvals
 
-    def grant_approval(self, approval: Approval, *, granted_by: CallerIdentity) -> None:
-        """Record an approval supplied by an authority-bearing caller.
+    def grant_approval(self, spec: ApprovalSpec, *, granted_by: CallerIdentity) -> Approval:
+        """Record an approval for ``spec``, with provenance derived from ``granted_by``.
+
+        The caller describes **what** it wants authorised; the kernel decides
+        **who** is authorising it, from the identity the rest of the runtime
+        already trusts for arm control and audit attribution. There is no
+        parameter through which a caller could claim a provenance that is not
+        its own (invariant S16).
+
+        Returns:
+            The stored approval, including the provenance the kernel assigned.
 
         Raises:
             SafetyCallerError: ``granted_by`` is an Agent, script or automation
                 rule (invariant S4).
+            SafetyApprovalProvenanceError: ``granted_by`` carries no provenance,
+                or the request is not an :class:`ApprovalSpec`.
         """
-        with self._lock:
-            self._approvals.grant(approval, granted_by=granted_by)
-            self._record_control(
-                action="approval.granted",
-                caller=granted_by,
-                reason_code=SafetyReason.ALLOWED,
-                message="An approval was recorded for this session.",
-                detail=_render(approval.describe()),
+        if not granted_by.may_issue_approval:
+            raise SafetyCallerError(
+                "Only a human operator or the host system may issue an approval.",
+                details={"caller": str(granted_by.kind), "name": granted_by.name},
             )
+        if type(spec) is not ApprovalSpec:
+            # An ``Approval`` carries an issuer, and a caller that handed one in
+            # would reasonably expect its label to matter. It does not — the
+            # kernel derives provenance — and silently overwriting it would
+            # teach that caller something false. The shape that has no label to
+            # supply is the shape that is accepted.
+            raise SafetyApprovalProvenanceError(
+                "An approval must be requested with an ApprovalSpec; provenance is "
+                "derived from the granting caller and cannot be supplied.",
+                details={"supplied_type": type(spec).__name__},
+            )
+        with self._lock:
+            approval = Approval(
+                approval_id=spec.approval_id,
+                capability=spec.capability,
+                target=spec.target,
+                issued_at=spec.issued_at,
+                expires_at=spec.expires_at,
+                issuer=issuer_for(granted_by),
+                single_use=spec.single_use,
+            )
+            self._approvals.grant(approval, granted_by=granted_by)
+            self._record_or_rollback(
+                record=lambda: self._record_control(
+                    action="approval.granted",
+                    caller=granted_by,
+                    reason_code=SafetyReason.ALLOWED,
+                    message="An approval was recorded for this session.",
+                    detail=_render(approval.describe()),
+                ),
+                rollback=lambda: self._approvals.revoke(approval.approval_id),
+            )
+            return approval
 
     def revoke_approval(self, approval_id: str) -> bool:
         """Drop an approval. Returns whether one was held."""
@@ -282,8 +338,9 @@ class SafetyKernel:
                 action="emergency_stop.engaged",
                 caller=caller,
                 reason_code=SafetyReason.EMERGENCY_STOP,
-                message=reason,
+                message="The global emergency stop was engaged.",
                 detail=_render(state.describe()),
+                reason_digest=digest_reason(reason),
             )
             return state
 
@@ -298,13 +355,17 @@ class SafetyKernel:
         has to be re-established from scratch (invariant S8).
         """
         with self._lock:
+            before = self._emergency.state
             state = self._emergency.reset(caller=caller)
-            self._record_control(
-                action="emergency_stop.released",
-                caller=caller,
-                reason_code=SafetyReason.EMERGENCY_STOP,
-                message="The emergency stop was released.",
-                detail=None,
+            self._record_or_rollback(
+                record=lambda: self._record_control(
+                    action="emergency_stop.released",
+                    caller=caller,
+                    reason_code=SafetyReason.EMERGENCY_STOP,
+                    message="The emergency stop was released.",
+                    detail=None,
+                ),
+                rollback=lambda: self._emergency.restore_engagement(state=before),
             )
             return state
 
@@ -360,6 +421,7 @@ class SafetyKernel:
             detail=None,
             approval_id=request.approval_id,
             parameters_digest=request.parameters_digest,
+            reason_digest=None,
             arm_state=self._arm.state.value,
             arm_scope_expired=None if arm_scope is None else arm_scope.is_expired(self._clock()),
             emergency_stop_engaged=self._emergency.engaged,
@@ -375,15 +437,19 @@ class SafetyKernel:
         reason_code: SafetyReason,
         message: str,
         detail: str | None,
+        reason_digest: str | None = None,
     ) -> None:
         """Record an authority-moving control action on the same trail.
 
         Control actions share the event shape with decisions on purpose: one
         trail that reads in order is what makes "who armed this, and when did the
-        approval arrive?" answerable. The ``message`` carries the operator's
-        reason verbatim, so a stop can be explained after the fact; ``detail``
-        carries kernel-rendered scope or approval coordinates, which are
-        structured values this domain owns and never caller-supplied payloads.
+        approval arrive?" answerable.
+
+        ``message`` is **kernel text** — a fixed sentence per action. When an
+        action carries an operator's reason, the reason is passed as
+        ``reason_digest`` and the text itself is never written down (invariant
+        S19). ``detail`` carries kernel-rendered coordinates, which are structured
+        values this domain owns and never caller-supplied payloads.
         """
         event = SafetyAuditEvent(
             event_id=uuid.uuid4().hex,
@@ -402,6 +468,7 @@ class SafetyKernel:
             detail=detail,
             approval_id=None,
             parameters_digest=None,
+            reason_digest=reason_digest,
             arm_state=self._arm.state.value,
             arm_scope_expired=None,
             emergency_stop_engaged=self._emergency.engaged,
@@ -417,6 +484,38 @@ class SafetyKernel:
                 "The safety decision could not be recorded; it is not handed back.",
                 details={"operation_id": correlation},
             ) from error
+
+    @staticmethod
+    def _record_or_rollback(
+        record: Callable[[], None],
+        rollback: Callable[[], object],
+    ) -> None:
+        """Write the audit record, or undo the authority change and re-raise.
+
+        The one place this discipline is expressed, so the four
+        authority-increasing operations cannot drift into three that roll back
+        and one that does not (invariant S17):
+
+        > Audit failure may remove authority, but must never create, retain or
+        > restore unaudited authority.
+
+        Recording *before* the mutation would be the other way to satisfy the
+        invariant, but it would write down an intention rather than a fact: the
+        event's arm state, approval coordinates and emergency state all describe
+        the world after the change. Committing first and rolling back keeps the
+        record truthful and still leaves no unaudited authority.
+
+        ``rollback`` is always a *reducing* action — disarm, revoke, restore an
+        engagement — so a rollback can never itself create authority. That
+        asymmetry is why the reducing operations on this class do not come
+        through here: for them the authority is already gone, and undoing it
+        would be the failure rather than the fix.
+        """
+        try:
+            record()
+        except SafetyAuditError:
+            rollback()
+            raise
 
 
 def _render(payload: dict[str, object]) -> str:

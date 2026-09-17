@@ -15,7 +15,6 @@ classify risk → caller → ARM → permission → approval → ALLOW / DENY
 from __future__ import annotations
 
 import pytest
-from canx.safety.approval import ApprovalIssuer
 from canx.safety.arm import ArmState
 from canx.safety.decision import SafetyReason
 from canx.safety.kernel import SafetyKernel
@@ -24,14 +23,15 @@ from canx.safety.risk import Capability, OperationClass, RiskLevel
 from safety_builders import (
     AGENT,
     DANGEROUS,
+    HOST,
     OPERATOR,
     SAFE,
     MovableClock,
-    approval,
     armed_kernel,
     kernel,
     permissions,
     request,
+    spec,
     target,
 )
 
@@ -121,7 +121,7 @@ def test_armed_for_one_channel_does_not_authorise_another() -> None:
         permission_set=permissions(Capability.CAN_TX, target_=target(channel="can1")),
     )
     safety.grant_approval(
-        approval(
+        spec(
             capability=Capability.CAN_TX,
             target_=target(channel="can2"),
             issued_at=clock(),
@@ -140,7 +140,7 @@ def test_disarming_invalidates_the_ability_to_run_dangerous_work() -> None:
     clock = MovableClock()
     safety = armed_kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
     safety.grant_approval(
-        approval(issued_at=clock(), expires_at=clock() + 30), granted_by=OPERATOR
+        spec(issued_at=clock(), expires_at=clock() + 30), granted_by=OPERATOR
     )
     assert safety.evaluate(
         request(DANGEROUS, caller=OPERATOR, approval_id="appr-1")
@@ -161,7 +161,7 @@ def test_a_lapsed_arm_scope_stops_authorising_work() -> None:
         permission_set=permissions(Capability.CAN_TX),
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     assert safety.evaluate(
@@ -188,7 +188,7 @@ def test_every_authority_present_is_allowed() -> None:
     clock = MovableClock()
     safety = armed_kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
     safety.grant_approval(
-        approval(issued_at=clock(), expires_at=clock() + 30), granted_by=OPERATOR
+        spec(issued_at=clock(), expires_at=clock() + 30), granted_by=OPERATOR
     )
     decision = safety.evaluate(request(DANGEROUS, caller=AGENT, approval_id="appr-1"))
     assert decision.allowed
@@ -199,7 +199,7 @@ def test_an_expired_approval_is_denied() -> None:
     clock = MovableClock()
     safety = armed_kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
     safety.grant_approval(
-        approval(issued_at=clock() - 120, expires_at=clock() - 60), granted_by=OPERATOR
+        spec(issued_at=clock() - 120, expires_at=clock() - 60), granted_by=OPERATOR
     )
     decision = safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1"))
     assert decision.denied
@@ -212,7 +212,7 @@ def test_an_approval_that_lapses_between_two_requests_stops_working() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 20),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 20),
         granted_by=OPERATOR,
     )
     assert safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1")).allowed
@@ -228,7 +228,7 @@ def test_a_reused_single_use_approval_is_denied() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=True, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=True, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     assert safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1")).allowed
@@ -248,7 +248,7 @@ def test_a_lower_risk_approval_cannot_authorise_a_higher_risk_operation() -> Non
         permission_set=permissions(Capability.READ, Capability.CAN_TX),
     )
     safety.grant_approval(
-        approval(
+        spec(
             capability=Capability.READ,
             single_use=False,
             issued_at=clock(),
@@ -278,7 +278,7 @@ def test_an_approval_that_is_not_exact_enough_is_denied() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(
+        spec(
             capability=Capability.CAN_TX,
             target_=target(channel="can1"),
             single_use=False,
@@ -301,21 +301,26 @@ def test_an_approval_that_is_not_exact_enough_is_denied() -> None:
 
 
 def test_an_actuation_approval_must_come_from_a_human() -> None:
+    """The host runtime may issue approvals; it may not issue *human* ones.
+
+    There is no issuer to set here: the kernel derives it from who is granting,
+    and a host-granted approval is a host approval (invariant S16).
+    """
     clock = MovableClock()
     safety = armed_kernel(
         clock=clock,
-        capabilities=frozenset({Capability.ACTUATION}),
+        capabilities=frozenset({Capability.CAN_TX, Capability.ACTUATION}),
         duration=600.0,
-        permission_set=permissions(Capability.ACTUATION),
+        permission_set=permissions(Capability.CAN_TX, Capability.ACTUATION),
     )
     safety.grant_approval(
-        approval(
+        spec(
             capability=Capability.ACTUATION,
-            issuer=ApprovalIssuer.HOST_SYSTEM,
+            single_use=False,
             issued_at=clock(),
-            expires_at=clock() + 30,
+            expires_at=clock() + 600,
         ),
-        granted_by=OPERATOR,
+        granted_by=HOST,
     )
     decision = safety.evaluate(
         request(OperationClass.ACTUATION, caller=OPERATOR, approval_id="appr-1")
@@ -328,12 +333,12 @@ def test_a_reusable_approval_is_denied_where_single_use_is_demanded() -> None:
     clock = MovableClock()
     safety = armed_kernel(
         clock=clock,
-        capabilities=frozenset({Capability.DIAGNOSTIC_MUTATION}),
+        capabilities=frozenset({Capability.CAN_TX, Capability.DIAGNOSTIC_MUTATION}),
         duration=600.0,
-        permission_set=permissions(Capability.DIAGNOSTIC_MUTATION),
+        permission_set=permissions(Capability.CAN_TX, Capability.DIAGNOSTIC_MUTATION),
     )
     safety.grant_approval(
-        approval(
+        spec(
             capability=Capability.DIAGNOSTIC_MUTATION,
             single_use=False,
             issued_at=clock(),

@@ -24,11 +24,11 @@ from safety_builders import (
     OPERATOR,
     SAFE,
     MovableClock,
-    approval,
     armed_kernel,
     kernel,
     permissions,
     request,
+    spec,
 )
 
 
@@ -68,7 +68,7 @@ def test_a_decision_event_carries_the_context_it_was_taken_in() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     safety.evaluate(request(DANGEROUS, caller=AGENT, approval_id="appr-1"))
@@ -135,6 +135,7 @@ def test_the_trail_is_bounded_and_reports_what_it_dropped() -> None:
                 detail=None,
                 approval_id=None,
                 parameters_digest=None,
+                reason_digest=None,
                 arm_state="disarmed",
                 arm_scope_expired=None,
                 emergency_stop_engaged=False,

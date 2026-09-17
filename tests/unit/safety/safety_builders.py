@@ -13,12 +13,13 @@ claim once per kind.
 
 from __future__ import annotations
 
-from canx.safety.approval import Approval, ApprovalIssuer
+from canx.safety.approval import Approval, ApprovalIssuer, ApprovalSpec
+from canx.safety.audit import SafetyAuditSink
 from canx.safety.caller import CallerIdentity, CallerKind
 from canx.safety.kernel import SafetyKernel
 from canx.safety.operation import OperationRequest
 from canx.safety.permission import PermissionGrant, PermissionSet
-from canx.safety.risk import Capability, OperationClass
+from canx.safety.risk import DANGEROUS_CAPABILITIES, Capability, OperationClass
 from canx.safety.scope import ArmScope, OperationTarget
 
 OPERATOR = CallerIdentity(CallerKind.HUMAN_UI, "ui.main")
@@ -115,20 +116,63 @@ def approval(
     )
 
 
+def spec(
+    *,
+    capability: Capability = Capability.CAN_TX,
+    target_: OperationTarget | None = None,
+    issued_at: float = 1_000.0,
+    expires_at: float = 1_060.0,
+    single_use: bool = True,
+    approval_id: str = "appr-1",
+) -> ApprovalSpec:
+    """Build an approval **spec** — what a caller asks for, with no provenance.
+
+    Separate from :func:`approval` on purpose. An ``Approval`` carries an issuer
+    and is only built by hand where a hand-built object is the thing under test
+    (``ApprovalStore.grant``'s provenance check). Everything that goes through
+    the kernel uses a spec, because the kernel derives the provenance and a spec
+    has no field in which to claim one (invariant S16).
+    """
+    return ApprovalSpec(
+        approval_id=approval_id,
+        capability=capability,
+        target=target_ if target_ is not None else OperationTarget(),
+        issued_at=issued_at,
+        expires_at=expires_at,
+        single_use=single_use,
+    )
+
+
+#: A window long enough to outlast any test clock movement. Used by
+#: :func:`permissions` when it has to produce a *valid* dangerous grant and the
+#: test did not ask for a specific window.
+DEFAULT_GRANT_EXPIRY = 1_000_000.0
+
+
 def permissions(
     *capabilities: Capability,
     target_: OperationTarget | None = None,
     expires_at: float | None = None,
 ) -> PermissionSet:
-    """Build a permission set holding one grant for ``capabilities``."""
+    """Build a permission set holding one grant for ``capabilities``.
+
+    A grant that opens a dangerous capability must be bounded by an expiry
+    (invariant S18), so this builder gives such a grant a bounded window when the
+    test does not ask for one. Tests that are *about* the expiry rule construct
+    ``PermissionGrant`` directly — the builder's job is to produce a valid
+    session, not to be the thing under test.
+    """
     if not capabilities:
         return PermissionSet()
+    resolved = expires_at
+    if resolved is None and frozenset(capabilities) & DANGEROUS_CAPABILITIES:
+        resolved = DEFAULT_GRANT_EXPIRY
     return PermissionSet(
         [
             PermissionGrant(
                 capabilities=frozenset(capabilities),
                 target=target_ if target_ is not None else OperationTarget(),
-                expires_at=expires_at,
+                expires_at=resolved,
             )
         ]
     )
@@ -142,6 +186,7 @@ def request(
     operation_id: str = "op-1",
     requested_at: float = 1_000.0,
     approval_id: str | None = None,
+    parameters_digest: str | None = None,
 ) -> OperationRequest:
     """Build an operation request."""
     return OperationRequest(
@@ -151,6 +196,7 @@ def request(
         target=target_ if target_ is not None else OperationTarget(),
         requested_at=requested_at,
         approval_id=approval_id,
+        parameters_digest=parameters_digest,
     )
 
 
@@ -158,11 +204,13 @@ def kernel(
     *,
     clock: MovableClock | None = None,
     permission_set: PermissionSet | None = None,
+    audit_sink: SafetyAuditSink | None = None,
 ) -> SafetyKernel:
     """Build an unarmed kernel. Exactly what the runtime would start with."""
     return SafetyKernel(
         clock=clock if clock is not None else MovableClock(),
         permissions=permission_set,
+        audit_sink=audit_sink,
     )
 
 
@@ -173,9 +221,10 @@ def armed_kernel(
     target_: OperationTarget | None = None,
     duration: float = 60.0,
     permission_set: PermissionSet | None = None,
+    audit_sink: SafetyAuditSink | None = None,
 ) -> SafetyKernel:
     """Build a kernel that has been armed by the operator, through the real API."""
-    safety = kernel(clock=clock, permission_set=permission_set)
+    safety = kernel(clock=clock, permission_set=permission_set, audit_sink=audit_sink)
     safety.arm(
         scope(
             *capabilities,

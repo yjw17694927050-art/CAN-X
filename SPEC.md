@@ -1162,7 +1162,18 @@ Safety Kernel 是权限决策 authority，统一持有 Risk Taxonomy、Caller Mo
 ARM State、Scope、Capability-based Permission、Approval、Policy Decision、
 Audit Contract 与 Emergency Stop Contract。危险操作默认 DENY。
 
-该文档冻结的安全不变量（S1-S14）是架构条款：任何任务指令都不得绕过。
+授权由**两个互相独立的维度**共同决定，而不是单一 RiskLevel：
+
+```text
+operation effect risk      这个操作对车辆做了什么（READ / TX / ECU_MUTATION / …）
+required capabilities      执行它需要哪些 authority（一个集合，不是单值）
+```
+
+任何会在车辆总线上发帧的操作，无论 effect risk 是什么，都必须要求 `CAN_TX`。
+因此 `diagnostic.read` 的 effect risk 是 `READ`，执行 authority 仍包含 `CAN_TX`——
+不能因为"这是只读操作"而绕开真实 TX 的授权链路。
+
+该文档冻结的安全不变量（S1-S19）是架构条款：任何任务指令都不得绕过。
 SAFETY-01 只建立 domain / policy / state machine / contract / test，
 不引入任何真实 TX、replay 发送、UDS 或 ECU 变更能力——
 那些能力由后续任务的 SPEC 变更引入，并且必须经过 Safety Kernel。

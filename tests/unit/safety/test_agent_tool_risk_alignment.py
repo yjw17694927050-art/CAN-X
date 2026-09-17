@@ -23,7 +23,7 @@ from canx.agent.tools import (
     ToolRegistry,
     ToolRisk,
 )
-from canx.safety.risk import RiskLevel
+from canx.safety.risk import Capability, RiskLevel
 from pydantic import BaseModel
 
 
@@ -75,14 +75,16 @@ async def test_the_tool_executor_still_refuses_above_write_project() -> None:
             input_model=Input,
             output_model=Output,
             risk_level=ToolRisk.TX,
-            permissions=frozenset({"CAN_TX"}),
+            required_capabilities=frozenset({Capability.CAN_TX}),
             timeout_seconds=0.1,
             idempotency="idempotent",
         ),
         handler,
     )
     with pytest.raises(PermissionDeniedError):
-        await ToolExecutor(registry).execute("test.transmit", {"value": 1}, {"CAN_TX"})
+        await ToolExecutor(registry).execute(
+            "test.transmit", {"value": 1}, frozenset({Capability.CAN_TX})
+        )
 
 
 @pytest.mark.parametrize("level", list(RiskLevel))

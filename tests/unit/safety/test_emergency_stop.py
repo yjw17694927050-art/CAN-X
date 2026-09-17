@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 from canx.safety.arm import ArmState
+from canx.safety.audit import digest_reason
 from canx.safety.decision import SafetyReason
 from canx.safety.errors import SafetyCallerError
 from canx.safety.risk import Capability
@@ -31,11 +32,11 @@ from safety_builders import (
     SAFE,
     SCRIPT,
     MovableClock,
-    approval,
     armed_kernel,
     kernel,
     permissions,
     request,
+    spec,
 )
 
 
@@ -74,7 +75,7 @@ def test_engaging_the_stop_denies_new_dangerous_operations() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
@@ -95,7 +96,7 @@ def test_the_stop_survives_a_re_arm_attempt_during_the_emergency() -> None:
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
     )
     safety.grant_approval(
-        approval(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
     safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
@@ -120,7 +121,7 @@ def test_every_caller_kind_may_engage_the_stop(caller: object) -> None:
         caller=caller, reason="detected"  # type: ignore[arg-type]
     )
     assert state.engaged is True
-    assert state.reason == "detected"
+    assert state.reason_digest == digest_reason("detected")
 
 
 @pytest.mark.parametrize("caller", MACHINE_CALLERS)
@@ -177,8 +178,8 @@ def test_engaging_twice_keeps_the_first_reason_and_retries_cancellation() -> Non
     safety.register_canceller(canceller)
     first = safety.engage_emergency_stop(caller=AGENT, reason="first")
     second = safety.engage_emergency_stop(caller=AUTOMATION, reason="second")
-    assert first.reason == "first"
-    assert second.reason == "first"
+    assert first.reason_digest == digest_reason("first")
+    assert second.reason_digest == digest_reason("first")
     assert canceller.calls == ["first", "second"]
 
 
@@ -191,7 +192,8 @@ def test_the_stop_is_recorded_on_the_audit_trail() -> None:
         event for event in safety.audit_events() if event.operation_id.endswith("engaged")
     ][-1]
     assert engaged.caller_kind == "human.ui"
-    assert engaged.message == "bench smoke"
+    assert engaged.reason_digest == digest_reason("bench smoke")
+    assert "bench smoke" not in engaged.message
     assert engaged.emergency_stop_engaged is True
 
 

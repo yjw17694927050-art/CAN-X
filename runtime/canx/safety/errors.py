@@ -133,6 +133,23 @@ class SafetyApprovalReusedError(SafetyApprovalError):
         super().__init__(message, code="safety.approval_reused", details=details)
 
 
+class SafetyApprovalProvenanceError(SafetyApprovalError):
+    """Raised when an approval's declared issuer is not its source's provenance.
+
+    An approval carries a two-member issuer vocabulary so the kernel can ask "did
+    a human authorise this, or the host runtime?". If the label could be chosen
+    by whoever hands the approval over, that question has no answer and
+    ``human_issuer_required`` protects nothing.
+
+    A mismatch is therefore not a clerical error to be corrected — it is refused,
+    because a label that does not match its source is the exact shape of an
+    attempt to speak as someone else (invariant S16).
+    """
+
+    def __init__(self, message: str, *, details: dict[str, object] | None = None) -> None:
+        super().__init__(message, code="safety.approval_provenance", details=details)
+
+
 class SafetyAuditError(SafetyError):
     """Raised when a decision could not be recorded.
 

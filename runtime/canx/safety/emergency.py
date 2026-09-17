@@ -41,8 +41,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from canx.safety.audit import digest_reason
 from canx.safety.caller import CallerIdentity
-from canx.safety.errors import SafetyCallerError
+from canx.safety.errors import SafetyCallerError, SafetyStateError
 
 
 class OperationCanceller(Protocol):
@@ -61,11 +62,17 @@ class OperationCanceller(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class EmergencyStopState:
-    """A snapshot of the global emergency stop."""
+    """A snapshot of the global emergency stop.
+
+    ``reason_digest`` rather than the reason: the operator's explanation is still
+    attributable — the same reason always hashes the same way — but the trail and
+    this state never hold its text (invariant S19). A stop reason is exactly the
+    kind of field that ends up carrying a token.
+    """
 
     engaged: bool
     engaged_at: float | None = None
-    reason: str | None = None
+    reason_digest: str | None = None
     requested_cancellations: tuple[str, ...] = ()
     cancellation_failures: tuple[str, ...] = ()
 
@@ -74,7 +81,7 @@ class EmergencyStopState:
         return {
             "engaged": self.engaged,
             "engaged_at": self.engaged_at,
-            "reason": self.reason,
+            "reason_digest": self.reason_digest,
             "requested_cancellations": list(self.requested_cancellations),
             "cancellation_failures": list(self.cancellation_failures),
         }
@@ -141,7 +148,7 @@ class EmergencyStopController:
                 self._state = EmergencyStopState(
                     engaged=True,
                     engaged_at=self._clock(),
-                    reason=reason,
+                    reason_digest=digest_reason(reason),
                 )
             hook = self._disarm_hook
             cancellers = tuple(self._cancellers)
@@ -180,4 +187,28 @@ class EmergencyStopController:
             )
         with self._lock:
             self._state = EmergencyStopState(engaged=False)
+            return self._state
+
+    def restore_engagement(self, *, state: EmergencyStopState) -> EmergencyStopState:
+        """Put an engaged stop back after a release that could not be audited.
+
+        Only ever used to *undo* a release, so the snapshot handed back is always
+        an engaged one — a caller trying to use this to disengage a stop would be
+        fighting both the name and the check below.
+
+        Releasing the stop remains :meth:`reset`, which is authority-checked.
+        This method deliberately is not: it can only ever restore authority that
+        was already there, and the caller is the kernel undoing its own partial
+        work after a failed audit (invariant S17).
+
+        Raises:
+            SafetyStateError: ``state`` is not an engaged one.
+        """
+        if not state.engaged:
+            raise SafetyStateError(
+                "Only an engaged stop state can be restored.",
+                details={"engaged": state.engaged},
+            )
+        with self._lock:
+            self._state = state
             return self._state

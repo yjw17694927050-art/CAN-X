@@ -42,10 +42,13 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
+from typing import Final
 
-from canx.safety.caller import CallerIdentity
+from canx.safety.caller import CallerIdentity, CallerKind
 from canx.safety.errors import (
     SafetyApprovalError,
+    SafetyApprovalProvenanceError,
     SafetyApprovalReusedError,
     SafetyCallerError,
 )
@@ -54,21 +57,126 @@ from canx.safety.scope import OperationTarget, has_lapsed
 
 
 class ApprovalIssuer(StrEnum):
-    """Who a stored approval claims to come from.
+    """Who a stored approval came from.
 
     A closed two-member vocabulary is the point: there is no ``AGENT`` member
     for a self-approving caller to occupy, and there is no ``UNKNOWN`` member
     for a malformed record to fall into. Anything that is not one of these two
     cannot be represented, so it cannot be evaluated leniently later.
+
+    A member here is a *derived* fact, never a declared one — see
+    :func:`issuer_for` and :class:`ApprovalSpec`.
     """
 
     HUMAN_OPERATOR = "human.operator"
     HOST_SYSTEM = "host.system"
 
 
+#: The provenance each authority-bearing caller kind implies. The mapping is the
+#: only place an issuer is decided, so "who issued this approval?" has exactly
+#: one answer and it comes from the caller, never from the payload (invariant
+#: S16).
+_ISSUER_BY_CALLER_KIND: Final[MappingProxyType[CallerKind, ApprovalIssuer]] = MappingProxyType(
+    {
+        CallerKind.HUMAN_UI: ApprovalIssuer.HUMAN_OPERATOR,
+        CallerKind.SYSTEM: ApprovalIssuer.HOST_SYSTEM,
+    }
+)
+
+
+def issuer_for(caller: CallerIdentity) -> ApprovalIssuer:
+    """Return the approval provenance a caller's identity implies.
+
+    Raises:
+        SafetyApprovalProvenanceError: the caller kind carries no provenance —
+            an Agent, a script or an automation rule. There is no default to
+            fall back to: an approval whose source cannot be named is an
+            approval nobody can attribute.
+    """
+    try:
+        return _ISSUER_BY_CALLER_KIND[caller.kind]
+    except KeyError as error:
+        raise SafetyApprovalProvenanceError(
+            "This caller kind cannot supply approval provenance.",
+            details={"caller": str(caller.kind), "name": caller.name},
+        ) from error
+
+
+def _validate_approval_fields(
+    *,
+    approval_id: str,
+    capability: Capability,
+    issued_at: float,
+    expires_at: float,
+) -> None:
+    """Validate the fields an approval and an approval spec both must satisfy.
+
+    Shared so the two shapes cannot drift: a spec that accepted a window the
+    approval would reject would make the kernel's translation the only place the
+    difference showed up.
+    """
+    if not approval_id:
+        raise SafetyApprovalError(
+            "An approval must carry a non-empty identifier.",
+            details={},
+        )
+    if not (math.isfinite(issued_at) and math.isfinite(expires_at)):
+        raise SafetyApprovalError(
+            "An approval must be bounded by finite timestamps.",
+            details={"issued_at": issued_at, "expires_at": expires_at},
+        )
+    if expires_at <= issued_at:
+        raise SafetyApprovalError(
+            "An approval must expire after the moment it was issued.",
+            details={"issued_at": issued_at, "expires_at": expires_at},
+        )
+    if not isinstance(capability, Capability):
+        raise SafetyApprovalError(
+            "The approval capability is not part of the CAN-X capability vocabulary.",
+            details={"capability": str(capability)},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalSpec:
+    """What a caller asks to have approved.
+
+    Deliberately **without** an ``issuer`` field. A caller describes what it
+    wants authorised — a capability, a target, a window — and has no way to say
+    who it is in that description. The kernel derives the provenance from the
+    identity it was handed, which is the identity the rest of the runtime
+    already trusts for arm control and audit attribution.
+
+    The absence of the field is the control. A parameter that does not exist
+    cannot be forged, which is a stronger guarantee than a validator that is
+    supposed to catch a forged one.
+    """
+
+    approval_id: str
+    capability: Capability
+    target: OperationTarget
+    issued_at: float
+    expires_at: float
+    single_use: bool = True
+
+    def __post_init__(self) -> None:
+        _validate_approval_fields(
+            approval_id=self.approval_id,
+            capability=self.capability,
+            issued_at=self.issued_at,
+            expires_at=self.expires_at,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Approval:
-    """A narrow, expiring authorisation for one capability at one target."""
+    """A narrow, expiring authorisation for one capability at one target.
+
+    Built by the kernel from an :class:`ApprovalSpec` and a trusted caller
+    identity, or supplied directly to :meth:`ApprovalStore.grant`, which checks
+    the issuer against the grantor. It is never accepted on the strength of its
+    own ``issuer`` field (invariant S16).
+    """
 
     approval_id: str
     capability: Capability
@@ -79,30 +187,16 @@ class Approval:
     single_use: bool = True
 
     def __post_init__(self) -> None:
-        if not self.approval_id:
-            raise SafetyApprovalError(
-                "An approval must carry a non-empty identifier.",
-                details={},
-            )
-        if not (math.isfinite(self.issued_at) and math.isfinite(self.expires_at)):
-            raise SafetyApprovalError(
-                "An approval must be bounded by finite timestamps.",
-                details={"issued_at": self.issued_at, "expires_at": self.expires_at},
-            )
-        if self.expires_at <= self.issued_at:
-            raise SafetyApprovalError(
-                "An approval must expire after the moment it was issued.",
-                details={"issued_at": self.issued_at, "expires_at": self.expires_at},
-            )
+        _validate_approval_fields(
+            approval_id=self.approval_id,
+            capability=self.capability,
+            issued_at=self.issued_at,
+            expires_at=self.expires_at,
+        )
         if not isinstance(self.issuer, ApprovalIssuer):
             raise SafetyApprovalError(
                 "The approval issuer is not part of the CAN-X approval vocabulary.",
                 details={"issuer": type(self.issuer).__name__},
-            )
-        if not isinstance(self.capability, Capability):
-            raise SafetyApprovalError(
-                "The approval capability is not part of the CAN-X capability vocabulary.",
-                details={"capability": str(self.capability)},
             )
 
     def is_expired(self, now: float) -> bool:
@@ -181,16 +275,35 @@ class ApprovalStore:
     def grant(self, approval: Approval, *, granted_by: CallerIdentity) -> None:
         """Record an approval supplied by ``granted_by``.
 
+        The approval's own ``issuer`` must be the provenance ``granted_by``
+        implies. Checking only that the grantor *may* issue approvals was the
+        original defect: the host system may issue approvals, so a host-supplied
+        approval labelled ``HUMAN_OPERATOR`` was stored as a human one and went
+        on to satisfy ``human_issuer_required`` (invariant S16).
+
         Raises:
             SafetyCallerError: ``granted_by`` is an Agent, a script or an
                 automation rule. A machine caller cannot supply an approval, so
                 the absence of a self-approval path is enforced here rather than
                 assumed from policy.
+            SafetyApprovalProvenanceError: the declared issuer is not the
+                provenance of ``granted_by``.
         """
         if not granted_by.may_issue_approval:
             raise SafetyCallerError(
                 "Only a human operator or the host system may issue an approval.",
                 details={"caller": str(granted_by.kind), "name": granted_by.name},
+            )
+        expected = issuer_for(granted_by)
+        if approval.issuer is not expected:
+            raise SafetyApprovalProvenanceError(
+                "The approval's declared issuer is not the provenance of the caller "
+                "supplying it.",
+                details={
+                    "caller": str(granted_by.kind),
+                    "declared": approval.issuer.value,
+                    "expected": expected.value,
+                },
             )
         with self._lock:
             self._approvals[approval.approval_id] = _StoredApproval(approval)

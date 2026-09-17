@@ -24,6 +24,7 @@ restart, tamper evidence) is named here so it is not rediscovered as a surprise.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections import deque
 from collections.abc import Iterator
@@ -36,13 +37,39 @@ from typing import Protocol
 DEFAULT_AUDIT_CAPACITY = 4096
 
 
+def digest_reason(reason: str) -> str:
+    """Return the digest a safety reason is recorded as.
+
+    The reason itself never enters the trail (invariant S19). A reason field is
+    where a token, a key or an unlock payload ends up once someone is describing
+    *why* they stopped the runtime, and the trail is the one place that must
+    never be able to hold one.
+
+    The digest keeps what the reason was actually for: two records of the same
+    reason can be matched against each other, and a reason can be confirmed after
+    the fact by whoever already knows it — without the trail ever holding it.
+    """
+    return hashlib.sha256(reason.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class SafetyAuditEvent:
-    """One safety decision, recorded.
+    """One safety decision or control action, recorded.
 
-    Every field is a declared scalar, an enum value or a digest. There is
-    deliberately no field that could hold an arbitrary payload, so no caller can
-    put a secret into the trail by way of a parameter bag.
+    Every field is a declared scalar, an enum value, a bounded label or a digest.
+    No field holds text supplied by a caller (invariant S19):
+
+```text
+caller_kind     an enum member
+caller_name     a bounded label — see CallerIdentity's alphabet and length limit
+message         kernel text: a fixed sentence per action, never caller input
+detail          kernel-rendered coordinates (enums, numbers, coordinates)
+reason_digest   sha256 of an operator reason — the reason is not stored
+*_digest        sha256 of a parameter bag — the parameters are not stored
+```
+
+    ``reason_digest`` is what replaced the raw reason. It preserves attribution
+    without preserving content: the same reason always produces the same digest.
     """
 
     event_id: str
@@ -66,6 +93,7 @@ class SafetyAuditEvent:
 
     approval_id: str | None
     parameters_digest: str | None
+    reason_digest: str | None
 
     arm_state: str
     arm_scope_expired: bool | None
@@ -92,6 +120,7 @@ class SafetyAuditEvent:
             "detail": self.detail,
             "approval_id": self.approval_id,
             "parameters_digest": self.parameters_digest,
+            "reason_digest": self.reason_digest,
             "arm_state": self.arm_state,
             "arm_scope_expired": self.arm_scope_expired,
             "emergency_stop_engaged": self.emergency_stop_engaged,
