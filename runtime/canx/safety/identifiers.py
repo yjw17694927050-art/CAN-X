@@ -225,6 +225,21 @@ class ChannelId(AuditIdentifier):
     role: ClassVar[str] = "channel identifier"
 
 
+class CancellerId(AuditIdentifier):
+    """The registration identity of a subsystem the emergency stop must reach.
+
+    Added by SAFETY-01-FIX-3 (invariant S24). A canceller's identity used to be
+    ``type(canceller).__name__``, which is not a stable runtime identity: two
+    instances of one class collide, a wrapper hides the subsystem underneath, and
+    a dynamically created class can name itself free text. The id is supplied at
+    registration and validated here, so a cancellation failure names a subsystem
+    the runtime actually knows rather than a class that happened to be loaded.
+    """
+
+    __slots__ = ()
+    role: ClassVar[str] = "canceller identifier"
+
+
 class AuditEventId(AuditIdentifier):
     """The identifier of one recorded audit event. Runtime-generated."""
 

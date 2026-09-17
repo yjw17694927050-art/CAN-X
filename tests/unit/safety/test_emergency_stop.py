@@ -1,16 +1,30 @@
-"""The emergency-stop contract: one authority over every dangerous family.
+"""The emergency-stop contract: one authority, and a safety epoch boundary.
 
-SAFETY-01 §18 and invariant S13. The four steps the contract fixes are tested in
-order:
+SAFETY-01 §18 and invariants S13, S14, S22, S23, S24. The four steps the
+contract fixes are tested in order:
 
 ```text
 globally disarm → deny new dangerous operations
 → request cancellation of active dangerous operations → audit event
 ```
 
+SAFETY-01-FIX-3 found that the contract was missing its fifth property, and it is
+the one that makes the other four mean anything: a stop is an **epoch boundary**,
+not a pause. Before the fix, authority could be *pre-staged* while the stop was
+engaged — ``arm``, ``confirm_arm`` and ``grant_approval`` all kept working — so a
+released runtime came back ``ARMED`` with a live approval, and dangerous work
+resumed at the speed of one release call. The lifecycle the tests below pin is:
+
+```text
+E-stop engaged   → ARM DISARMED, every approval cleared
+                 → no ARM may be requested and no approval granted
+E-stop released  → still DISARMED, still no outstanding approval
+                 → authority must be rebuilt explicitly, from scratch
+```
+
 What is *not* tested is interrupting a real transmit, because there is none. That
-limitation is asserted explicitly here rather than left for a reader to infer
-from the absence of a test.
+limitation is asserted explicitly here rather than left for a reader to infer from
+the absence of a test.
 """
 
 from __future__ import annotations
@@ -19,7 +33,9 @@ import pytest
 from canx.safety.arm import ArmState
 from canx.safety.audit import digest_reason
 from canx.safety.decision import SafetyReason
-from canx.safety.errors import SafetyCallerError
+from canx.safety.emergency import CancellationFailure, CancellationFailureCode
+from canx.safety.errors import SafetyCallerError, SafetyEmergencyStopError, SafetyIdentifierError
+from canx.safety.identifiers import CancellerId, OperationId
 from canx.safety.risk import Capability
 from safety_builders import (
     AGENT,
@@ -36,6 +52,7 @@ from safety_builders import (
     kernel,
     permissions,
     request,
+    scope,
     spec,
 )
 
@@ -43,21 +60,39 @@ from safety_builders import (
 class _RecordingCanceller:
     """A subsystem that remembers it was asked to stop."""
 
-    def __init__(self, name: str = "periodic-tx", requested: tuple[str, ...] = ("tx-1",)) -> None:
-        self.name = name
-        self.calls: list[str] = []
+    def __init__(self, requested: tuple[str, ...] = ("tx-1",)) -> None:
+        self.digests: list[str] = []
         self._requested = requested
 
-    def cancel_active_operations(self, *, reason: str) -> tuple[str, ...]:
-        self.calls.append(reason)
-        return self._requested
+    def cancel_active_operations(self, *, reason_digest: str) -> tuple[OperationId, ...]:
+        self.digests.append(reason_digest)
+        return tuple(OperationId(value) for value in self._requested)
 
 
 class _RefusingCanceller:
     """A subsystem that cannot answer. Its failure must be reported, not swallowed."""
 
-    def cancel_active_operations(self, *, reason: str) -> tuple[str, ...]:
+    def cancel_active_operations(self, *, reason_digest: str) -> tuple[OperationId, ...]:
         raise RuntimeError("cancellation channel is down")
+
+
+class _MalformedCanceller:
+    """A subsystem that violates its own contract and returns free text.
+
+    The runtime type in the ``OperationCanceller`` protocol is not a security
+    boundary — Python does not enforce it — so the controller revalidates every
+    returned reference. This canceller exists to prove that revalidation, not to
+    be believable.
+    """
+
+    def __init__(self, returned: tuple[object, ...]) -> None:
+        self._returned = returned
+
+    def cancel_active_operations(self, *, reason_digest: str) -> tuple[OperationId, ...]:
+        return self._returned  # type: ignore[return-value]
+
+
+# -- The stop removes authority -------------------------------------------------
 
 
 def test_engaging_the_stop_disarms_the_runtime() -> None:
@@ -82,27 +117,6 @@ def test_engaging_the_stop_denies_new_dangerous_operations() -> None:
     decision = safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1"))
     assert decision.denied
     assert decision.reason_code is SafetyReason.EMERGENCY_STOP
-
-
-def test_the_stop_survives_a_re_arm_attempt_during_the_emergency() -> None:
-    """The strongest form: even a caller who re-arms has their approval gone.
-
-    Re-arming is not blocked — restoring authority is an operator decision — but
-    the stop dropped every approval when it engaged, so a re-arm alone does not
-    restore the ability to do dangerous work.
-    """
-    clock = MovableClock()
-    safety = armed_kernel(
-        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
-    )
-    safety.grant_approval(
-        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
-        granted_by=OPERATOR,
-    )
-    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
-    assert safety.approvals.outstanding() == ()
-    decision = safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1"))
-    assert decision.denied
 
 
 def test_a_read_still_works_during_the_stop() -> None:
@@ -131,6 +145,12 @@ def test_a_machine_caller_may_not_release_the_stop(caller: object) -> None:
     with pytest.raises(SafetyCallerError):
         safety.release_emergency_stop(caller=caller)  # type: ignore[arg-type]
     assert safety.emergency_stop_engaged is True
+    # A refused release is not a partial one: the caller is judged before
+    # anything is reduced, and nothing is recorded as if it had happened.
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.approvals.outstanding() == ()
+    actions = [event.operation_id for event in safety.audit_events()]
+    assert "kernel.emergency_stop.released" not in actions
 
 
 @pytest.mark.parametrize("caller", [OPERATOR, HOST])
@@ -143,17 +163,272 @@ def test_an_authority_bearing_caller_may_release_the_stop(caller: object) -> Non
     assert safety.arm_state is ArmState.DISARMED
 
 
+# -- SAFETY-01-FIX-3, P0: the stop blocks authority, it does not pause it -------
+#
+# The defect the third independent review found: while the stop was engaged,
+# `arm`, `confirm_arm` and `grant_approval` all still worked. Authority could be
+# pre-staged during the emergency and survived the release, so the stop behaved
+# as pause/resume exactly where the architecture forbids it (invariant S22).
+#
+# Each gate is asserted separately on purpose. `arm` being blocked does not imply
+# `confirm_arm` is: the `ARMING → stop → confirm` path reaches ARMED without ever
+# calling `arm` again, and a gate on one entry point is not a gate on the other.
+
+
+def test_rearming_is_forbidden_while_emergency_stop_is_engaged() -> None:
+    """The stop removes authority *and* prevents it from being rebuilt."""
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.arm(
+            scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 60),
+            caller=OPERATOR,
+        )
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+    assert safety.emergency_stop_engaged is True
+
+
+def test_confirming_an_arm_is_forbidden_while_emergency_stop_is_engaged() -> None:
+    """``ARMING → stop → confirm`` must not be a bypass around the gate on ``arm``.
+
+    The runtime reaches ``ARMING`` first, so the confirmation is the only call
+    that could complete the arm. It has to be refused on its own.
+    """
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.arm(
+        scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 60),
+        caller=OPERATOR,
+    )
+    assert safety.arm_state is ArmState.ARMING
+    safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    assert safety.arm_state is ArmState.DISARMED
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.confirm_arm(caller=OPERATOR)
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+
+
+def test_granting_an_approval_is_forbidden_while_emergency_stop_is_engaged() -> None:
+    """An approval is dangerous authority; pre-staging it shortens the resume chain."""
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.grant_approval(
+            spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+            granted_by=OPERATOR,
+        )
+    assert safety.approvals.outstanding() == ()
+
+
+@pytest.mark.parametrize("caller", [OPERATOR, HOST])
+def test_even_an_authority_bearing_caller_cannot_stage_authority_during_the_stop(
+    caller: object,
+) -> None:
+    """The gate is not a caller-authority check — the host is refused just as firmly.
+
+    Caller authority is judged *first*, so an Agent is refused for a different
+    reason (``SafetyCallerError``, as it is at every other moment). This test
+    pins the second gate for the two caller kinds that would otherwise pass the
+    first one.
+    """
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.arm(
+            scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 60),
+            caller=caller,  # type: ignore[arg-type]
+        )
+    assert safety.arm_state is ArmState.DISARMED
+
+
+@pytest.mark.parametrize("caller", MACHINE_CALLERS)
+def test_a_machine_caller_is_still_refused_by_caller_authority_first(caller: object) -> None:
+    """Ordering, stated explicitly: caller authority, then the stop gate.
+
+    A machine caller is refused for the reason it always was — it may not control
+    the arm state at all — so the stop gate is not asked to carry that job.
+    """
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    with pytest.raises(SafetyCallerError):
+        safety.arm(
+            scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 60),
+            caller=caller,  # type: ignore[arg-type]
+        )
+    assert safety.arm_state is ArmState.DISARMED
+
+
+def test_estop_cannot_pre_stage_authority_for_release() -> None:
+    """The headline: authority staged during the stop must not survive the release."""
+    clock = MovableClock()
+    safety = armed_kernel(
+        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
+    )
+    safety.grant_approval(
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
+
+    # Every route that used to pre-stage authority while the stop was engaged.
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.arm(
+            scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 600),
+            caller=OPERATOR,
+        )
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.confirm_arm(caller=OPERATOR)
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.grant_approval(
+            spec(
+                approval_id="appr-staged",
+                single_use=False,
+                issued_at=clock(),
+                expires_at=clock() + 600,
+            ),
+            granted_by=OPERATOR,
+        )
+
+    safety.release_emergency_stop(caller=OPERATOR)
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+    assert safety.approvals.outstanding() == ()
+    assert safety.emergency_stop_engaged is False
+
+
+# -- Releasing restores possibility, never authority ---------------------------
+
+
+def test_a_successful_release_leaves_the_runtime_disarmed() -> None:
+    clock = MovableClock()
+    safety = armed_kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
+    safety.release_emergency_stop(caller=OPERATOR)
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+
+
+def test_a_successful_release_leaves_no_outstanding_approval() -> None:
+    clock = MovableClock()
+    safety = armed_kernel(
+        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
+    )
+    safety.grant_approval(
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
+    safety.release_emergency_stop(caller=OPERATOR)
+    assert safety.approvals.outstanding() == ()
+
+
+def test_release_is_not_a_resume_command() -> None:
+    """After a release a dangerous request is still refused — authority is gone.
+
+    This is the property the previous behaviour violated: an operator releasing
+    the stop expected to be back at "nothing is armed", and the runtime handed
+    them a live approval instead.
+    """
+    clock = MovableClock()
+    safety = armed_kernel(
+        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
+    )
+    safety.grant_approval(
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
+    safety.release_emergency_stop(caller=OPERATOR)
+
+    decision = safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1"))
+    assert decision.denied
+    assert decision.reason_code is SafetyReason.NOT_ARMED
+
+
+def test_the_emergency_stop_creates_a_new_safety_epoch() -> None:
+    """The full lifecycle, end to end: stop → rebuild from nothing → dangerous work.
+
+    The point is that the *same* runtime can reach ``ALLOW`` again only through an
+    explicit re-arm and a **new** approval. If the stop were a pause, the second
+    ``ALLOW`` would have needed nothing.
+    """
+    clock = MovableClock()
+    safety = armed_kernel(
+        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
+    )
+    safety.grant_approval(
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    assert safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1")).allowed
+
+    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.approvals.outstanding() == ()
+
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.arm(
+            scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 600),
+            caller=OPERATOR,
+        )
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.grant_approval(
+            spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+            granted_by=OPERATOR,
+        )
+
+    safety.release_emergency_stop(caller=OPERATOR)
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.approvals.outstanding() == ()
+
+    # Authority gone: the pre-stop approval is not merely expired, it is absent.
+    assert safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1")).denied
+    # And nothing dangerous happens just because the stop was released.
+    assert safety.evaluate(request(DANGEROUS, caller=OPERATOR)).denied
+
+    safety.arm(
+        scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 600),
+        caller=OPERATOR,
+    )
+    safety.confirm_arm(caller=OPERATOR)
+    safety.grant_approval(
+        spec(approval_id="appr-2", issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    assert safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-2")).allowed
+
+
+def test_an_arm_that_was_in_flight_does_not_survive_the_stop() -> None:
+    """``ARMING`` is authority too, and the stop has to reach it."""
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.arm(
+        scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 60),
+        caller=OPERATOR,
+    )
+    assert safety.arm_state is ArmState.ARMING
+    safety.engage_emergency_stop(caller=OPERATOR, reason="operator stop")
+    assert safety.arm_state is ArmState.DISARMED
+
+
+# -- Cancellation fan-out -------------------------------------------------------
+
+
 def test_the_stop_requests_cancellation_from_every_registered_subsystem() -> None:
     safety = kernel()
-    periodic = _RecordingCanceller("periodic-tx", requested=("tx-1", "tx-2"))
-    replay = _RecordingCanceller("replay", requested=("replay-7",))
-    safety.register_canceller(periodic)
-    safety.register_canceller(replay)
+    periodic = _RecordingCanceller(requested=("tx-1", "tx-2"))
+    replay = _RecordingCanceller(requested=("replay-7",))
+    safety.register_canceller("tx.periodic", periodic)
+    safety.register_canceller("replay.worker", replay)
 
     state = safety.engage_emergency_stop(caller=AGENT, reason="detected")
 
-    assert periodic.calls == ["detected"]
-    assert replay.calls == ["detected"]
     assert set(state.requested_cancellations) == {"tx-1", "tx-2", "replay-7"}
     assert state.cancellation_failures == ()
 
@@ -161,26 +436,211 @@ def test_the_stop_requests_cancellation_from_every_registered_subsystem() -> Non
 def test_a_subsystem_that_cannot_confirm_cancellation_is_reported() -> None:
     """Invariant S14: the operator must see exactly which subsystem did not answer."""
     safety = kernel()
-    safety.register_canceller(_RecordingCanceller())
-    safety.register_canceller(_RefusingCanceller())
+    safety.register_canceller("tx.periodic", _RecordingCanceller())
+    safety.register_canceller("replay.worker", _RefusingCanceller())
 
     state = safety.engage_emergency_stop(caller=AGENT, reason="detected")
 
     assert state.requested_cancellations == ("tx-1",)
-    assert len(state.cancellation_failures) == 1
-    assert "RuntimeError" in state.cancellation_failures[0]
+    assert state.cancellation_failures == (
+        CancellationFailure(
+            canceller_id=CancellerId("replay.worker"),
+            failure_code=CancellationFailureCode.CANCELLER_RAISED,
+            failure_type="RuntimeError",
+        ),
+    )
     assert safety.emergency_stop_engaged is True
 
 
 def test_engaging_twice_keeps_the_first_reason_and_retries_cancellation() -> None:
     safety = kernel()
     canceller = _RecordingCanceller()
-    safety.register_canceller(canceller)
+    safety.register_canceller("tx.periodic", canceller)
     first = safety.engage_emergency_stop(caller=AGENT, reason="first")
     second = safety.engage_emergency_stop(caller=AUTOMATION, reason="second")
     assert first.reason_digest == digest_reason("first")
     assert second.reason_digest == digest_reason("first")
-    assert canceller.calls == ["first", "second"]
+    # The retry happens, and the canceller sees a digest both times.
+    assert canceller.digests == [digest_reason("first"), digest_reason("second")]
+
+
+# -- SAFETY-01-FIX-3, P1: the cancellation boundary is typed --------------------
+#
+# The defect the third independent review found: `OperationCanceller` returned
+# `tuple[str, ...]`, that tuple went into `EmergencyStopState.requested_cancellations`
+# unvalidated, and `EmergencyStopState.describe()` rendered it into the audit
+# event's `detail`. So a subsystem's arbitrary return value reached Safety Audit
+# through the back door, outside the identifier contract (invariant S24). The
+# raw operator reason fanned out to every canceller by the same route.
+
+
+def test_a_canceller_cannot_inject_free_text_into_the_cancellation_state() -> None:
+    """The headline P1: an invalid reference is dropped, not recorded."""
+    safety = kernel()
+    safety.register_canceller(
+        "tx.periodic",
+        _MalformedCanceller(("tx-1", "operator secret is hunter2")),
+    )
+
+    state = safety.engage_emergency_stop(caller=AGENT, reason="detected")
+
+    assert state.requested_cancellations == ("tx-1",)
+    assert "hunter2" not in str(state.describe())
+    assert CancellationFailureCode.CANCELLER_INVALID_REFERENCE in {
+        failure.failure_code for failure in state.cancellation_failures
+    }
+
+
+def test_a_cancellers_free_text_never_reaches_the_audit_trail() -> None:
+    safety = kernel()
+    safety.register_canceller(
+        "tx.periodic",
+        _MalformedCanceller(("op-ok", "operator secret is hunter2")),
+    )
+    safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    recorded = " | ".join(str(event.describe()) for event in safety.audit_events())
+    assert "hunter2" not in recorded
+    assert "op-ok" in recorded
+
+
+def test_an_invalid_cancellation_reference_does_not_prevent_the_stop() -> None:
+    """A stop must still engage: a malformed answer is a failure to report, not a veto."""
+    safety = kernel()
+    safety.register_canceller("tx.periodic", _MalformedCanceller(("not an identifier!",)))
+    state = safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    assert state.engaged is True
+    assert safety.emergency_stop_engaged is True
+    assert safety.arm_state is ArmState.DISARMED
+    assert len(state.cancellation_failures) == 1
+
+
+def test_a_canceller_that_is_not_even_iterable_is_reported_not_raised() -> None:
+    """The contract can be violated in more ways than one; none may defeat the stop."""
+    safety = kernel()
+    safety.register_canceller("tx.periodic", _MalformedCanceller(None))  # type: ignore[arg-type]
+    state = safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    assert state.engaged is True
+    assert [failure.failure_code for failure in state.cancellation_failures] == [
+        CancellationFailureCode.CANCELLER_CONTRACT_VIOLATION
+    ]
+    assert state.requested_cancellations == ()
+
+
+def test_a_canceller_receives_a_reason_digest_not_the_raw_reason() -> None:
+    """The operator's explanation stops at the kernel (invariant S19, S24)."""
+    safety = kernel()
+    canceller = _RecordingCanceller()
+    safety.register_canceller("tx.periodic", canceller)
+
+    safety.engage_emergency_stop(caller=AGENT, reason="bench secret xyz")
+
+    assert canceller.digests == [digest_reason("bench secret xyz")]
+    assert "bench secret xyz" not in canceller.digests
+
+
+def test_every_cancellation_reference_stored_is_a_typed_identifier() -> None:
+    safety = kernel()
+    safety.register_canceller("tx.periodic", _RecordingCanceller(("tx-1",)))
+    state = safety.engage_emergency_stop(caller=AGENT, reason="detected")
+    assert all(isinstance(reference, OperationId) for reference in state.requested_cancellations)
+    assert all(
+        isinstance(failure.canceller_id, CancellerId)
+        for failure in state.cancellation_failures
+    )
+
+
+# -- The state validates its own audit-facing fields ----------------------------
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("engaged_at", float("nan")),
+        ("engaged_at", float("inf")),
+        ("reason_digest", "not-a-digest"),
+        ("reason_digest", "A" * 64),
+    ],
+)
+def test_the_emergency_state_refuses_a_malformed_scalar(field: str, value: object) -> None:
+    from canx.safety.emergency import EmergencyStopState
+
+    with pytest.raises(SafetyIdentifierError):
+        EmergencyStopState(engaged=True, **{field: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("text", ["free text reference", "  padded  ", "", "a" * 65])
+def test_the_emergency_state_refuses_a_free_form_cancellation_reference(text: str) -> None:
+    from canx.safety.emergency import EmergencyStopState
+
+    with pytest.raises(SafetyIdentifierError):
+        EmergencyStopState(engaged=True, requested_cancellations=(text,))
+
+
+def test_the_emergency_state_accepts_a_well_formed_one() -> None:
+    from canx.safety.emergency import EmergencyStopState
+
+    state = EmergencyStopState(
+        engaged=True,
+        engaged_at=1_000.0,
+        reason_digest=digest_reason("bench smoke"),
+        requested_cancellations=("op-1",),
+        cancellation_failures=(
+            CancellationFailure(
+                canceller_id=CancellerId("replay.worker"),
+                failure_code=CancellationFailureCode.CANCELLER_RAISED,
+                failure_type="RuntimeError",
+            ),
+        ),
+    )
+    assert state.describe()["cancellation_failures"] == [
+        {
+            "canceller_id": "replay.worker",
+            "failure_code": "canceller.raised",
+            "failure_type": "RuntimeError",
+        }
+    ]
+
+
+def test_a_cancellation_failure_refuses_free_form_text() -> None:
+    with pytest.raises(SafetyIdentifierError):
+        CancellationFailure(
+            canceller_id="free text canceller",  # type: ignore[arg-type]
+            failure_code=CancellationFailureCode.CANCELLER_RAISED,
+        )
+    with pytest.raises(SafetyIdentifierError):
+        CancellationFailure(
+            canceller_id=CancellerId("replay.worker"),
+            failure_code=CancellationFailureCode.CANCELLER_RAISED,
+            failure_type="not an identifier",
+        )
+
+
+def test_a_canceller_identity_must_satisfy_the_identifier_contract() -> None:
+    safety = kernel()
+    with pytest.raises(SafetyIdentifierError):
+        safety.register_canceller("free text canceller", _RecordingCanceller())
+
+
+def test_a_stop_state_with_a_broken_clock_still_engages() -> None:
+    """A timestamp that cannot be read must not be able to stop the stop (S22).
+
+    Engaging only ever reduces authority, so a broken clock is a reason to record
+    ``engaged_at = None`` — never a reason to leave the runtime running.
+    """
+
+    def broken_clock() -> float:
+        raise RuntimeError("clock provider is unavailable")
+
+    from canx.safety.emergency import EmergencyStopController
+
+    controller = EmergencyStopController(clock=broken_clock)
+    state = controller.engage(caller=AGENT, reason_digest=digest_reason("detected"))
+    assert state.engaged is True
+    assert state.engaged_at is None
+    assert controller.engaged is True
+
+
+# -- The trail ------------------------------------------------------------------
 
 
 def test_the_stop_is_recorded_on_the_audit_trail() -> None:
@@ -203,6 +663,23 @@ def test_releasing_the_stop_is_recorded() -> None:
     safety.release_emergency_stop(caller=OPERATOR)
     actions = [event.operation_id for event in safety.audit_events()]
     assert "kernel.emergency_stop.released" in actions
+
+
+def test_the_audit_detail_of_a_guided_cancellation_is_structured() -> None:
+    """What reaches ``detail`` is identifiers and bounded codes — nothing else."""
+    safety = kernel()
+    safety.register_canceller("tx.periodic", _RecordingCanceller(("tx-1",)))
+    safety.register_canceller("replay.worker", _RefusingCanceller())
+    safety.engage_emergency_stop(caller=OPERATOR, reason="bench smoke")
+    engaged = [
+        event for event in safety.audit_events() if event.operation_id.endswith("engaged")
+    ][-1]
+    assert engaged.detail is not None
+    assert "tx-1" in engaged.detail
+    assert "replay.worker" in engaged.detail
+    assert "canceller.raised" in engaged.detail
+    # The raw exception message is never part of the trail.
+    assert "cancellation channel is down" not in engaged.detail
 
 
 def test_there_is_no_real_transmit_to_interrupt_in_this_stage() -> None:

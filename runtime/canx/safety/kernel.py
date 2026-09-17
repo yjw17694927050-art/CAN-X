@@ -76,6 +76,7 @@ from canx.safety.errors import (
     SafetyApprovalProvenanceError,
     SafetyAuditError,
     SafetyCallerError,
+    SafetyEmergencyStopError,
     SafetyRollbackError,
 )
 from canx.safety.identifiers import new_audit_event_id
@@ -154,9 +155,14 @@ class SafetyKernel:
             SafetyCallerError: ``caller`` may not control arm. An Agent, script
                 or automation rule is refused here — this is the structural
                 answer to "can an Agent self-arm?" (invariants S3, S4).
+            SafetyEmergencyStopError: The global stop is engaged. Authority may
+                not be *pre-staged* while the runtime is stopped, so this is a
+                gate before the mutation rather than a rollback after it
+                (invariant S22).
         """
         self._require_arm_authority(caller)
         with self._lock:
+            self._require_emergency_stop_released(action="arm")
             state = self._arm.request(scope)
             self._commit_authority_change_with_audit(
                 action="arm.requested",
@@ -176,11 +182,17 @@ class SafetyKernel:
 
         Raises:
             SafetyCallerError: ``caller`` may not control arm.
+            SafetyEmergencyStopError: The global stop is engaged. This needs its
+                own gate rather than relying on :meth:`arm`'s: a runtime that was
+                already ``ARMING`` when the stop engaged reaches ``ARMED``
+                through *this* call and never calls ``arm`` again, so gating only
+                the first step would leave a bypass (invariant S22).
             SafetyStateError: The machine is not ``ARMING``.
             SafetyScopeError: The scope lapsed before the confirmation.
         """
         self._require_arm_authority(caller)
         with self._lock:
+            self._require_emergency_stop_released(action="confirm_arm")
             state = self._arm.confirm()
             self._commit_authority_change_with_audit(
                 action="arm.confirmed",
@@ -244,6 +256,10 @@ class SafetyKernel:
                 rule (invariant S4).
             SafetyApprovalProvenanceError: ``granted_by`` carries no provenance,
                 or the request is not an :class:`ApprovalSpec`.
+            SafetyEmergencyStopError: The global stop is engaged. An approval is
+                dangerous authority, so staging one while the runtime is stopped
+                would shorten the resume chain the stop exists to lengthen
+                (invariant S22).
         """
         if not granted_by.may_issue_approval:
             raise SafetyCallerError(
@@ -262,6 +278,7 @@ class SafetyKernel:
                 details={"supplied_type": type(spec).__name__},
             )
         with self._lock:
+            self._require_emergency_stop_released(action="grant_approval")
             approval = Approval(
                 approval_id=spec.approval_id,
                 capability=spec.capability,
@@ -322,9 +339,15 @@ class SafetyKernel:
         """Whether the global emergency stop is engaged."""
         return self._emergency.engaged
 
-    def register_canceller(self, canceller: OperationCanceller) -> None:
-        """Register a subsystem whose active dangerous work the stop must reach."""
-        self._emergency.register_canceller(canceller)
+    def register_canceller(self, canceller_id: str, canceller: OperationCanceller) -> None:
+        """Register a subsystem whose active dangerous work the stop must reach.
+
+        ``canceller_id`` is a stable runtime identity (``"tx.periodic"``), not a
+        class name — a cancellation failure has to name a subsystem the audit
+        contract can hold, and ``type(x).__name__`` is neither stable nor
+        necessarily a bounded identifier (invariant S24).
+        """
+        self._emergency.register_canceller(canceller_id, canceller)
 
     def engage_emergency_stop(
         self, *, caller: CallerIdentity, reason: str
@@ -334,9 +357,21 @@ class SafetyKernel:
         Disarms the runtime and drops this session's approvals: a stop that left
         an approval in place would let the next request re-arm cheaply, which is
         the opposite of what the operator asked for.
+
+        The reason is digested here, at the boundary, and only the digest travels
+        on — to the state, to the trail and to every canceller (invariants S19,
+        S24). Subsystems outside the safety domain may log what they are handed,
+        so what they are handed is not the operator's words.
+
+        Nothing on this path can fail the stop. The audit write is attempted
+        last, and if it fails the fault is raised to the caller while the stop
+        stays engaged, the runtime stays ``DISARMED`` and the approvals stay
+        gone — undoing a reduction would be the failure, not the fix
+        (invariants S17, S22).
         """
         with self._lock:
-            state = self._emergency.engage(caller=caller, reason=reason)
+            reason_digest = digest_reason(reason)
+            state = self._emergency.engage(caller=caller, reason_digest=reason_digest)
             self._approvals.clear()
             self._record_control(
                 action="emergency_stop.engaged",
@@ -344,7 +379,7 @@ class SafetyKernel:
                 reason_code=SafetyReason.EMERGENCY_STOP,
                 message="The global emergency stop was engaged.",
                 detail=_render(state.describe()),
-                reason_digest=digest_reason(reason),
+                reason_digest=reason_digest,
             )
             return state
 
@@ -354,12 +389,26 @@ class SafetyKernel:
         Raises:
             SafetyCallerError: ``caller`` is an Agent, script or automation rule.
 
-        Releasing restores the *possibility* of dangerous work and nothing more:
-        the runtime is left ``DISARMED`` and every approval is gone, so authority
-        has to be re-established from scratch (invariant S8).
+        Releasing restores the *possibility* of dangerous work and nothing more.
+        The postcondition is asserted rather than assumed (invariant S23): a
+        released runtime is ``DISARMED`` and holds no outstanding approval, so
+        authority has to be re-established from scratch. Releasing is therefore
+        never a resume command.
+
+        The two reductions run first and deliberately **outside** the commit
+        guard. They can only ever remove authority, so a release whose audit
+        could not be written must leave them in place — rolling authority back
+        *up* to the pre-release state would be the failure, not the fix
+        (invariant S17). Only the stop's engagement is restored, because that is
+        the half of the change that moves towards safety.
         """
         with self._lock:
             before = self._emergency.state
+            # The caller is judged before anything is reduced, so a refused
+            # release cannot leave the runtime half-released.
+            self._emergency.require_release_authority(caller=caller)
+            self._arm.disarm()
+            self._approvals.clear()
             state = self._emergency.reset(caller=caller)
             self._commit_authority_change_with_audit(
                 action="emergency_stop.released",
@@ -395,6 +444,43 @@ class SafetyKernel:
             raise SafetyCallerError(
                 "An Agent, script or automation rule may not control the arm state.",
                 details={"caller": str(caller.kind), "caller_id": caller.caller_id},
+            )
+
+    def _require_emergency_stop_released(self, *, action: str) -> None:
+        """Refuse an authority-increasing action while the global stop is engaged.
+
+        The emergency stop is a safety epoch boundary, not a pause (invariant
+        S22): while it is engaged no caller — operator, host, Agent, script or
+        automation — may establish or pre-stage dangerous vehicle authority, and
+        ARM state and approval are exactly that authority. Without this gate the
+        stop degrades into pause/resume: authority is built in the background and
+        the release hands it straight back.
+
+        Three properties of where this sits are load-bearing:
+
+        * **Before the mutation.** It is a gate, not a rollback, so a refusal
+          leaves nothing to undo and no audit transaction to open.
+        * **Inside the kernel lock.** ``engage_emergency_stop`` takes the same
+          lock, so the check cannot be overtaken by a stop arriving between it
+          and the mutation it guards.
+        * **One place, three callers.** ``arm``, ``confirm_arm`` and
+          ``grant_approval`` each route through here rather than repeating the
+          condition, so a future authority-increasing operation has an obvious
+          door to come in through — and a future *reducing* one is not tempted to
+          use it.
+
+        It is a typed fault rather than a ``PolicyDecision.DENY`` on purpose:
+        these are control-plane authority mutations that never reach
+        ``evaluate``, so there is no verdict for a ``DENY`` to be.
+
+        Raises:
+            SafetyEmergencyStopError: The stop is engaged.
+        """
+        if self._emergency.engaged:
+            raise SafetyEmergencyStopError(
+                "The global emergency stop is engaged; no dangerous authority may be "
+                "established or pre-staged while the runtime is stopped.",
+                details={"action": action},
             )
 
     def _disarm_for_emergency_stop(self) -> None:

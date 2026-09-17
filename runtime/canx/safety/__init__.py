@@ -29,7 +29,7 @@ from it to a device. SAFETY-01 builds the gate; the operations that will pass
 through it are later tasks, and each of them is required to enter here
 (invariant S12).
 
-The frozen invariants S1-S21 are recorded in
+The frozen invariants S1-S24 are recorded in
 ``docs/architecture/SAFETY_ARCHITECTURE.md``. That document is the authority on
 what must not be broken; this package is its implementation.
 """
@@ -53,6 +53,8 @@ from canx.safety.audit import (
 from canx.safety.caller import CallerIdentity, CallerKind
 from canx.safety.decision import DecisionOutcome, PolicyDecision, SafetyReason, allow, deny
 from canx.safety.emergency import (
+    CancellationFailure,
+    CancellationFailureCode,
     EmergencyStopController,
     EmergencyStopState,
     OperationCanceller,
@@ -64,6 +66,7 @@ from canx.safety.errors import (
     SafetyApprovalReusedError,
     SafetyAuditError,
     SafetyCallerError,
+    SafetyEmergencyStopError,
     SafetyError,
     SafetyIdentifierError,
     SafetyPolicyError,
@@ -80,6 +83,7 @@ from canx.safety.identifiers import (
     AuditEventId,
     AuditIdentifier,
     CallerId,
+    CancellerId,
     ChannelId,
     DeviceId,
     OperationId,
@@ -131,6 +135,9 @@ __all__ = [
     "CallerId",
     "CallerIdentity",
     "CallerKind",
+    "CancellationFailure",
+    "CancellationFailureCode",
+    "CancellerId",
     "Capability",
     "ChannelId",
     "DecisionOutcome",
@@ -157,6 +164,7 @@ __all__ = [
     "SafetyAuditSink",
     "SafetyCallerError",
     "SafetyContext",
+    "SafetyEmergencyStopError",
     "SafetyError",
     "SafetyIdentifierError",
     "SafetyKernel",

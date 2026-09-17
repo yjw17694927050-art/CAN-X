@@ -58,6 +58,30 @@ class SafetyStateError(SafetyError):
         super().__init__(message, code="safety.invalid_transition", details=details)
 
 
+class SafetyEmergencyStopError(SafetyError):
+    """Raised when dangerous authority is requested while the stop is engaged.
+
+    The emergency stop is a **safety epoch boundary**, not a pause (invariants
+    S22, S23). While it is engaged no caller — operator, host, Agent, script,
+    automation or the UI — may establish or pre-stage dangerous vehicle
+    authority, and ARM state and approval are exactly that authority.
+
+    Deliberately its own type rather than a :class:`SafetyStateError`, and
+    deliberately a *fault* rather than a ``PolicyDecision.DENY``. ``arm``,
+    ``confirm_arm`` and ``grant_approval`` are not operation requests — they are
+    control-plane authority mutations that never reach ``evaluate`` — so there is
+    no decision for a ``DENY`` to be the verdict of. Refusing them as a typed
+    fault is the honest shape, and it lets a caller tell "the stop is engaged,
+    wait for the operator" apart from "the arm machine has no such transition".
+
+    The refusal is raised **before** any mutation, so there is nothing to roll
+    back: this is a gate, not a rollback.
+    """
+
+    def __init__(self, message: str, *, details: dict[str, object] | None = None) -> None:
+        super().__init__(message, code="safety.emergency_stop_active", details=details)
+
+
 class SafetyScopeError(SafetyError):
     """Raised when a scope cannot describe the authority it claims to grant."""
 
