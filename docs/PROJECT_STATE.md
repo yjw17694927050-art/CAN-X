@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 — Project Runtime Read Model API Foundation — V0.3-11-FINAL applied; awaiting independent re-acceptance)
+> **Updated**: 2026-09-17 (V0.3-11 — Project Runtime Read Model API Foundation — V0.3-11-FINAL applied, V0.3-11-FINAL-2 post-fix regression recorded; awaiting independent re-acceptance)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -200,6 +200,7 @@ V0.3-11 — Project Runtime Read Model API Foundation
   Implementation complete
   Local verification complete
   V0.3-11-FINAL applied (empty project_path contract hardening)
+  V0.3-11-FINAL-2 applied (post-fix full regression recorded on a18a4f3)
   Awaiting independent re-acceptance
 
 No further implementation step has been started.
@@ -630,6 +631,9 @@ V0.3-10 — Final Acceptance: PASS · Status: CLOSED
 V0.3-11 — Project Runtime Read Model API Foundation
           First independent review: NOT PASS · Status: OPEN (P0: 0, P1: 1, P2: 0)
           V0.3-11-FINAL applied → AWAITING INDEPENDENT RE-ACCEPTANCE
+          V0.3-11-FINAL-2: post-fix full regression recorded on a18a4f3
+          (Python 1663 passed / 1 skipped · frontend 162 passed · Rust 28+3 passed
+           · packaging exit 0 · packaged smoke 6 passed)
 ```
 
 V0.3-11 adds one read-only Runtime endpoint — `GET /project/inspect?project_path=…` — built as
@@ -663,7 +667,8 @@ docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md
 
 docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md
     V0.3-11 acceptance evidence. First independent review: NOT PASS (P0: 0, P1: 1, P2: 0).
-    V0.3-11-FINAL applied; awaiting independent re-acceptance.
+    V0.3-11-FINAL applied; V0.3-11-FINAL-2 records the post-fix full regression
+    (§19 — carried out on a18a4f3). Awaiting independent re-acceptance.
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
