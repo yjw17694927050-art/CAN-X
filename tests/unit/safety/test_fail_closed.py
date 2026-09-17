@@ -12,15 +12,16 @@ test below names the specific leniency it is guarding against.
 
 from __future__ import annotations
 
+import math
 from typing import cast
 
 import pytest
 from canx.safety.caller import CallerIdentity, CallerKind
 from canx.safety.decision import SafetyReason
-from canx.safety.errors import SafetyCallerError, SafetyScopeError
+from canx.safety.errors import SafetyAuditError, SafetyCallerError, SafetyError, SafetyScopeError
 from canx.safety.kernel import SafetyKernel
 from canx.safety.risk import Capability, OperationClass
-from canx.safety.scope import ArmScope, OperationTarget
+from canx.safety.scope import ArmScope, OperationTarget, has_lapsed
 from safety_builders import (
     DANGEROUS,
     OPERATOR,
@@ -34,8 +35,27 @@ from safety_builders import (
 )
 
 
-def test_a_non_finite_clock_reading_disarms_rather_than_preserving_the_arm() -> None:
-    """NaN compares false against everything, so ``now >= expiry`` would say "valid"."""
+def test_a_broken_clock_expires_authority_rather_than_extending_it() -> None:
+    """The expiry rule, at the level where expiry is decided.
+
+    ``NaN`` compares false against everything, so a check written
+    ``now >= expires_at`` answers "not expired" — the one direction expiry must
+    never fail in. Every expiry check routes through ``has_lapsed``, which answers
+    "expired" instead.
+    """
+    assert has_lapsed(math.nan, 10.0) is True
+    assert has_lapsed(math.inf, 10.0) is True
+
+
+@pytest.mark.parametrize("broken", [math.nan, math.inf])
+def test_a_broken_clock_never_produces_an_audited_verdict(broken: float) -> None:
+    """And the second half: a non-finite reading cannot be *recorded* either.
+
+    SAFETY-01-FIX-2 requires ``recorded_at`` to be finite (invariant S20), so once
+    the clock goes bad the verdict is not handed back at all. FIX-1 pinned the
+    outcome here as a ``DENY``; a fault is the narrower fail-closed result, and the
+    expiry rule that assertion was about is unchanged and asserted directly above.
+    """
     clock = MovableClock()
     safety = armed_kernel(
         clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
@@ -44,27 +64,12 @@ def test_a_non_finite_clock_reading_disarms_rather_than_preserving_the_arm() -> 
         spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
         granted_by=OPERATOR,
     )
-    assert (
-        safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1")).allowed
-    )
-    clock.set(float("nan"))
-    decision = safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1"))
-    assert decision.denied
-    assert decision.reason_code is SafetyReason.NOT_ARMED
-
-
-def test_a_non_finite_clock_reading_expires_an_approval() -> None:
-    clock = MovableClock()
-    safety = armed_kernel(
-        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
-    )
-    safety.grant_approval(
-        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
-        granted_by=OPERATOR,
-    )
-    clock.set(float("inf"))
-    decision = safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1"))
-    assert decision.denied
+    assert safety.evaluate(
+        request(DANGEROUS, caller=OPERATOR, approval_id="appr-1")
+    ).allowed
+    clock.set(broken)
+    with pytest.raises(SafetyAuditError):
+        safety.evaluate(request(DANGEROUS, caller=OPERATOR, approval_id="appr-1"))
 
 
 def test_an_unknown_caller_kind_cannot_be_constructed_at_all() -> None:
@@ -84,14 +89,29 @@ def test_an_unexpected_operation_enum_is_denied() -> None:
     assert decision.reason_code is SafetyReason.UNKNOWN_OPERATION
 
 
-def test_a_corrupted_approval_reference_is_denied() -> None:
+def test_a_reference_that_is_not_an_identifier_cannot_be_requested() -> None:
+    """A reference reaches the trail, so free text is refused before it can.
+
+    SAFETY-01-FIX-2 moved this refusal *earlier*: an ``approval_id`` that was not
+    an identifier used to be accepted by the request and rejected later by the
+    store, which meant the prose existed as a request field and was one audit
+    write away from being persisted. Refusing it at construction is stronger, not
+    weaker — the value never comes into existence (invariants S9, S21).
+    """
+    for corrupted in ("", "\x00", "../../etc/passwd", "not an approval"):
+        with pytest.raises(SafetyError):
+            request(DANGEROUS, caller=OPERATOR, approval_id=corrupted)
+
+
+def test_an_unresolvable_approval_reference_is_denied() -> None:
+    """A well-formed reference to an approval that does not exist fails closed."""
     clock = MovableClock()
     safety = armed_kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
-    for corrupted in ("", "00000000-0000-0000-0000-000000000000", "\x00", "../../etc/passwd"):
+    for unknown in ("00000000-0000-0000-0000-000000000000", "approval-never-issued"):
         decision = safety.evaluate(
-            request(DANGEROUS, caller=OPERATOR, approval_id=corrupted)
+            request(DANGEROUS, caller=OPERATOR, approval_id=unknown)
         )
-        assert decision.denied, corrupted
+        assert decision.denied, unknown
         assert decision.reason_code is SafetyReason.APPROVAL_INVALID
 
 

@@ -29,7 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from canx.safety.errors import SafetyCallerError
+from canx.safety.errors import SafetyCallerError, SafetyIdentifierError
+from canx.safety.identifiers import MAX_AUDIT_IDENTIFIER_LENGTH, CallerId
 
 
 class CallerKind(StrEnum):
@@ -53,63 +54,60 @@ _AUTHORITY_BEARING_KINDS: frozenset[CallerKind] = frozenset(
     {CallerKind.HUMAN_UI, CallerKind.SYSTEM}
 )
 
-#: A caller name is a **label**, not a payload, and it is bounded so it cannot
-#: become one (invariant S19). Sixty-four characters of letters, digits and
-#: ``. _ : -`` is enough for every identifier this runtime constructs
-#: (``ui.main``, ``agent.session-1``, ``runtime.host``) and is not enough to
-#: carry a token, a base64 blob or a key.
-MAX_CALLER_NAME_LENGTH = 64
-
-_CALLER_NAME_ALPHABET: frozenset[str] = frozenset(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    "._:-"
-)
+#: A caller identity is an **identifier**, not a label and not a payload
+#: (invariants S19, S21). The grammar and the length budget are the shared ones in
+#: :mod:`canx.safety.identifiers` — defined once so a caller id, an operation id
+#: and a channel name cannot end up with three different notions of "bounded".
+#: Sixty-four characters of letters, digits and ``. _ : -`` is enough for every
+#: identifier this runtime constructs (``ui.main``, ``agent.session-1``,
+#: ``runtime.host``) and is not enough to carry a token or a base64 blob.
 
 
 @dataclass(frozen=True, slots=True)
 class CallerIdentity:
-    """A stable, non-secret identity for one operation requester.
+    """A stable, non-secret audit identity for one operation requester.
 
-    ``name`` is a label for the audit trail — ``"ui.main"``, ``"agent.session-7"``,
-    ``"script.cleanup"``. It is deliberately not a credential: the kernel decides
-    from ``kind``, and the audit trail records the name so a decision can be
-    attributed after the fact.
+    ``caller_id`` is an **identifier** — ``"ui.main"``, ``"agent.session-7"``,
+    ``"script.cleanup"``. It is deliberately not a credential (the kernel decides
+    from ``kind``) and deliberately not a display name. It was called ``name``
+    until SAFETY-01-FIX-2, which implied human-readable text it never was; the
+    field is renamed rather than re-documented (invariant S21).
 
-    It is also deliberately not free text. A bounded alphabet and length are
-    enforced at construction, because this name is one of the few strings that
-    reaches the audit trail, and "do not put a secret in the caller name" is a
-    rule nobody can be relied on to remember (invariant S19).
+    There is deliberately **no** display-label field. A human-readable label is
+    display text: it is not authority, it is not attributable, and it is exactly
+    the shape a payload takes when somebody puts one in an identity. A UI that
+    wants to show "YJW (bench operator)" keeps that string in the UI.
+
+    Validation is delegated to :class:`~canx.safety.identifiers.CallerId`, so this
+    name is one of the strings that reaches the audit trail and the rule that
+    governs it is the shared identifier contract rather than a local rule that
+    happens to look similar.
     """
 
     kind: CallerKind
-    name: str
+    caller_id: str
 
     def __post_init__(self) -> None:
-        if not self.name:
-            raise SafetyCallerError(
-                "A caller identity must carry a non-empty name.",
-                details={"kind": str(self.kind)},
-            )
         if not isinstance(self.kind, CallerKind):
             raise SafetyCallerError(
                 "The caller kind is not part of the CAN-X caller vocabulary.",
                 details={"kind": type(self.kind).__name__},
             )
-        if len(self.name) > MAX_CALLER_NAME_LENGTH or not set(self.name) <= (
-            _CALLER_NAME_ALPHABET
-        ):
-            # The offending text is deliberately not echoed: an error message
-            # that repeats a payload is the same leak in a different channel.
+        try:
+            object.__setattr__(self, "caller_id", CallerId(self.caller_id))
+        except SafetyIdentifierError as error:
+            # Re-raised as a *caller* fault: a malformed identity is the caller's
+            # contract, not a generic validation failure. The offending text is
+            # deliberately not echoed — an error message that repeats a payload is
+            # the same leak through a different channel.
             raise SafetyCallerError(
-                "A caller name must be a bounded label, not arbitrary text.",
+                "A caller identity must be a bounded identifier, not arbitrary text.",
                 details={
                     "kind": str(self.kind),
-                    "length": len(self.name),
-                    "limit": MAX_CALLER_NAME_LENGTH,
+                    "role": CallerId.role,
+                    "limit": MAX_AUDIT_IDENTIFIER_LENGTH,
                 },
-            )
+            ) from error
 
     @property
     def may_issue_approval(self) -> bool:

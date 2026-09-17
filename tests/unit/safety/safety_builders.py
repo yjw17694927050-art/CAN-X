@@ -65,6 +65,43 @@ class MovableClock:
         return self._now
 
 
+class FaultingClock(MovableClock):
+    """A clock that works until a chosen read, then fails.
+
+    SAFETY-01-FIX-2's P0 is that only ``audit_sink.record()`` was treated as "the
+    audit transaction". Event preparation reads the clock *before* the sink is
+    reached, so a clock that fails there used to escape the rollback entirely.
+
+    ``fail_on_read(n)`` arms the failure to land on the *n*-th read counted from
+    the moment it is called. Counting from the arm point is what makes the test
+    deterministic: the authority mutation's own clock read passes normally, and
+    the audit preparation read that follows it is the one that breaks.
+
+    Raises a plain ``RuntimeError`` deliberately — an injected clock is not a
+    safety fault, and the kernel is required to *normalise* it into one.
+    """
+
+    def __init__(self, now: float = 1_000.0) -> None:
+        super().__init__(now)
+        self._reads_until_failure: int | None = None
+        self.reads = 0
+
+    def __call__(self) -> float:
+        self.reads += 1
+        remaining = self._reads_until_failure
+        if remaining is not None:
+            if remaining <= 0:
+                raise RuntimeError("clock provider is unavailable")
+            self._reads_until_failure = remaining - 1
+        return super().__call__()
+
+    def fail_on_read(self, nth: int) -> None:
+        """Arm the next failure to land on the ``nth`` read from now (1-based)."""
+        if nth < 1:
+            raise ValueError("a read index is 1-based")
+        self._reads_until_failure = nth - 1
+
+
 def target(
     *,
     device_id: str | None = None,

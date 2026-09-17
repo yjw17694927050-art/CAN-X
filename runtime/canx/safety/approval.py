@@ -51,7 +51,9 @@ from canx.safety.errors import (
     SafetyApprovalProvenanceError,
     SafetyApprovalReusedError,
     SafetyCallerError,
+    SafetyIdentifierError,
 )
+from canx.safety.identifiers import MAX_AUDIT_IDENTIFIER_LENGTH, ApprovalId
 from canx.safety.risk import Capability
 from canx.safety.scope import OperationTarget, has_lapsed
 
@@ -98,7 +100,7 @@ def issuer_for(caller: CallerIdentity) -> ApprovalIssuer:
     except KeyError as error:
         raise SafetyApprovalProvenanceError(
             "This caller kind cannot supply approval provenance.",
-            details={"caller": str(caller.kind), "name": caller.name},
+            details={"caller": str(caller.kind), "caller_id": caller.caller_id},
         ) from error
 
 
@@ -108,18 +110,30 @@ def _validate_approval_fields(
     capability: Capability,
     issued_at: float,
     expires_at: float,
-) -> None:
+) -> ApprovalId:
     """Validate the fields an approval and an approval spec both must satisfy.
 
     Shared so the two shapes cannot drift: a spec that accepted a window the
     approval would reject would make the kernel's translation the only place the
     difference showed up.
+
+    Returns the reference as a validated :class:`~canx.safety.identifiers.ApprovalId`
+    so the caller can normalise its own field without restating the rule. An
+    approval id reaches the audit trail, so it is an identifier rather than free
+    text (invariant S21); the refusal is reported as an approval fault because
+    that is the contract the caller is already holding.
     """
-    if not approval_id:
+    try:
+        validated = ApprovalId(approval_id)
+    except SafetyIdentifierError as error:
         raise SafetyApprovalError(
-            "An approval must carry a non-empty identifier.",
-            details={},
-        )
+            "An approval identifier must be a bounded identifier, not free-form text.",
+            details={
+                "field": "approval_id",
+                "role": ApprovalId.role,
+                "limit": MAX_AUDIT_IDENTIFIER_LENGTH,
+            },
+        ) from error
     if not (math.isfinite(issued_at) and math.isfinite(expires_at)):
         raise SafetyApprovalError(
             "An approval must be bounded by finite timestamps.",
@@ -135,6 +149,7 @@ def _validate_approval_fields(
             "The approval capability is not part of the CAN-X capability vocabulary.",
             details={"capability": str(capability)},
         )
+    return validated
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +165,11 @@ class ApprovalSpec:
     The absence of the field is the control. A parameter that does not exist
     cannot be forged, which is a stronger guarantee than a validator that is
     supposed to catch a forged one.
+
+    ``approval_id`` is an **identifier**, not free text, and is validated at
+    construction (invariant S21) — the runtime mints these with
+    :func:`canx.safety.identifiers.new_approval_id`, but a reference supplied from
+    outside is accepted only when it already satisfies the contract.
     """
 
     approval_id: str
@@ -160,11 +180,15 @@ class ApprovalSpec:
     single_use: bool = True
 
     def __post_init__(self) -> None:
-        _validate_approval_fields(
-            approval_id=self.approval_id,
-            capability=self.capability,
-            issued_at=self.issued_at,
-            expires_at=self.expires_at,
+        object.__setattr__(
+            self,
+            "approval_id",
+            _validate_approval_fields(
+                approval_id=self.approval_id,
+                capability=self.capability,
+                issued_at=self.issued_at,
+                expires_at=self.expires_at,
+            ),
         )
 
 
@@ -176,6 +200,9 @@ class Approval:
     identity, or supplied directly to :meth:`ApprovalStore.grant`, which checks
     the issuer against the grantor. It is never accepted on the strength of its
     own ``issuer`` field (invariant S16).
+
+    ``approval_id`` is an identifier, validated at construction like every other
+    audit reference (invariant S21).
     """
 
     approval_id: str
@@ -187,11 +214,15 @@ class Approval:
     single_use: bool = True
 
     def __post_init__(self) -> None:
-        _validate_approval_fields(
-            approval_id=self.approval_id,
-            capability=self.capability,
-            issued_at=self.issued_at,
-            expires_at=self.expires_at,
+        object.__setattr__(
+            self,
+            "approval_id",
+            _validate_approval_fields(
+                approval_id=self.approval_id,
+                capability=self.capability,
+                issued_at=self.issued_at,
+                expires_at=self.expires_at,
+            ),
         )
         if not isinstance(self.issuer, ApprovalIssuer):
             raise SafetyApprovalError(
@@ -292,7 +323,7 @@ class ApprovalStore:
         if not granted_by.may_issue_approval:
             raise SafetyCallerError(
                 "Only a human operator or the host system may issue an approval.",
-                details={"caller": str(granted_by.kind), "name": granted_by.name},
+                details={"caller": str(granted_by.kind), "caller_id": granted_by.caller_id},
             )
         expected = issuer_for(granted_by)
         if approval.issuer is not expected:

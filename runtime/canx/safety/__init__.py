@@ -20,8 +20,8 @@ would be a policy that had already crossed the line it guards.
 
 **What this stage is.** Risk taxonomy, caller model, ARM state machine, scope,
 capability-based permissions, the approval contract, the policy decision engine,
-the audit contract and the emergency-stop contract, with tests that attack the
-refusal paths rather than the happy path.
+the audit contract, the audit-safe identifier contract and the emergency-stop
+contract, with tests that attack the refusal paths rather than the happy path.
 
 **What this stage is not.** There is no transmit, no injection, no replay send,
 no diagnostic request and no ECU mutation anywhere in this package, and no path
@@ -29,7 +29,7 @@ from it to a device. SAFETY-01 builds the gate; the operations that will pass
 through it are later tasks, and each of them is required to enter here
 (invariant S12).
 
-The frozen invariants S1-S14 are recorded in
+The frozen invariants S1-S21 are recorded in
 ``docs/architecture/SAFETY_ARCHITECTURE.md``. That document is the authority on
 what must not be broken; this package is its implementation.
 """
@@ -65,10 +65,29 @@ from canx.safety.errors import (
     SafetyAuditError,
     SafetyCallerError,
     SafetyError,
+    SafetyIdentifierError,
     SafetyPolicyError,
+    SafetyRollbackError,
     SafetyScopeError,
     SafetyStateError,
     SafetyUnknownOperationError,
+)
+from canx.safety.identifiers import (
+    AUDIT_IDENTIFIER_ALPHABET,
+    MAX_AUDIT_IDENTIFIER_LENGTH,
+    SHA256_HEX_LENGTH,
+    ApprovalId,
+    AuditEventId,
+    AuditIdentifier,
+    CallerId,
+    ChannelId,
+    DeviceId,
+    OperationId,
+    new_approval_id,
+    new_audit_event_id,
+    new_operation_id,
+    validate_audit_identifier,
+    validate_sha256_digest,
 )
 from canx.safety.kernel import SafetyKernel
 from canx.safety.operation import OperationRequest
@@ -93,9 +112,13 @@ from canx.safety.risk import (
 from canx.safety.scope import ArmScope, OperationTarget, has_lapsed
 
 __all__ = [
+    "AUDIT_IDENTIFIER_ALPHABET",
     "DANGEROUS_CAPABILITIES",
     "DEFAULT_AUDIT_CAPACITY",
+    "MAX_AUDIT_IDENTIFIER_LENGTH",
+    "SHA256_HEX_LENGTH",
     "Approval",
+    "ApprovalId",
     "ApprovalIssuer",
     "ApprovalRequirement",
     "ApprovalSpec",
@@ -103,15 +126,21 @@ __all__ = [
     "ArmController",
     "ArmScope",
     "ArmState",
+    "AuditEventId",
+    "AuditIdentifier",
+    "CallerId",
     "CallerIdentity",
     "CallerKind",
     "Capability",
+    "ChannelId",
     "DecisionOutcome",
+    "DeviceId",
     "EmergencyStopController",
     "EmergencyStopState",
     "InMemoryAuditSink",
     "OperationCanceller",
     "OperationClass",
+    "OperationId",
     "OperationPolicy",
     "OperationRequest",
     "OperationTarget",
@@ -129,10 +158,12 @@ __all__ = [
     "SafetyCallerError",
     "SafetyContext",
     "SafetyError",
+    "SafetyIdentifierError",
     "SafetyKernel",
     "SafetyPolicy",
     "SafetyPolicyError",
     "SafetyReason",
+    "SafetyRollbackError",
     "SafetyScopeError",
     "SafetyStateError",
     "SafetyUnknownOperationError",
@@ -144,5 +175,10 @@ __all__ = [
     "has_lapsed",
     "is_dangerous_capability",
     "issuer_for",
+    "new_approval_id",
+    "new_audit_event_id",
+    "new_operation_id",
     "operation_policy",
+    "validate_audit_identifier",
+    "validate_sha256_digest",
 ]

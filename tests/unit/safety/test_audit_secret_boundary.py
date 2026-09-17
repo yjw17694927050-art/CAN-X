@@ -25,6 +25,11 @@ The rule (invariant S19):
 A digest keeps the property the reason was there for — two records of the same
 reason can be matched, and a reason can be confirmed after the fact by whoever
 already knows it — without the trail ever holding the reason itself.
+
+FIX-1 bounded ``caller_name`` with a label alphabet. FIX-2 finished the job from
+the other end: the field is an **identifier** (renamed ``caller_id``), validated
+by the same shared contract as every other audit reference, and the rest of that
+contract lives in ``test_audit_identifiers.py``.
 """
 
 from __future__ import annotations
@@ -141,21 +146,21 @@ def test_a_control_event_message_is_kernel_text_not_caller_text() -> None:
 # -- The remaining free-text field, bounded -----------------------------------
 
 
-def test_a_caller_name_longer_than_the_label_budget_is_refused() -> None:
+def test_a_caller_identifier_longer_than_the_identifier_budget_is_refused() -> None:
     with pytest.raises(SafetyError):
         CallerIdentity(CallerKind.AGENT, "a" * 200)
 
 
-def test_a_caller_name_shaped_like_a_payload_is_refused() -> None:
-    """A label alphabet, not an encoding: no ``+``, ``/`` or ``=``."""
+def test_a_caller_identifier_shaped_like_a_payload_is_refused() -> None:
+    """An identifier alphabet, not an encoding: no ``+``, ``/`` or ``=``."""
     for payload in ("aGVsbG8+d29ybGQ=", "key:value/path+x", "  padded  "):
         with pytest.raises(SafetyError):
             CallerIdentity(CallerKind.AGENT, payload)
 
 
-def test_a_normal_caller_name_is_still_accepted() -> None:
-    for name in ("ui.main", "agent.session-1", "script.cleanup_v2", "runtime.host"):
-        assert CallerIdentity(CallerKind.AGENT, name).name == name
+def test_a_normal_caller_identifier_is_still_accepted() -> None:
+    for identifier in ("ui.main", "agent.session-1", "script.cleanup_v2", "runtime.host"):
+        assert CallerIdentity(CallerKind.AGENT, identifier).caller_id == identifier
 
 
 # -- The shape, checked directly ----------------------------------------------

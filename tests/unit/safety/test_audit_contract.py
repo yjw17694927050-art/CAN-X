@@ -74,7 +74,7 @@ def test_a_decision_event_carries_the_context_it_was_taken_in() -> None:
     safety.evaluate(request(DANGEROUS, caller=AGENT, approval_id="appr-1"))
     decision = [event for event in safety.audit_events() if event.outcome == "decision"][-1]
     assert decision.caller_kind == "agent"
-    assert decision.caller_name == "agent.session-1"
+    assert decision.caller_id == "agent.session-1"
     assert decision.arm_state == "armed"
     assert decision.risk_level == 4
     assert decision.approval_id == "appr-1"
@@ -122,7 +122,7 @@ def test_the_trail_is_bounded_and_reports_what_it_dropped() -> None:
                 event_id=f"e{index}",
                 recorded_at=0.0,
                 caller_kind="human.ui",
-                caller_name="ui.main",
+                caller_id="ui.main",
                 operation_id=f"op-{index}",
                 operation_class="engineering.read",
                 risk_level=1,

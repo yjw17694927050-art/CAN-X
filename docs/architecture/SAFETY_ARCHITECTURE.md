@@ -2,7 +2,7 @@
 
 > **Document**: `docs/architecture/SAFETY_ARCHITECTURE.md`
 > **Applies To**: every capability that can change a vehicle, and every caller that might ask for one
-> **Status**: implemented, remediated after the first independent review returned NOT PASS, and awaiting independent re-acceptance (SAFETY-01-FIX-1; see §24)
+> **Status**: implemented, remediated after the first independent review returned NOT PASS, hardened after the second independent review returned NOT PASS, and awaiting independent re-acceptance (SAFETY-01-FIX-1; SAFETY-01-FIX-2 — see §24, §25)
 > **Authority**: the invariants in §5 are frozen. Later tasks may add to them; none may be removed or weakened.
 
 This document is the authority on what CAN-X's safety boundary *is*. The code in
@@ -146,11 +146,21 @@ S18  A permission grant that opens any dangerous capability must carry a finite
      expiry.
 S19  No arbitrary caller-controlled text may be persisted in a safety audit
      event. A reason is recorded as a digest and a bounded label, never as text.
+S20  An authority-increasing safety action is committed only when its complete
+     audit transaction succeeds — event preparation, event construction and the
+     audit sink write. If any part of that chain fails, the authority is rolled
+     back first and the fault is propagated second.
+S21  Safety Audit reference fields are identifiers, and Safety Audit records only
+     typed identifiers, enumerated vocabulary values, bounded structured
+     coordinates and cryptographic digests. It has no field for arbitrary
+     caller-controlled text.
 ```
 
 S1–S14 were frozen by SAFETY-01. S15–S19 were added by SAFETY-01-FIX-1 after the
 first independent review returned `NOT PASS`, and they are the five things that
-review found the model could not yet hold (§24).
+review found the model could not yet hold (§24). S20–S21 were added by
+SAFETY-01-FIX-2 after the second independent review returned `NOT PASS`, and they
+are the two things that review found it still could not hold (§25).
 
 ### How each invariant is held
 
@@ -172,9 +182,11 @@ review found the model could not yet hold (§24).
 | S14 | A broken audit sink raises instead of returning a verdict; cancellation failures are reported | `safety/kernel.py`, `safety/emergency.py` |
 | S15 | `required_capabilities` includes `CAN_TX` on every transmitting operation; the chain checks all of them | `safety/risk.py`, `safety/policy.py` |
 | S16 | `ApprovalSpec` has no issuer field; `issuer_for` derives it from the caller; the store checks the match | `safety/approval.py`, `safety/kernel.py` |
-| S17 | `_record_or_rollback` commits then rolls back a failed audit to a *reducing* action | `safety/kernel.py` |
+| S17 | `_commit_authority_change_with_audit` commits then rolls back a failed audit to a *reducing* action; a failed rollback raises `SafetyRollbackError` rather than a softer fault | `safety/kernel.py` |
 | S18 | `PermissionGrant.__post_init__` refuses a dangerous grant without a finite expiry | `safety/permission.py` |
-| S19 | `reason_digest` replaces raw reasons; `CallerIdentity` bounds its name | `safety/audit.py`, `safety/caller.py`, `safety/emergency.py` |
+| S19 | `reason_digest` replaces raw reasons; a control event's `message` is kernel text; `caller_id` is a bounded identifier | `safety/audit.py`, `safety/caller.py`, `safety/emergency.py` |
+| S20 | The whole preparation *and* the sink write are inside the commit guard's `try`; `SafetyAuditEvent` refuses a non-finite `recorded_at`; `_record_control`/`_record_decision` normalise every audit-chain exception into `SafetyAuditError` | `safety/kernel.py`, `safety/audit.py`, `tests/unit/safety/test_authority_audit_atomicity.py` |
+| S21 | Every reference field is validated by one central contract at construction — the domain types *and* `SafetyAuditEvent.__post_init__` | `safety/identifiers.py`, `safety/audit.py`, `safety/caller.py`, `safety/operation.py`, `safety/scope.py`, `safety/approval.py`, `tests/unit/safety/test_audit_identifiers.py` |
 
 ---
 
@@ -305,14 +317,21 @@ adds the capability; it does not add the boundary.
 `OperationRequest` is a pure domain value:
 
 ```text
-operation_id        stable identifier for correlation
+operation_id        validated identifier, for correlation
 operation_class     what it does (RiskLevel is derived, never supplied)
-caller              CallerIdentity
+caller              CallerIdentity (whose caller_id is itself an identifier)
 target              OperationTarget — device / channel / target address
-requested_at        the instant the caller asked
-approval_id         optional reference to an approval to spend
+requested_at        the instant the caller asked; must be finite
+approval_id         optional validated identifier of an approval to spend
 parameters_digest   sha256 of the parameters, never the parameters
 ```
+
+Every textual field here is a **validated identifier** rather than a string that
+happens to be short (invariant S21). ``operation_id`` and ``approval_id`` both
+reach the trail, so both are governed by the same contract as the caller identity
+— the runtime mints its own references with
+``new_operation_id()`` / ``new_approval_id()``, and a reference supplied from
+outside is accepted only when it already satisfies it.
 
 Alongside it sits the **operation policy** — the table row that answers both
 questions for an operation class:
@@ -369,6 +388,13 @@ AUTOMATION                  yes           no                 no                 
 An unknown caller kind cannot be constructed at all: `CallerIdentity.__post_init__`
 refuses a kind outside the vocabulary.
 
+`CallerIdentity.caller_id` is an **identifier**, not a display name and not a
+credential (invariant S21). It was named `name` until SAFETY-01-FIX-2, which
+implied human-readable text it never was. A display label is not authority, it is
+not attributable, and it is exactly the shape a payload takes when somebody puts
+one in an identity — so there is deliberately **no** display-label field, and a UI
+that wants to show "YJW (bench operator)" keeps that string in the UI.
+
 This table is the answer to "can an Agent self-arm / self-approve?" — no, and not
 because a rule remembers to check. There is no code path that would accept it.
 
@@ -422,10 +448,16 @@ to arrives, and each is listed in §20.
 Every authority carries an `OperationTarget`:
 
 ```text
-device_id        adapter identity           (future — device manager does not exist yet)
-channel          bus channel
-target_address   CAN identifier
+device_id        adapter identity — a DeviceId        (future: no device manager yet)
+channel          bus channel — a ChannelId
+target_address   CAN identifier — already a bounded integer
 ```
+
+`device_id` and `channel` are **identifiers**, not descriptions (invariant S21):
+`pcan-usb-1`, `can1` and `virtual-0` are the shape, and "my device password is …"
+is not. No vendor grammar is frozen — CAN-X has no device manager yet, and
+inventing one would be fiction — but the *kind* of value is frozen, so a
+coordinate cannot become a place to write prose.
 
 and comparison is deliberately asymmetric:
 
@@ -562,28 +594,128 @@ Both verdicts are recorded — the refusals are the part of the trail that shows
 the kernel was working. So are the actions that move authority.
 
 ```text
-timestamp · caller kind · caller name (bounded label)
-operation id · operation class · risk level
-device / channel / target address
+event id (runtime-generated identifier) · timestamp (finite)
+caller kind · caller id (identifier)
+operation id (identifier) · operation class · risk level
+device id / channel (identifiers, or absent) / target address (integer, or absent)
 decision · reason code · message (kernel text) · detail (kernel coordinates)
-approval reference · parameters digest · reason digest
+approval reference (identifier, or absent) · parameters digest · reason digest
 arm state · arm scope expired · emergency stop engaged
 outcome
 ```
 
-**The event shape cannot carry a secret** — and since SAFETY-01-FIX-1 that is a
-property rather than a claim. The event once had three free-text slots
-(`caller_name`, `message`, `detail`) while this document described it as having
-none; an operator reason travelled through two of them verbatim. The correction
-(invariant S19):
+### The audit transaction
+
+"The audit" means the **whole** commit path, not the sink call at its end
+(invariant S20):
 
 ```text
-caller_name      a bounded label: ≤64 chars of [A-Za-z0-9._:-], refused otherwise
-message          kernel text — a fixed sentence per action, never caller input
-detail           kernel-rendered coordinates (enums, numbers, coordinates)
-reason_digest    sha256 of an operator reason; the reason text is not stored
-*_digest         sha256 of a parameter bag; the parameters are not stored
+prepare      generate the event id, read the clock, validate every reference
+             ↓
+construct    build the SafetyAuditEvent (which re-checks every reference)
+             ↓
+write        audit_sink.record(event)
+             ↓
+recorded     the authority change now has a record
 ```
+
+Any exception at any of those three stages is an audit that did not happen. For
+an **authority-increasing** action (`arm`, `confirm_arm`, `grant_approval`,
+`release_emergency_stop`) the kernel first returns the runtime to a safe state and
+only then propagates the fault:
+
+```text
+any stage fails → roll back to a reducing action → raise a typed safety fault
+```
+
+The fault is normalised rather than passed through: a clock that raises
+``RuntimeError``, a UUID provider that raises, a coordinate that fails validation
+and a ``json.dumps`` fault all reach the caller as :class:`SafetyAuditError`, with
+the original exception preserved as ``__cause__``. A caller must never have to
+tell "the safety audit could not commit" apart from "the product broke" by
+inspecting a message.
+
+**Rollback failure is its own, stronger fault.** If the audit fails *and* the
+rollback fails, authority may remain with no record accounting for it, and the
+runtime's safety state can no longer be trusted. That is reported as
+:class:`SafetyRollbackError` — deliberately **not** a ``SafetyAuditError``, so a
+caller that catches the ordinary audit fault cannot accidentally swallow the
+unknown one. It carries the action, both failure types and both exception objects,
+and no payload. There is no invented ``FAULTED`` arm state: the loud fault is the
+contract, and with no real device attached there is nothing to fail safe *into*.
+When a real transmit path exists, reaching this state must additionally trigger
+the global fail-safe / emergency semantics (§17.1).
+
+**The reducing direction is not symmetric, on purpose.** `disarm`,
+`engage_emergency_stop` and `revoke_approval` are not routed through the commit
+guard. For them the authority is already gone when the audit runs, and undoing a
+successful safety reduction in order to "keep the transaction consistent" would be
+the failure rather than the fix:
+
+```text
+audit failure may cause authority to be lost
+audit failure must NEVER cause authority to be restored
+```
+
+Fail safe — not fail transactionally symmetric.
+
+### The identifier contract
+
+**Safety Audit reference fields are identifiers, not arbitrary caller text**
+(invariant S21). This is the correction SAFETY-01-FIX-2 made, and it is stated as
+a contract rather than a filtering rule:
+
+```text
+identifier     1..64 characters of [A-Za-z0-9._:-] — the shared contract
+digest         64 lowercase hex characters (sha256)
+message        kernel text — a fixed sentence per action, never caller input
+detail         kernel-rendered coordinates (enums, numbers, coordinates)
+```
+
+Which fields are which:
+
+```text
+event_id        AuditEventId    runtime-generated
+caller_id       CallerId        from the caller's identity
+operation_id    OperationId     from the request (or `kernel.<action>`)
+approval_id     ApprovalId      or absent
+device_id       DeviceId        or absent
+channel         ChannelId       or absent
+parameters_digest / reason_digest   sha256 hex, or absent
+caller_kind · operation_class · decision · reason_code · arm_state · outcome
+                enum values — themselves bounded identifiers
+```
+
+**Why the rule is an alphabet and not a detector.** The shortcut is to reject
+values that "look like secrets" — containing ``SECRET``, or ``+``/``/``/``=``, or
+matching a base64 shape. That is not a security boundary, because a secret can be
+*any* string: ``abc123`` may be a password, and ``runtime.host`` may be a token
+that looks like a hostname. A rule that admits a value because it does not resemble
+the secret it is, fails on the one input that matters. So the contract is the
+shape, and it is applied without exception.
+
+**Enforced twice, deliberately.** Every domain type that can reach the trail
+(`CallerIdentity`, `OperationRequest`, `OperationTarget`, `ApprovalSpec`,
+`Approval`) validates its references at construction, *and*
+``SafetyAuditEvent.__post_init__`` re-checks all of them. That is defence in depth
+rather than duplication: the audit trail is the boundary that persists, so an
+event built by some future path that skipped the domain constructors must still be
+unstorable. A stored event holds typed identifiers, not bare strings.
+
+`requested_at` and `recorded_at` must be **finite**: a ``NaN`` timestamp is a
+malformed record, and ordering a trail by a value that compares false against
+everything is not ordering it at all. A non-finite clock reading therefore cannot
+be stamped — for an authority-increasing action it fails the transaction and rolls
+back; for a decision it means no verdict is handed back.
+
+**What this claim is, and is not.** It is *not* "no secret can ever enter a log" —
+that is not provable and not what the contract says. What is frozen is narrower and
+checkable:
+
+> Safety Audit accepts only typed identifiers, enumerated vocabulary values,
+> bounded structured coordinates and cryptographic digests. Arbitrary
+> caller-controlled text and raw operation parameters have no field in the Safety
+> Audit contract.
 
 A reason is still attributable — the same reason always hashes the same way, so
 two records can be matched, and a reason can be confirmed after the fact by
@@ -598,8 +730,10 @@ never record credentials, security keys, auth tokens or seed material;
 never record raw operation parameters — record a digest;
 never record an operator reason as text — record reason_digest;
 never add a free-text field a future caller could fill with a payload;
+never add a reference field without giving it an identifier contract;
 record ALLOW and DENY, never only the operations that proceeded;
-never let a sink failure turn into a silent absence of a record.
+never let a failure in *any* stage of the audit commit become a silent absence
+  of a record — roll back the authority first, then raise.
 ```
 
 `SafetyAuditSink` is a protocol with a bounded in-memory implementation. **No
@@ -756,6 +890,13 @@ R13  A failed audit rolls authority back — downwards only (S17). A reduction
      not
 R14  A dangerous grant without a finite expiry cannot be constructed (S18)
 R15  Caller-controlled text does not reach the trail (S19)
+R16  A failure anywhere in the audit *transaction* — preparation, construction or
+     the sink write — rolls the authority back, not only a sink failure (S20)
+R17  An authority change that could be neither audited nor rolled back raises a
+     typed fault of its own rather than a softer one (S20): the runtime state can
+     no longer be trusted and the caller must not be told otherwise
+R18  A reference field reaches the trail only as a validated identifier, and a
+     non-finite timestamp never reaches it at all (S21)
 ```
 
 R8 deserves its own line because it is the least obvious. `NaN` compares false
@@ -763,6 +904,13 @@ against everything, so a check written `now >= expires_at` answers "not expired"
 for a corrupted clock — the failure would *extend* an authority. Every expiry
 check in the package routes through `has_lapsed`, written
 `not (now < expires_at)`, so the broken input lands on the safe side.
+
+R16 and R17 are the pair SAFETY-01-FIX-2 added, and they are one idea from two
+sides. R16 says the transaction is the whole commit path, so a fault *before* the
+sink rolls back like a fault at the sink. R17 says the one case that cannot be
+recovered must be reported as what it is: if the rollback also failed, the runtime
+is holding unaudited authority and every subsequent decision is suspect. Neither
+rule invents a new state — the fault is the contract.
 
 ---
 
@@ -835,6 +983,10 @@ Permission-invalidation auto-disarm           CONTRACT ONLY (§9)
 Audit durability across restart               NOT IMPLEMENTED
 Audit tamper evidence                         NOT IMPLEMENTED
 External execution atomic with the decision   NOT IMPLEMENTED (§19)
+Rollback-failure fail-safe *actuation*        CONTRACT ONLY (§12, §17.1) — the
+                                              typed fault is raised; with no
+                                              device there is nothing to fail
+                                              safe into
 ```
 
 Structural limits of this stage:
@@ -845,7 +997,12 @@ Structural limits of this stage:
 * **No persistence.** Approvals and arm state are session-scoped by design; audit
   is in-memory and bounded. No SQLite schema change was made.
 * **No device identity in practice.** `OperationTarget.device_id` exists in the
-  shape but CAN-X has no device manager to fill it with a real identifier.
+  shape but CAN-X has no device manager to fill it with a real identifier, so the
+  identifier contract is enforced without a vendor grammar to enforce.
+* **An identifier is not a redaction.** The contract makes arbitrary text
+  unrepresentable in a reference field; it does not scan free-form values that a
+  *future* task might add. Adding such a field is what invariant S21 and §21.5
+  forbid.
 * **`windows-latest` is the only CI runner.** A green CI run verifies Windows
   only, and never real hardware.
 
@@ -884,6 +1041,7 @@ quietly.
 runtime/canx/safety/
 ├─ risk.py         RiskLevel · Capability · OperationClass · classification
 ├─ caller.py       CallerKind · CallerIdentity · who may supply authority
+├─ identifiers.py  the audit-safe identifier + digest contract (S21)
 ├─ scope.py        OperationTarget · ArmScope · has_lapsed
 ├─ arm.py          ArmState · ArmController · the transition table
 ├─ permission.py   PermissionGrant · PermissionSet
@@ -893,12 +1051,13 @@ runtime/canx/safety/
 ├─ policy.py       SafetyPolicy · SafetyContext · ApprovalRequirement
 ├─ audit.py        SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink
 ├─ emergency.py    EmergencyStopController · EmergencyStopState · OperationCanceller
-├─ kernel.py       SafetyKernel — the authority
+├─ kernel.py       SafetyKernel — the authority · the audit commit guard
 └─ errors.py       SafetyError and its typed family (safety.*)
 ```
 
-Tests: `tests/unit/safety/` — refusal paths, fault injection, cross-caller
-matrices, the anti-escalation properties, and the device/HTTP boundary guards.
+Tests: `tests/unit/safety/` — refusal paths, fault injection (including the audit
+transaction's own failure points), cross-caller matrices, the anti-escalation
+properties, the identifier contract and the device/HTTP boundary guards.
 
 ---
 
@@ -1043,3 +1202,164 @@ TX / UDS    still absent — the boundary is enforced; no capability was added
 
 The five properties the review was reasoning about are now frozen as S15–S19, and
 each is asserted by tests rather than by this document.
+
+---
+
+## 25. Acceptance remediation (SAFETY-01-FIX-2)
+
+SAFETY-01's **second** independent review returned `NOT PASS`:
+
+```text
+Final Acceptance: NOT PASS
+Status: AWAITING FIX-2
+
+P0 = 1
+P1 = 1
+P2 = 1
+```
+
+All three findings were correct. Each is recorded here with what it was, why the
+model could not hold it, and what now does. S1–S19 were not weakened; S20–S21 were
+added for the two properties the review found missing, and the third finding was a
+documentation defect.
+
+### P0 — the audit transaction was still not fully fail-safe
+
+SAFETY-01-FIX-1 wrapped the authority mutations in `_record_or_rollback`, and that
+guard caught exactly one exception type:
+
+```python
+try:
+    record()
+except SafetyAuditError:      # ← and nothing else
+    rollback()
+    raise
+```
+
+`record()` is `_record_control(...)`, which does considerably more than write to
+the sink. Before the sink is reached it generates an event id, reads the clock,
+constructs the event and renders kernel coordinates into `detail`. A failure in
+any of those steps — a clock provider that raises, a UUID provider that raises, a
+serialisation fault, a malformed coordinate — was **not** a `SafetyAuditError`, so
+it escaped the guard uncaught:
+
+```text
+mutate authority → audit preparation raises → rollback never runs → authority survives
+```
+
+The caller saw a failure. The runtime stayed armed, or held a new approval, or was
+no longer stopped. That is S17 violated by exactly the path S17 was written for:
+"the audit" had been read as "the sink call", and the sink call is the last step,
+not the whole thing.
+
+Fixed by making the transaction the whole commit path (invariant S20):
+`_record_control` and `_record_decision` normalise **any** exception from
+preparation or construction into `SafetyAuditError` with `__cause__` preserved,
+and `_commit_authority_change_with_audit` catches broadly, rolls back through a
+*reducing* action, and only then propagates.
+
+```text
+RED    195 failed / 48 passed   (the new fault-injection matrix)
+       headline: safety.confirm_arm() raised the injected RuntimeError and left
+                 arm_state == ARMED — an unaudited authority, reported as a failure
+GREEN  522 passed
+```
+
+### P0's new edge — rollback failure
+
+Fixing the above created a case the earlier design had never had to name: what if
+the audit fails **and** the rollback fails? Then authority was created, no record
+accounts for it, and the runtime's safety state can no longer be trusted.
+
+Reporting that as an ordinary `SafetyAuditError` would tell the caller the rollback
+succeeded when it is unknown. It is therefore a distinct, stronger type —
+`SafetyRollbackError`, deliberately **not** a subclass of `SafetyAuditError` — that
+carries the action, both failure types and both exception objects, and no payload.
+
+No `FAULTED` arm state was invented for it. Inventing one would put a fourth state
+into a machine whose three states are load-bearing, for a condition the fault
+already describes; and with no device attached there is nothing to fail safe
+*into*. The obligation is recorded instead: when a real transmit path exists,
+reaching this state must trigger the global fail-safe / emergency semantics
+(§12, §17.1, §20).
+
+```text
+RED    the injected rollback failure surfaced as a bare RuntimeError, with the
+       authority still present and nothing typed to say the state was untrusted
+GREEN  raising SafetyRollbackError, with audit_failure / rollback_failure and
+       details["action"], and the still-present authority asserted explicitly
+```
+
+### P1 — four audit references were still "any non-empty string"
+
+Invariant S19 said no arbitrary caller-controlled text may be persisted in a
+safety audit event. After FIX-1 that was true of the three *obvious* free-text
+slots, and false of five reference fields, four of which only had to be non-empty:
+
+```text
+caller_name      bounded label (FIX-1)
+operation_id     non-empty string
+approval_id      non-empty string
+device_id        non-empty string
+channel          non-empty string
+```
+
+`OperationRequest(operation_id="rotate the key hunter2-please")` was a legal
+request, and the trail recorded that string verbatim as an identifier. The event's
+no-secret property rested on the caller's restraint.
+
+Fixed by giving every reference field a formal domain contract (invariant S21), in
+`runtime/canx/safety/identifiers.py`:
+
+```text
+identifier      1..64 characters of [A-Za-z0-9._:-]
+typed            CallerId · OperationId · ApprovalId · DeviceId · ChannelId ·
+                 AuditEventId — str subclasses whose construction is the validation
+runtime-minted   new_operation_id() · new_approval_id() · new_audit_event_id()
+digests          64 lowercase hex, validated rather than trusted
+enforced twice   every domain type at construction, and SafetyAuditEvent.__post_init__
+```
+
+`CallerIdentity.name` became `CallerIdentity.caller_id`, and the event's
+`caller_name` became `caller_id`. It was always an identifier; the name implied
+otherwise, and renaming is the honest fix.
+
+The design decision worth recording is what this rule is *not*. It does not try to
+detect secrets — no "contains SECRET", no base64 heuristic, no character-frequency
+guess. A secret can be any string (`abc123` may be a password), so a rule that
+admits a value because it does not resemble a secret fails on the one input that
+matters. The contract is the shape, and the shape admits no prose.
+
+```text
+RED    OperationRequest(operation_id="operator entered emergency because the rig
+       was smoking") was constructed, evaluated and persisted
+       ApprovalSpec(approval_id=<free text>) and OperationTarget(channel=<free text>)
+       likewise; SafetyAuditEvent accepted a NaN recorded_at and a non-digest
+GREEN  every one refused at construction, and again by the event itself
+```
+
+### P2 — documentation had drifted from the implementation
+
+`S1–S14` was still the stated invariant range in places, the acceptance history
+did not record the second `NOT PASS`, and the tree's test counts were not the
+tree's test counts. Reconciled in this document, `AGENTS.md` §16, `SPEC.md` §32 and
+`docs/PROJECT_STATE.md` §17 — with the first *and* second independent verdicts kept
+rather than replaced.
+
+### What the remediation did not change
+
+```text
+S1–S19       unchanged, and none weakened
+FIX-1        every FIX-1 protection intact — two-axis authority, derived
+             provenance, finite dangerous-permission expiry, reason digests
+tests        none deleted, skipped or loosened; the two FIX-1 clock tests were
+             re-expressed against the stronger contract, and the properties they
+             pinned (expiry fails closed, an unauditable verdict is not returned)
+             are still asserted directly
+ci.yml       untouched
+ruleset      untouched
+TX / UDS     still absent — the boundary is enforced; no capability was added
+```
+
+S20 and S21 are the two properties the second review found the model could not
+hold, and each is asserted by tests rather than by this document.

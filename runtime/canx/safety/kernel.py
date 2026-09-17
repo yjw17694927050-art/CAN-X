@@ -59,7 +59,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-import uuid
 from collections.abc import Callable
 
 from canx.safety.approval import Approval, ApprovalSpec, ApprovalStore, issuer_for
@@ -77,7 +76,9 @@ from canx.safety.errors import (
     SafetyApprovalProvenanceError,
     SafetyAuditError,
     SafetyCallerError,
+    SafetyRollbackError,
 )
+from canx.safety.identifiers import new_audit_event_id
 from canx.safety.operation import OperationRequest
 from canx.safety.permission import PermissionSet
 from canx.safety.policy import SafetyContext, SafetyPolicy
@@ -157,7 +158,8 @@ class SafetyKernel:
         self._require_arm_authority(caller)
         with self._lock:
             state = self._arm.request(scope)
-            self._record_or_rollback(
+            self._commit_authority_change_with_audit(
+                action="arm.requested",
                 record=lambda: self._record_control(
                     action="arm.requested",
                     caller=caller,
@@ -180,7 +182,8 @@ class SafetyKernel:
         self._require_arm_authority(caller)
         with self._lock:
             state = self._arm.confirm()
-            self._record_or_rollback(
+            self._commit_authority_change_with_audit(
+                action="arm.confirmed",
                 record=lambda: self._record_control(
                     action="arm.confirmed",
                     caller=caller,
@@ -245,7 +248,7 @@ class SafetyKernel:
         if not granted_by.may_issue_approval:
             raise SafetyCallerError(
                 "Only a human operator or the host system may issue an approval.",
-                details={"caller": str(granted_by.kind), "name": granted_by.name},
+                details={"caller": str(granted_by.kind), "caller_id": granted_by.caller_id},
             )
         if type(spec) is not ApprovalSpec:
             # An ``Approval`` carries an issuer, and a caller that handed one in
@@ -269,7 +272,8 @@ class SafetyKernel:
                 single_use=spec.single_use,
             )
             self._approvals.grant(approval, granted_by=granted_by)
-            self._record_or_rollback(
+            self._commit_authority_change_with_audit(
+                action="approval.granted",
                 record=lambda: self._record_control(
                     action="approval.granted",
                     caller=granted_by,
@@ -357,7 +361,8 @@ class SafetyKernel:
         with self._lock:
             before = self._emergency.state
             state = self._emergency.reset(caller=caller)
-            self._record_or_rollback(
+            self._commit_authority_change_with_audit(
+                action="emergency_stop.released",
                 record=lambda: self._record_control(
                     action="emergency_stop.released",
                     caller=caller,
@@ -389,7 +394,7 @@ class SafetyKernel:
         if not caller.may_control_arm:
             raise SafetyCallerError(
                 "An Agent, script or automation rule may not control the arm state.",
-                details={"caller": str(caller.kind), "name": caller.name},
+                details={"caller": str(caller.kind), "caller_id": caller.caller_id},
             )
 
     def _disarm_for_emergency_stop(self) -> None:
@@ -403,30 +408,53 @@ class SafetyKernel:
         self._arm.disarm()
 
     def _record_decision(self, request: OperationRequest, decision: PolicyDecision) -> None:
-        arm_scope = self._arm.scope
-        event = SafetyAuditEvent(
-            event_id=uuid.uuid4().hex,
-            recorded_at=self._clock(),
-            caller_kind=str(request.caller.kind),
-            caller_name=request.caller.name,
-            operation_id=request.operation_id,
-            operation_class=str(request.operation_class),
-            risk_level=None if decision.risk_level is None else int(decision.risk_level),
-            device_id=request.target.device_id,
-            channel=request.target.channel,
-            target_address=request.target.target_address,
-            decision=decision.outcome.value,
-            reason_code=decision.reason_code.value,
-            message=decision.message,
-            detail=None,
-            approval_id=request.approval_id,
-            parameters_digest=request.parameters_digest,
-            reason_digest=None,
-            arm_state=self._arm.state.value,
-            arm_scope_expired=None if arm_scope is None else arm_scope.is_expired(self._clock()),
-            emergency_stop_engaged=self._emergency.engaged,
-            outcome="decision",
-        )
+        """Record one verdict, or fault instead of handing it back.
+
+        The **whole** preparation sits inside the guard rather than only the sink
+        write (invariant S20): an event id that cannot be generated, a clock that
+        cannot be read, a coordinate that cannot be validated and a render that
+        cannot complete are each "this decision was never recorded". A caller must
+        not be able to read any of them as "denied, try again differently", so
+        they are normalised into :class:`SafetyAuditError` with the original
+        exception kept as ``__cause__`` (invariants S10, S14).
+
+        No authority is rolled back here, and none needs to be: ``evaluate``
+        returns a verdict and mutates nothing that outlives the call. Consuming a
+        single-use approval is the one authority change on this path, and it can
+        only ever *reduce* authority — a lost approval is the safe direction.
+        """
+        try:
+            arm_scope = self._arm.scope
+            event = SafetyAuditEvent(
+                event_id=new_audit_event_id(),
+                recorded_at=self._clock(),
+                caller_kind=str(request.caller.kind),
+                caller_id=request.caller.caller_id,
+                operation_id=request.operation_id,
+                operation_class=str(request.operation_class),
+                risk_level=None if decision.risk_level is None else int(decision.risk_level),
+                device_id=request.target.device_id,
+                channel=request.target.channel,
+                target_address=request.target.target_address,
+                decision=decision.outcome.value,
+                reason_code=decision.reason_code.value,
+                message=decision.message,
+                detail=None,
+                approval_id=request.approval_id,
+                parameters_digest=request.parameters_digest,
+                reason_digest=None,
+                arm_state=self._arm.state.value,
+                arm_scope_expired=(
+                    None if arm_scope is None else arm_scope.is_expired(self._clock())
+                ),
+                emergency_stop_engaged=self._emergency.engaged,
+                outcome="decision",
+            )
+        except Exception as error:
+            raise SafetyAuditError(
+                "The safety decision could not be prepared; it is not handed back.",
+                details={"operation_id": request.operation_id, "stage": "preparation"},
+            ) from error
         self._write(event, request.operation_id)
 
     def _record_control(
@@ -450,30 +478,44 @@ class SafetyKernel:
         ``reason_digest`` and the text itself is never written down (invariant
         S19). ``detail`` carries kernel-rendered coordinates, which are structured
         values this domain owns and never caller-supplied payloads.
+
+        Preparation is inside the guard, so a failure to generate the event id,
+        read the clock or construct a valid event surfaces as
+        :class:`SafetyAuditError` rather than as whatever the fault happened to be
+        (invariant S20). For a *reducing* action the authority is already gone and
+        stays gone — this method is deliberately not routed through the commit
+        guard, because undoing a successful reduction would be the failure rather
+        than the fix (invariant S17).
         """
-        event = SafetyAuditEvent(
-            event_id=uuid.uuid4().hex,
-            recorded_at=self._clock(),
-            caller_kind=str(caller.kind),
-            caller_name=caller.name,
-            operation_id=f"kernel.{action}",
-            operation_class="safety.control",
-            risk_level=None,
-            device_id=None,
-            channel=None,
-            target_address=None,
-            decision="control",
-            reason_code=reason_code.value,
-            message=message,
-            detail=detail,
-            approval_id=None,
-            parameters_digest=None,
-            reason_digest=reason_digest,
-            arm_state=self._arm.state.value,
-            arm_scope_expired=None,
-            emergency_stop_engaged=self._emergency.engaged,
-            outcome="control",
-        )
+        try:
+            event = SafetyAuditEvent(
+                event_id=new_audit_event_id(),
+                recorded_at=self._clock(),
+                caller_kind=str(caller.kind),
+                caller_id=caller.caller_id,
+                operation_id=f"kernel.{action}",
+                operation_class="safety.control",
+                risk_level=None,
+                device_id=None,
+                channel=None,
+                target_address=None,
+                decision="control",
+                reason_code=reason_code.value,
+                message=message,
+                detail=detail,
+                approval_id=None,
+                parameters_digest=None,
+                reason_digest=reason_digest,
+                arm_state=self._arm.state.value,
+                arm_scope_expired=None,
+                emergency_stop_engaged=self._emergency.engaged,
+                outcome="control",
+            )
+        except Exception as error:
+            raise SafetyAuditError(
+                "The safety control event could not be prepared; the action is not recorded.",
+                details={"action": action, "stage": "preparation"},
+            ) from error
         self._write(event, f"kernel.{action}")
 
     def _write(self, event: SafetyAuditEvent, correlation: str) -> None:
@@ -486,36 +528,99 @@ class SafetyKernel:
             ) from error
 
     @staticmethod
-    def _record_or_rollback(
+    def _commit_authority_change_with_audit(
+        *,
+        action: str,
         record: Callable[[], None],
         rollback: Callable[[], object],
     ) -> None:
-        """Write the audit record, or undo the authority change and re-raise.
+        """Commit an authority change only if its complete audit transaction lands.
 
         The one place this discipline is expressed, so the four
-        authority-increasing operations cannot drift into three that roll back
-        and one that does not (invariant S17):
+        authority-increasing operations cannot drift into three that roll back and
+        one that does not (invariant S17), and so that "the audit" means the same
+        thing in all four (invariant S20):
 
-        > Audit failure may remove authority, but must never create, retain or
-        > restore unaudited authority.
+        > Any exception that prevents a complete, auditable commit of an
+        > authority-increasing action must return the runtime to a safe state
+        > before propagating the fault.
+
+        **"Complete" is the whole transaction, not the sink write.** An earlier
+        version caught only :class:`SafetyAuditError`, which left every failure
+        *before* the sink — event-id generation, the clock read, event
+        construction, detail rendering — propagating raw, so the authority
+        survived an action that reported failure. Every one of those steps is
+        inside the transaction, and every one of them rolls back.
 
         Recording *before* the mutation would be the other way to satisfy the
         invariant, but it would write down an intention rather than a fact: the
         event's arm state, approval coordinates and emergency state all describe
-        the world after the change. Committing first and rolling back keeps the
+        the world *after* the change. Committing first and rolling back keeps the
         record truthful and still leaves no unaudited authority.
 
         ``rollback`` is always a *reducing* action — disarm, revoke, restore an
         engagement — so a rollback can never itself create authority. That
         asymmetry is why the reducing operations on this class do not come
-        through here: for them the authority is already gone, and undoing it
-        would be the failure rather than the fix.
+        through here: for them the authority is already gone, and undoing it would
+        be the failure rather than the fix.
+
+        Raises:
+            SafetyAuditError: The audit transaction failed and the authority was
+                rolled back. The original exception is preserved as
+                ``__cause__``; a caller that saw a bare ``RuntimeError`` could not
+                tell an audit fault apart from an ordinary product error.
+            SafetyRollbackError: The audit failed **and** the rollback failed, so
+                authority may remain with no record accounting for it. This is
+                deliberately not a ``SafetyAuditError`` — see that type.
         """
         try:
             record()
-        except SafetyAuditError:
+        except Exception as error:
+            SafetyKernel._roll_back_authority(
+                action=action, rollback=rollback, audit_failure=error
+            )
+            if isinstance(error, SafetyAuditError):
+                raise
+            raise SafetyAuditError(
+                "The authority change could not be committed to the safety audit "
+                "trail; it has been rolled back and is not handed back.",
+                details={"action": action, "stage": "transaction"},
+            ) from error
+
+    @staticmethod
+    def _roll_back_authority(
+        *,
+        action: str,
+        rollback: Callable[[], object],
+        audit_failure: Exception,
+    ) -> None:
+        """Undo a partially-committed authority change, or fail loudly trying.
+
+        A rollback that fails is the worst state this kernel can reach: authority
+        was created and no record accounts for it, so the runtime's safety state
+        can no longer be trusted. It must not be reported as an ordinary audit
+        fault, because that would tell the caller the rollback worked when it is
+        unknown.
+
+        The fault carries the two failure *types* and the ``safety.*`` code of
+        each, plus the exception objects themselves for an in-process debugger. It
+        carries no message text from either failure, because an error message is a
+        log line waiting to happen and this one would quote a payload.
+        """
+        try:
             rollback()
-            raise
+        except Exception as rollback_error:
+            raise SafetyRollbackError(
+                "An authority change could not be audited and could not be rolled "
+                "back; the runtime safety state can no longer be trusted.",
+                details={
+                    "action": action,
+                    "audit_failure": _fault_summary(audit_failure),
+                    "rollback_failure": _fault_summary(rollback_error),
+                },
+                audit_failure=audit_failure,
+                rollback_failure=rollback_error,
+            ) from rollback_error
 
 
 def _render(payload: dict[str, object]) -> str:
@@ -527,3 +632,17 @@ def _render(payload: dict[str, object]) -> str:
     shape's no-free-text-for-secrets property intact (SAFETY-01 §20).
     """
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _fault_summary(error: BaseException) -> str:
+    """Name a fault by type and ``safety.*`` code, never by its message.
+
+    Used by the rollback-failure path, where the two failures have to be
+    distinguishable in a report without quoting either one's text. A safety
+    fault's ``message`` is kernel prose and safe, but this helper also sees
+    foreign exceptions whose message may quote a payload, and one rule for both
+    is the only rule that cannot be forgotten.
+    """
+    code = getattr(error, "code", None)
+    name = type(error).__name__
+    return f"{name}[{code}]" if isinstance(code, str) else name

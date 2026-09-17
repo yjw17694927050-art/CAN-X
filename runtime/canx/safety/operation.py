@@ -27,18 +27,35 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from canx.safety.caller import CallerIdentity
 from canx.safety.errors import SafetyError
+from canx.safety.identifiers import (
+    PARAMETERS_DIGEST_ROLE,
+    ApprovalId,
+    OperationId,
+    validate_sha256_digest,
+)
 from canx.safety.risk import OperationClass
 from canx.safety.scope import OperationTarget
 
 
 @dataclass(frozen=True, slots=True)
 class OperationRequest:
-    """One request for the safety kernel to authorise."""
+    """One request for the safety kernel to authorise.
+
+    ``operation_id`` and ``approval_id`` are **identifiers**, not free text, and
+    they are validated at construction (invariant S21). Both reach the audit
+    trail, so an unvalidated reference field would be the last place a
+    caller-controlled string could travel into the safety record — the exact
+    defect SAFETY-01-FIX-2 closes. ``requested_at`` must be finite for the same
+    reason from the other direction: a ``NaN`` timestamp is a malformed record,
+    and ordering a trail by a value that compares false against everything is not
+    ordering it at all.
+    """
 
     operation_id: str
     operation_class: OperationClass
@@ -49,11 +66,19 @@ class OperationRequest:
     parameters_digest: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.operation_id:
+        # ``object.__setattr__`` because the dataclass is frozen: the fields are
+        # *normalised* to the typed identifier rather than merely checked, so a
+        # request that exists cannot hold an unvalidated reference.
+        object.__setattr__(self, "operation_id", OperationId(self.operation_id))
+        if self.approval_id is not None:
+            object.__setattr__(self, "approval_id", ApprovalId(self.approval_id))
+        if self.parameters_digest is not None:
+            validate_sha256_digest(self.parameters_digest, role=PARAMETERS_DIGEST_ROLE)
+        if not math.isfinite(self.requested_at):
             raise SafetyError(
-                "An operation request must carry a non-empty identifier.",
+                "An operation request must carry a finite requested_at timestamp.",
                 code="safety.invalid_operation",
-                details={},
+                details={"field": "requested_at"},
             )
 
     @staticmethod
@@ -87,7 +112,7 @@ class OperationRequest:
             "operation_id": self.operation_id,
             "operation_class": str(self.operation_class),
             "caller_kind": str(self.caller.kind),
-            "caller_name": self.caller.name,
+            "caller_id": self.caller.caller_id,
             "target": self.target.describe(),
             "requested_at": self.requested_at,
             "approval_id": self.approval_id,

@@ -28,8 +28,54 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from canx.safety.errors import SafetyScopeError
+from canx.safety.errors import SafetyIdentifierError, SafetyScopeError
+from canx.safety.identifiers import (
+    MAX_AUDIT_IDENTIFIER_LENGTH,
+    ChannelId,
+    DeviceId,
+)
 from canx.safety.risk import Capability
+
+
+def device_identifier(value: str) -> DeviceId:
+    """Return ``value`` as a device identifier, or refuse it as a scope fault.
+
+    ``device_id`` and ``channel`` reach the audit trail, so they are identifiers
+    like every other reference (invariant S21). The refusal is reported as a
+    :class:`SafetyScopeError` rather than the identifier fault because a bad
+    coordinate is a scope-shape problem, and the existing typed contract for that
+    is this one; the identifier fault is preserved as ``__cause__``.
+
+    No vendor grammar is frozen here — CAN-X has no device manager yet, and
+    inventing one would be fiction. What *is* frozen is that this is an
+    identifier and not a place to describe something.
+    """
+    try:
+        return DeviceId(value)
+    except SafetyIdentifierError as error:
+        raise SafetyScopeError(
+            "A device identity, when stated, must be a bounded identifier, not free-form text.",
+            details={
+                "field": "device_id",
+                "role": DeviceId.role,
+                "limit": MAX_AUDIT_IDENTIFIER_LENGTH,
+            },
+        ) from error
+
+
+def channel_identifier(value: str) -> ChannelId:
+    """Return ``value`` as a channel identifier, or refuse it as a scope fault."""
+    try:
+        return ChannelId(value)
+    except SafetyIdentifierError as error:
+        raise SafetyScopeError(
+            "A channel, when stated, must be a bounded identifier, not free-form text.",
+            details={
+                "field": "channel",
+                "role": ChannelId.role,
+                "limit": MAX_AUDIT_IDENTIFIER_LENGTH,
+            },
+        ) from error
 
 
 def has_lapsed(now: float, expires_at: float) -> bool:
@@ -58,6 +104,11 @@ class OperationTarget:
     channel and a target address are three independent coordinates, and a future
     integration fills them in without changing any comparison in this module.
 
+    ``device_id`` and ``channel`` are **identifiers**, not descriptions
+    (invariant S21): ``pcan-usb-1``, ``can1`` and ``virtual-0`` are the shape, and
+    "my device password is …" is not. ``target_address`` is already a bounded
+    integer rather than text, so it needs no such rule.
+
     An all-``None`` target is *unstated*, not universal. It is what a request
     means when it does not say where it is going, and it is covered only by an
     equally unstated grant.
@@ -68,16 +119,13 @@ class OperationTarget:
     target_address: int | None = None
 
     def __post_init__(self) -> None:
-        if self.device_id is not None and not self.device_id:
-            raise SafetyScopeError(
-                "A device identity, when stated, must not be empty.",
-                details={"field": "device_id"},
-            )
-        if self.channel is not None and not self.channel:
-            raise SafetyScopeError(
-                "A channel, when stated, must not be empty.",
-                details={"field": "channel"},
-            )
+        # ``object.__setattr__`` because the dataclass is frozen: a stated
+        # coordinate is normalised to its typed identifier, so an ``OperationTarget``
+        # that exists cannot hold an unvalidated one.
+        if self.device_id is not None:
+            object.__setattr__(self, "device_id", device_identifier(self.device_id))
+        if self.channel is not None:
+            object.__setattr__(self, "channel", channel_identifier(self.channel))
         if self.target_address is not None and not 0 <= self.target_address <= 0x1FFFFFFF:
             raise SafetyScopeError(
                 "A target address must be a CAN identifier.",

@@ -183,7 +183,7 @@ class EmergencyStopController:
         if not caller.may_release_emergency_stop:
             raise SafetyCallerError(
                 "Only a human operator or the host system may release the emergency stop.",
-                details={"caller": str(caller.kind), "name": caller.name},
+                details={"caller": str(caller.kind), "caller_id": caller.caller_id},
             )
         with self._lock:
             self._state = EmergencyStopState(engaged=False)

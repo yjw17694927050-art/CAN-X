@@ -479,9 +479,25 @@ Runtime 组件：runtime/canx/safety/
 具体到 Agent Tool：一个 effect risk 为 `READ` 的 tool，
 只要 `required_capabilities` 含 `CAN_TX`，`ToolExecutor` 就拒绝直接执行它。
 
-该文档中的安全不变量 `S1`–`S19` 为**冻结条款**。
+该文档中的安全不变量 `S1`–`S21` 为**冻结条款**。
 它们不能被任务 prompt 绕过——如果某条指令要求打破不变量，
 正确做法是指出冲突并停止，而不是静默执行。
+
+**Audit transaction 语义（S20）。** authority-increasing 动作
+（`arm` / `confirm_arm` / `grant_approval` / `release_emergency_stop`）
+只有在**整条 audit transaction** 成功时才成立：它不是
+`audit_sink.record()` 一次调用，而是 event id 生成、clock 读取、
+event 构造、sink 写入的全部。其中任何一步失败，都必须先回到安全状态，
+再把错误向上传播；rollback 本身失败时，必须抛出独立的强类型 fault，
+不得伪装成普通 audit failure。
+
+**Audit reference 必须是 identifier（S21）。** Safety Audit 的引用字段
+（`caller_id` / `operation_id` / `approval_id` / `device_id` / `channel` /
+`event_id`）是有明确 grammar 和长度预算的 identifier，不是任意 caller 文本。
+不得向 Safety Audit 契约中引入 caller 可控的自由文本字段，也不得用
+"看起来像不像 secret" 的启发式规则代替 identifier contract——
+secret 可以是任何字符串。契约在
+`runtime/canx/safety/identifiers.py` 中唯一定义。
 
 ---
 

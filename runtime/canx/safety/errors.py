@@ -156,7 +156,72 @@ class SafetyAuditError(SafetyError):
     Invariant S10 says safety decisions are auditable. A decision that cannot be
     written down is not handed back at all: the caller gets this fault instead of
     an ``ALLOW`` it could act on (invariant S14 — no silent swallow).
+
+    Since SAFETY-01-FIX-2 this is also the single outward type for a failure
+    anywhere in the **audit transaction** — event preparation, event construction
+    and the sink write — not only the sink write (invariant S20). A clock that
+    cannot be read, a UUID provider that raises and a serialisation fault all
+    arrive at a caller as this fault, with the original exception preserved as
+    ``__cause__``.
     """
 
     def __init__(self, message: str, *, details: dict[str, object] | None = None) -> None:
         super().__init__(message, code="safety.audit_failure", details=details)
+
+
+class SafetyIdentifierError(SafetyError):
+    """Raised when a safety reference is not a well-formed identifier.
+
+    Safety Audit records identifiers, enumerated vocabulary values, bounded
+    structured coordinates and cryptographic digests. It has no field for
+    arbitrary caller-controlled text (invariant S21), and the reason is not
+    tidiness: a reference field is exactly where a token, a security-access key
+    or an unlock payload ends up once a caller is free to write prose into it.
+
+    The contract is enforced where the value is constructed rather than by
+    inspecting what the value looks like. "It does not look like a secret" is not
+    a security boundary — ``abc123`` may be a password — so the rule is the
+    alphabet and the length, applied to every reference field without exception
+    (invariants S19, S21).
+    """
+
+    def __init__(self, message: str, *, details: dict[str, object] | None = None) -> None:
+        super().__init__(message, code="safety.invalid_identifier", details=details)
+
+
+class SafetyRollbackError(SafetyError):
+    """Raised when an authority change could be neither audited nor rolled back.
+
+    This is the strongest fault the kernel can raise, and it exists so that the
+    worst case is loud rather than quiet. The kernel's authority-increasing
+    operations commit first and roll back if the audit cannot be written
+    (invariant S17). If the rollback *also* fails, then authority was created and
+    no record accounts for it, and the runtime's safety state can no longer be
+    trusted.
+
+    Deliberately **not** a :class:`SafetyAuditError`: a caller that caught the
+    ordinary audit fault and moved on would be treating "the rollback worked" as
+    true when it is unknown. Catching a ``SafetyAuditError`` must never
+    accidentally swallow this one.
+
+    It carries the original audit failure, the rollback failure and the action
+    being attempted. It does **not** carry any payload — only the fault type and
+    the ``safety.*`` code of each failure.
+
+    With no real device attached this is a contract, not an actuator: the runtime
+    fails loudly and hands the fault up. When a real transmit path exists,
+    reaching this state must additionally trigger the global fail-safe /
+    emergency semantics (see ``docs/architecture/SAFETY_ARCHITECTURE.md`` §17.1).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+        audit_failure: BaseException | None = None,
+        rollback_failure: BaseException | None = None,
+    ) -> None:
+        super().__init__(message, code="safety.rollback_failure", details=details)
+        self.audit_failure = audit_failure
+        self.rollback_failure = rollback_failure
