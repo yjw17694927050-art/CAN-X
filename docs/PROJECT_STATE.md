@@ -4256,6 +4256,277 @@ Awaiting independent acceptance
 
 ---
 
+### Step V0.3-06-FINAL — Offload Base64 Decode From Event Loop
+
+V0.3-06 独立验收结论：**CONDITIONAL PASS**（P0: 0 · P1: 1 · P2: 0）。
+
+#### Independent acceptance finding
+
+P1：`DbcAssetImportRequest` 在 Pydantic synchronous validator 中执行**完整 Base64
+decode**，使最大 16 MiB decoded / 22 MiB+ encoded 的 CPU / memory work 落在 FastAPI event
+loop 上；同一 payload 随后又在 worker thread 中 decode 一次。这与 V0.3-06 自述的
+「decode 只在 worker 中发生一次」不一致。
+
+#### Root cause
+
+不是 domain 问题，也不是 request contract 语义问题，而是 **API scheduling / boundary**
+问题：
+
+```text
+HTTP request
+↓
+Pydantic sync validation        ← 这里做了完整 decode（event loop）
+↓
+route handler
+↓
+asyncio.to_thread(...)
+↓
+worker 中再 decode 一次
+```
+
+一条规则需要在两处成立（validator 与 worker 都必须知道「什么算合法内容」），于是 validator 用
+「调用同一个函数再丢掉结果」来实现——代价是 caller 可控的最大工作量被放到 event loop 上，并且
+支付两次。
+
+#### RED evidence（修复前实测）
+
+5 个新测试先在旧实现上运行：
+
+```text
+python -m pytest tests/unit/api/test_dbc_api.py -q \
+  -k "decodes_the_content_once or worker_thread or without_any_decode or past_the_bound"
+→ 5 failed, 137 deselected
+
+test_a_valid_import_decodes_the_content_once_off_the_event_loop
+  AssertionError: one request must decode its content exactly once
+  assert 2 == 1
+   +  where 2 = len([5968, 6500])          ← 两个线程各 decode 一次
+
+test_content_that_decodes_past_the_bound_is_refused_after_the_decode
+  assert 3240 != 3240                     ← decode 就发生在 event-loop 线程上
+
+test_empty_content_is_refused_without_any_decode                        FAILED
+test_encoded_text_beyond_the_static_bound_is_refused_without_any_decode  FAILED
+test_malformed_base64_is_detected_on_a_worker_thread                     FAILED
+```
+
+线程 id 是围绕**真实 decode** 记录的（monkeypatch 计数 wrapper），不是从
+`asyncio.to_thread` 被调用推断出来的。
+
+#### Fix
+
+```text
+runtime/canx/api/errors.py   + ApiRequestError（typed request-contract failure）
+runtime/canx/api/dbc.py      validator 只做廉价静态检查；decode 唯一入口抛 ApiRequestError
+runtime/canx/api/app.py      + app-level ApiRequestError handler → 共享 request-validation envelope
+```
+
+validator 现在只做两件 O(1) 判断（空文本、编码文本长度上界），**不再调用
+`base64.b64decode`**；完整 decode 只发生在 `decode_import_content`，而它只被 worker 调用。
+
+错误语义通过一个 typed exception 保持统一，而不是第二套 envelope：worker 检测到 transport
+失败时抛 `ApiRequestError`，application boundary 用同一个 `request_validation_envelope()` 与
+同一个 422 应答。
+
+#### Final request pipeline
+
+```text
+HTTP request
+↓
+Pydantic request-shape validation    strict primitives / required fields /
+                                     extra="forbid" / empty + encoded-length guard
+↓
+async route
+↓
+asyncio.to_thread(_import_asset, …)
+↓
+decode_import_content                ← 唯一一次完整 Base64 decode
+↓
+decoded-size guard（≤ MAX_DBC_IMPORT_BYTES）
+↓
+DBC canonical parse
+↓
+hash → staging → fsync → atomic promote → registry
+```
+
+#### Why request semantics remain unchanged
+
+```text
+POST /dbc/assets · 201 · DbcAssetResponse · project_path · source_name ·
+content_base64 · encoding                              未变
+ConfigDict(frozen=True, strict=True, extra="forbid")   未变
+source_path / content / unknown field                  仍然 422
+primitive coercion                                     仍然拒绝
+```
+
+失败分层仍然严格：
+
+```text
+malformed transport encoding   → 422 api.request_validation_failed（source = api）
+empty content                  → 422 api.request_validation_failed（source = api）
+oversize content               → 422 api.request_validation_failed（source = api）
+invalid DBC grammar            → 422 dbc.parse_failed（source = dbc）
+invalid declared encoding      → 422 dbc.decode_failed（source = dbc）
+```
+
+改变的是**由谁、在哪个线程检测**，不是检测结果的类别。
+
+#### Decode-exactly-once proof
+
+monkeypatch 计数 wrapper 包住 `decode_import_content`，成功 import 一次请求：
+
+```text
+len(threads) == 1          （修复前：2）
+```
+
+#### Worker-thread proof
+
+同一测试同时记录 event-loop 线程 id 与 decode 线程 id：
+
+```text
+threads[0] != event_loop_thread        （修复前：相等）
+```
+
+#### Invalid-Base64 worker proof
+
+malformed Base64（`"!!!not-base64!!!"`）在 worker 中被检测：
+
+```text
+threads == [worker_tid]  且  worker_tid != event_loop_tid
+HTTP 422 / api.request_validation_failed / source = api / recoverable = false
+且响应回显检查：payload 不出现在响应中、project 中未产生任何 asset
+```
+
+#### Size guard 的两层与它的可达性（诚实记录）
+
+```text
+MAX_DBC_IMPORT_BYTES = 16 MiB             HTTP request guard（非 domain 永久限制）
+MAX_IMPORT_BASE64_CHARS = 4*ceil(MAX/3)   cheap 编码长度预检（validator 中执行，O(1)）
+```
+
+`MAX_IMPORT_BASE64_CHARS` 是「**能**解码到界内」的最长文本，不是「任意解码都界内」的长度：
+4 个 Base64 字符携带 3 字节，因此长度恰为该值的文本在区间顶端会解码出略多于上界的字节数。
+post-decode 的最终尺寸检查因此是**可达**的，不是防御性代码：
+
+```text
+len("A" * MAX_IMPORT_BASE64_CHARS) == MAX_IMPORT_BASE64_CHARS
+len(b64decode(该文本, validate=True)) == 16,777,218 > 16,777,216
+→ 422 api.request_validation_failed（由 worker 的最终尺寸检查拒绝）
+```
+
+该构造在测试中被断言，而不是被假设。
+
+#### Privacy regression（未变）
+
+```text
+invalid Base64 / oversize / empty / invalid DBC / bad encoding
+  → 响应不含 content_base64、raw DBC bytes/text、caller path、source_path 值、
+    traceback、pydantic input/ctx、cantools、sqlite internals
+  → worker 侧诊断只报「字段位置 + 规则」，不回显值
+```
+
+#### Security boundary（未变，来自 V0.3-06 验收）
+
+```text
+Runtime HTTP 只接受 content，不接受 external source path      未变
+source_name basename-only .dbc / domain 自行校验规则           未变
+domain 不读外部文件 / 持久化 exact bytes                       未变
+共享 persistence body / 旧 path import TOCTOU / containment /
+asset identity binding                                        未变
+```
+
+本轮**未修改** `runtime/canx/dbc/service.py` 与
+`runtime/canx/dbc/project_service.py`。
+
+#### Tests added
+
+```text
+tests/unit/api/test_dbc_api.py   +5
+  成功 import 只 decode 一次，且不在 event loop
+  malformed Base64 由 worker 检测，仍是 api.request_validation_failed
+  空内容不产生任何 decode（cheap 预检）
+  编码文本超上界不产生任何 decode（cheap 预检）
+  解码后才超界的 payload 由 worker 最终尺寸检查拒绝（并断言该构造可达）
+```
+
+#### Full regression（2026-09-17，全部为实际执行结果）
+
+```text
+python -m pytest tests/unit/api/test_dbc_api.py -q              142 passed
+python -m pytest tests/unit/api -q                              243 passed
+python -m pytest tests/unit/dbc -q                              570 passed, 1 skipped
+python -m pytest tests/unit/api tests/unit/dbc -q               813 passed, 1 skipped
+python -m pytest tests/integration/test_dbc_api_integration.py -q   14 passed
+python -m pytest tests/integration -q                           245 passed (85.41s)
+python -m pytest -q                                            1623 passed, 1 skipped (144.42s)
+ruff check runtime tests tools                                  exit 0（All checks passed!）
+mypy runtime                                                    exit 0（64 source files，strict）
+```
+
+用例总数 1618 → 1623（净增 5，与新增测试数一致）。1 skipped 为既有已知项（本机无权限创建
+目录链接 WinError 1314），非本轮引入。
+
+#### Packaging
+
+```text
+scripts\package-windows.cmd                exit 0
+  · [1/6] runtime build + staged sidecar     PASS
+  · [2/6] staged sidecar verified            ok
+  · [3/6] packaged-runtime smoke test        5 passed in 24.99s
+  · [4/6] Tauri MSI build                    PASS
+  · [5/6] MSI artifact check                 ok: CAN-X_0.1.0_x64_en-US.msi
+  · [6/6] packaging complete                 exit 0
+
+独立复核（对新构建的 exe 重跑 smoke，不复用旧 exe）
+  CANX_TEST_RUNTIME_EXE=<repo>\build\runtime-dist\canx-runtime.exe \
+    python -m pytest tests\integration\test_packaged_runtime_smoke.py -q
+  → 5 passed in 34.06s
+
+build\runtime-dist\canx-runtime.exe              60,123,803 bytes（V0.3-06: 60,122,752）
+apps\...\binaries\canx-runtime-...-msvc.exe      60,123,803 bytes（与上一致）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi    62,947,328 bytes（V0.3-06: 62,943,232）
+```
+
+packaged 断言仍然覆盖 `source_path` extra field → 422
+`api.request_validation_failed`；具体 thread id 不在 packaged binary 中检测（线程边界由
+source test 证明）。
+
+#### Schema / dependency changes
+
+```text
+SQLite schema / project.json / Parquet / Frame / FrameBatch /
+canonical DBC model / DecodedFrame / WebSocket / frontend / Tauri   未改
+新增依赖                                                            none（仅标准库）
+```
+
+#### Known limitations（诚实记录）
+
+```text
+ 1 cheap guard 只约束编码文本长度与空文本，不能证明解码结果在界内；decode 后的尺寸检查是
+   必要的第二道，且本轮在测试中构造出了它可达的用例。
+ 2 request-shape 校验本身（Pydantic 解析 22 MiB 级字符串）仍在 event loop 上执行——这是
+   FastAPI 的同步验证阶段。本轮消除的是其中 caller 可控的**解码**工作，而不是框架验证本身。
+ 3 线程边界证明基于 source tree；packaged binary 未检测 thread id，其 packaged proof 覆盖
+   端点行为与 exact-byte 持久化。
+ 4 仅 Windows 打包产物实测；macOS / Linux 构建形态未验证。
+```
+
+#### 状态
+
+```text
+V0.3-06-FINAL Offload Base64 Decode From Event Loop
+
+remediation implemented
+Local verification complete
+Awaiting independent final acceptance
+```
+
+本轮只做 P1 修复 + 本机自验证。**不自行宣布** V0.3-06-FINAL Final Acceptance: PASS /
+CLOSED；最终验收由项目负责人独立执行。不得由本轮自行开始下一阶段。
+
+
+---
+
 ## V0.3 — Professional Trace & DBC Foundation
 
 目标：

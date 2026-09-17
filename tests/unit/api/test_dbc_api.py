@@ -26,9 +26,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
+import canx.api.dbc as dbc_module
 import pytest
 from canx.api.app import create_app
 from canx.dbc.project_service import ProjectDbcService
@@ -1317,6 +1319,11 @@ async def test_a_coercion_refusal_echoes_no_value_and_no_internals(tmp_path: Pat
 #: bound on this endpoint rather than a permanent limit of the DBC domain.
 MAX_IMPORT_BYTES = 16 * 1024 * 1024
 
+#: The encoded-length guard the endpoint applies *before* decoding. Derived here
+#: from the contract instead of imported from the implementation, so this test
+#: file compares the two rather than sharing one definition with it.
+MAX_IMPORT_BASE64_CHARS = 4 * ((MAX_IMPORT_BYTES + 2) // 3)
+
 #: A ``°`` in ``"°C"``: not valid UTF-8 on its own, so it proves the declared
 #: encoding is what decoded the bytes.
 LEGACY_CP1252_DBC = (
@@ -1760,3 +1767,138 @@ async def test_a_refused_import_echoes_no_content_and_no_internals(tmp_path: Pat
     # The parser's own message embeds the offending source line; the imported one
     # reports a position instead, so no fragment of the document travels back.
     assert "brokenframe" not in str(unparseable_content.json()).lower()
+
+
+# --- where the transport decode runs ----------------------------------------
+#
+# The strict Base64 decode is the one piece of caller-controlled work on this
+# endpoint whose size a caller picks (up to 16 MiB of content), so *where* it runs
+# is part of the contract: never on the event loop that also serves the realtime
+# WebSocket, and never twice for one request. These tests observe the decode as it
+# happens — the thread id is recorded around the real decode rather than inferred
+# from "asyncio.to_thread was called", because the call is not the evidence, the
+# work is.
+
+
+def _spy_on_decode(monkeypatch: pytest.MonkeyPatch, module: object) -> list[int]:
+    """Record the thread of every strict-decode call, changing nothing else."""
+    threads: list[int] = []
+    original = module.decode_import_content  # type: ignore[attr-defined]
+
+    def counted(content_base64: str) -> bytes:
+        threads.append(threading.get_ident())
+        return original(content_base64)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(module, "decode_import_content", counted)
+    return threads
+
+
+async def test_a_valid_import_decodes_the_content_once_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both halves of the finding: one decode, and it ran on a worker thread."""
+    root = _empty_project(tmp_path)
+    threads = _spy_on_decode(monkeypatch, dbc_module)
+    event_loop_thread = threading.get_ident()
+    raw = BASIC.read_bytes()
+
+    async with _client() as client:
+        response = await client.post("/dbc/assets", json=_import_body(root, content=raw))
+
+    assert response.status_code == 201, response.text
+    assert len(threads) == 1, "one request must decode its content exactly once"
+    assert threads[0] != event_loop_thread, "the decode must not run on the event loop"
+    assert (root / "dbc" / f"{response.json()['asset_id']}.dbc").read_bytes() == raw
+
+
+async def test_malformed_base64_is_detected_on_a_worker_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transport failure is found where the decode is: off the event loop.
+
+    The status must not change with the location: invalid Base64 is still a
+    *request contract* failure, never a DBC diagnosis, even though the layer that
+    detects it is the worker.
+    """
+    root = _empty_project(tmp_path)
+    threads = _spy_on_decode(monkeypatch, dbc_module)
+    event_loop_thread = threading.get_ident()
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets",
+            json=_import_body(root, content=b"", content_base64="!!!not-base64!!!"),
+        )
+
+    body = response.json()
+    _assert_validation_envelope(response.status_code, body)
+    assert len(threads) == 1
+    assert threads[0] != event_loop_thread
+    assert "not-base64" not in str(body)
+    assert _stored_assets(root) == []
+
+
+async def test_empty_content_is_refused_without_any_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Emptiness is decidable from the text alone, so it must cost no decode."""
+    root = _empty_project(tmp_path)
+    threads = _spy_on_decode(monkeypatch, dbc_module)
+
+    async with _client() as client:
+        response = await client.post("/dbc/assets", json=_import_body(root, content=b""))
+
+    _assert_validation_envelope(response.status_code, response.json())
+    assert threads == []
+    assert _stored_assets(root) == []
+
+
+async def test_encoded_text_beyond_the_static_bound_is_refused_without_any_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cheap guard: text too long to decode into the bound is refused first."""
+    root = _empty_project(tmp_path)
+    threads = _spy_on_decode(monkeypatch, dbc_module)
+    oversized = "A" * (MAX_IMPORT_BASE64_CHARS + 4)
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets",
+            json={**_import_body(root, content=b""), "content_base64": oversized},
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+    assert threads == []
+    assert _stored_assets(root) == []
+
+
+async def test_content_that_decodes_past_the_bound_is_refused_after_the_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The static length guard is a fast refusal, not a proof of the decoded size.
+
+    ``MAX_IMPORT_BASE64_CHARS`` is the longest text that *can* decode into the
+    bound — not a length whose decodings always fit. Four Base64 characters carry
+    three bytes, so a text of exactly that many characters decodes to slightly more
+    than the bound at the top of its range. The post-decode size check is therefore
+    reachable rather than defensive, and this is the case that reaches it: asserted
+    here, not assumed.
+    """
+    root = _empty_project(tmp_path)
+    threads = _spy_on_decode(monkeypatch, dbc_module)
+    event_loop_thread = threading.get_ident()
+    encoded = "A" * MAX_IMPORT_BASE64_CHARS
+
+    assert len(encoded) <= MAX_IMPORT_BASE64_CHARS
+    assert len(base64.b64decode(encoded, validate=True)) > MAX_IMPORT_BYTES
+
+    async with _client() as client:
+        response = await client.post(
+            "/dbc/assets",
+            json={**_import_body(root, content=b""), "content_base64": encoded},
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+    assert len(threads) == 1
+    assert threads[0] != event_loop_thread
+    assert _stored_assets(root) == []

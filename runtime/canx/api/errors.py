@@ -161,6 +161,30 @@ REQUEST_VALIDATION_FAILED_MESSAGE = "The request payload does not match the API 
 REQUEST_VALIDATION_FAILED_STATUS = 422
 
 
+class ApiRequestError(Exception):
+    """A request-contract failure that can only be detected off the event loop.
+
+    Framework validation runs synchronously, on the event loop, so any check that
+    costs a decode, a hash or a filesystem read has to happen after it — in the
+    worker that serves the request. Such a check still answers a question about the
+    *request*: content that is not Base64 is a transport failure, and reporting it
+    as a DBC parse failure would blame a layer that never saw it.
+
+    The failure carries a diagnostic *location* and a rule, never the value that
+    broke it. An error response must not become a rendering of the payload that was
+    refused, and this type has no field into which a payload could leak.
+    """
+
+    def __init__(self, message: str, *, location: tuple[str | int, ...]) -> None:
+        super().__init__(message)
+        self.message = message
+        self.location = location
+
+    def issue(self) -> dict[str, object]:
+        """Return this failure in the shape the shared validation envelope takes."""
+        return {"loc": self.location, "type": "value_error", "msg": self.message}
+
+
 def request_validation_envelope(issues: Sequence[Mapping[str, object]]) -> ErrorResponse:
     """Return the shared envelope for a request that failed framework validation.
 

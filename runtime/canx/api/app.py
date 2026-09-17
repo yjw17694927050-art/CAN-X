@@ -26,6 +26,7 @@ from canx.agent.trace_summary import TraceSummaryInput, TraceSummaryOutput, summ
 from canx.api.dbc import create_dbc_router
 from canx.api.errors import (
     REQUEST_VALIDATION_FAILED_STATUS,
+    ApiRequestError,
     ErrorResponse,
     error_envelope,
     request_validation_envelope,
@@ -215,6 +216,26 @@ def create_app(
         return JSONResponse(
             status_code=REQUEST_VALIDATION_FAILED_STATUS,
             content=request_validation_envelope(error.errors()).model_dump(),
+        )
+
+    @app.exception_handler(ApiRequestError)
+    async def _api_request_contract_failure(
+        _request: Request, error: ApiRequestError
+    ) -> JSONResponse:
+        """Report a request-contract failure detected after framework validation.
+
+        Validation is synchronous and runs on the event loop, so the checks that
+        need a decode, a hash or a filesystem read happen later, in the worker that
+        serves the request. A failure found there is still a *request* failure: the
+        payload does not match the contract and no domain was asked anything. It is
+        therefore answered with the same envelope, code and status as one the
+        framework itself caught — deliberately not as a ``DbcError``, because "this
+        is not Base64" and "this is not a DBC document" have to stay
+        distinguishable at a call site.
+        """
+        return JSONResponse(
+            status_code=REQUEST_VALIDATION_FAILED_STATUS,
+            content=request_validation_envelope([error.issue()]).model_dump(),
         )
 
     # The historical Trace surface reads persisted data and shares no state with

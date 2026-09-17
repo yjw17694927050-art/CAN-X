@@ -68,7 +68,7 @@ from typing import Self
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from canx.api.errors import ErrorResponse
+from canx.api.errors import ApiRequestError, ErrorResponse
 from canx.api.frame import FrameWire, FrameWireError, frame_to_wire, wire_to_frame
 from canx.dbc.asset import DbcAsset
 from canx.dbc.decode import DbcDecoder
@@ -160,34 +160,78 @@ class DbcAssetImportRequest(BaseModel):
     encoding: str | None = None
 
     @model_validator(mode="after")
-    def _reject_unimportable_content(self) -> Self:
-        """Prove the payload is importable content before any project is opened.
+    def _reject_transport_that_cannot_be_imported(self) -> Self:
+        """Refuse the payloads that are decidable from the encoded text alone.
 
-        The check is the same function the handler decodes with, so the two cannot
-        disagree about what "valid" means. That means an accepted request decodes
-        its payload twice: once here, once in the import. The duplicated work is
-        the price of one definition of the rule, and it is bounded — the decode is
-        of content already capped at :data:`MAX_DBC_IMPORT_BYTES`, while the work
-        that actually costs something (parse, fsync, registry insert) stays off the
-        event loop.
+        This validator runs synchronously, on the event loop, so what it may do is
+        bounded: an emptiness test and a length comparison, both O(1). It
+        deliberately does **not** decode. A Base64 decode of up to
+        :data:`MAX_DBC_IMPORT_BYTES` of content is the largest piece of
+        caller-controlled work on this surface, and the same event loop serves the
+        realtime WebSocket — so the decode belongs to the worker that serves the
+        request, together with the decoded size that only the decode can reveal.
+
+        What it refuses, it refuses as the request contract: the same envelope, code
+        and status as a shape failure the framework itself caught.
         """
-        decode_import_content(self.content_base64)
+        _require_importable_transport(self.content_base64)
         return self
 
 
+#: The one message for "this payload is larger than this endpoint accepts", shared
+#: so the cheap guard and the post-decode check cannot describe the same refusal
+#: two different ways.
+_CONTENT_TOO_LARGE_MESSAGE = f"The DBC content must be at most {MAX_DBC_IMPORT_BYTES} bytes."
+
+#: The one message for "no content was submitted at all".
+_CONTENT_EMPTY_MESSAGE = "The DBC content must not be empty."
+
+#: Where a content failure is attributed. The location the framework itself would
+#: report for this field, so a caller sees one diagnostic shape whether the refusal
+#: came from the cheap guard or from the decode.
+_CONTENT_LOCATION = ("body", "content_base64")
+
+
+def _require_importable_transport(content_base64: str) -> None:
+    """Apply the transport rules that need no decoding.
+
+    Both are O(1) and both are decidable from the text: an empty payload can never
+    be a DBC document, and text longer than the encoded form of
+    :data:`MAX_DBC_IMPORT_BYTES` cannot decode into the bound. Everything else —
+    whether the text is canonical Base64 at all, and how many bytes it actually
+    produces — is decided by :func:`decode_import_content`, in the worker.
+
+    Raises:
+        ValueError: Naming the rule that failed, never the payload. A plain
+            ``ValueError`` is what a Pydantic validator turns into the shared
+            request-validation envelope, which is why this cannot raise the typed
+            :class:`~canx.api.errors.ApiRequestError` used after validation.
+    """
+    if not content_base64:
+        raise ValueError(_CONTENT_EMPTY_MESSAGE)
+    if len(content_base64) > MAX_IMPORT_BASE64_CHARS:
+        raise ValueError(_CONTENT_TOO_LARGE_MESSAGE)
+
+
 def decode_import_content(content_base64: str) -> bytes:
-    """Decode one import payload strictly, refusing what the contract forbids.
+    """Decode one import payload strictly, in the thread that calls it. Blocking.
+
+    This is the **only** place the submitted Base64 is decoded, and the worker that
+    serves the request is its only caller: the decode never runs during request
+    validation, and never runs twice for one request. The cheap transport rules are
+    re-applied here as well, so a caller that reaches this function without the
+    request model in front of it gets the same refusals.
 
     Three refusals, all of them about the *request* rather than about DBC:
 
-    * text longer than the encoded form of :data:`MAX_DBC_IMPORT_BYTES`, checked
-      before decoding so an oversized body is never first materialised as bytes;
+    * an empty payload, and text longer than the encoded form of
+      :data:`MAX_DBC_IMPORT_BYTES` — refused before any decode;
     * text that is not canonical Base64 — ``validate=True``, so a lenient decoder's
       tolerance for stray characters, missing padding or the URL-safe alphabet does
       not quietly become part of the contract;
-    * a payload that decodes to nothing, or to more than the bound. "No document
-      was sent" is a request that does not match the contract; reporting it as a
-      parser failure would blame the DBC.
+    * a payload that decodes to nothing, or to more than the bound. The length
+      guard cannot decide the second on its own: it bounds what a text of that
+      length *can* decode to, not what this particular text does.
 
     Args:
         content_base64: The Base64 text as it arrived.
@@ -196,21 +240,27 @@ def decode_import_content(content_base64: str) -> bytes:
         The exact bytes the caller submitted.
 
     Raises:
-        ValueError: Naming the rule that failed, and never quoting the payload. A
-            plain ``ValueError`` is what a Pydantic validator turns into its own
-            failure, which is what keeps this usable as the request-level check.
+        ApiRequestError: Naming the field and the rule that failed, never quoting
+            the payload. It is a *request* failure, so the application boundary
+            answers it with the shared request-validation envelope — the same 422
+            the framework's own validation produces, never a DBC diagnosis and
+            never a server error.
     """
-    if len(content_base64) > MAX_IMPORT_BASE64_CHARS:
-        raise ValueError(f"The DBC content must be at most {MAX_DBC_IMPORT_BYTES} bytes.")
+    _require_importable_transport(content_base64)
     try:
         raw = base64.b64decode(content_base64, validate=True)
     except (binascii.Error, ValueError) as error:
-        raise ValueError("The DBC content is not valid Base64.") from error
+        raise _unimportable_content("The DBC content is not valid Base64.") from error
     if not raw:
-        raise ValueError("The DBC content must not be empty.")
+        raise _unimportable_content(_CONTENT_EMPTY_MESSAGE)
     if len(raw) > MAX_DBC_IMPORT_BYTES:
-        raise ValueError(f"The DBC content must be at most {MAX_DBC_IMPORT_BYTES} bytes.")
+        raise _unimportable_content(_CONTENT_TOO_LARGE_MESSAGE)
     return raw
+
+
+def _unimportable_content(message: str) -> ApiRequestError:
+    """Build the typed request-contract refusal for the content field."""
+    return ApiRequestError(message, location=_CONTENT_LOCATION)
 
 
 class DbcChoiceResponse(BaseModel):
@@ -442,7 +492,9 @@ def create_dbc_router() -> APIRouter:
         lookup format.
 
         Nothing about the request is interpreted as a location: the content travels
-        as Base64 and the name travels as provenance.
+        as Base64 and the name travels as provenance. The content is decoded once,
+        in the worker this handler hands the request to — validation itself only
+        applies the rules that need no decoding.
         """
         asset = await asyncio.to_thread(_import_asset, request)
         return _asset_payload(asset)
@@ -491,10 +543,12 @@ def _import_asset(request: DbcAssetImportRequest) -> DbcAsset:
 
     Everything expensive about the request happens here, off the event loop: the
     Base64 decode, the DBC parse, the filesystem write and fsync, and the registry
-    insert. The payload is decoded into bytes and handed on **as bytes** — never
-    turned back into text on the way — because the bytes are what the project
-    owns, and the digest of what the caller sent has to be the digest of what is
-    stored.
+    insert. The decode happens **once**, here, and nowhere else: a request that
+    used to verify its payload during validation and then decode it again paid for
+    the same bytes twice, and the first payment was taken from the event loop. The
+    payload is handed on **as bytes** — never turned back into text on the way —
+    because the bytes are what the project owns, and the digest of what the caller
+    sent has to be the digest of what is stored.
     """
     return ProjectDbcService(Path(request.project_path)).import_asset_bytes(
         decode_import_content(request.content_base64),
