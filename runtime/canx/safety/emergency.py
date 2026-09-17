@@ -307,7 +307,7 @@ class EmergencyStopController:
                 self._state = EmergencyStopState(
                     engaged=True,
                     engaged_at=self._read_engaged_at(),
-                    reason_digest=reason_digest,
+                    reason_digest=self._read_reason_digest(reason_digest),
                 )
             hook = self._disarm_hook
             cancellers = tuple(self._cancellers)
@@ -410,6 +410,25 @@ class EmergencyStopController:
         except Exception:
             return None
         return now if math.isfinite(now) else None
+
+    @staticmethod
+    def _read_reason_digest(reason_digest: str) -> str | None:
+        """Return a valid digest, or ``None`` when the caller's value is malformed.
+
+        The one input this controller receives that can be wrong is the digest the
+        kernel derived from the operator's reason. A stop is authority-*reducing*,
+        so a malformed digest must not be able to prevent it (invariant S22):
+        losing the attribution is the smaller loss and engaging is the larger win.
+
+        It is not a silent swallow either. The state and the trail then record
+        ``reason_digest: null`` beside ``engaged: true``, which is at least as
+        diagnosable as a malformed value would have been — and it is the caller's
+        bug, so the fault being visible rather than fatal is the right trade.
+        """
+        try:
+            return validate_sha256_digest(reason_digest, role=REASON_DIGEST_ROLE)
+        except SafetyIdentifierError:
+            return None
 
     @staticmethod
     def _request_cancellation(

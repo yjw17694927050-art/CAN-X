@@ -640,6 +640,21 @@ def test_a_stop_state_with_a_broken_clock_still_engages() -> None:
     assert controller.engaged is True
 
 
+def test_a_malformed_reason_digest_cannot_prevent_the_stop() -> None:
+    """Same rule for the other input: a broken digest loses attribution, not the stop.
+
+    The loss is diagnosable rather than silent — ``engaged: true`` sits next to
+    ``reason_digest: null`` in the state and the trail.
+    """
+    from canx.safety.emergency import EmergencyStopController
+
+    controller = EmergencyStopController(clock=MovableClock())
+    state = controller.engage(caller=AGENT, reason_digest="operator typed a sentence")
+    assert state.engaged is True
+    assert state.reason_digest is None
+    assert controller.engaged is True
+
+
 # -- The trail ------------------------------------------------------------------
 
 
