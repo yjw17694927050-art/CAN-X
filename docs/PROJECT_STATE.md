@@ -5770,6 +5770,13 @@ fixture      .rivet\scratch\smoke-secret-dir\vehicle.dbc · 359 bytes
 smoke project  .rivet\scratch\smoke-project-v308f（新建，dbc/ 初始为空）
 ```
 
+另：不带 smoke 开关的普通打包（`cmd.exe /c scripts\package-windows.cmd`，环境未设
+`VITE_CANX_DBC_SMOKE` / `VITE_CANX_DBC_SMOKE_PROJECT_PATH`）同样 exit 0，产物为
+can-x.exe 9,796,096 bytes · SHA256 93699a63…7079，MSI 63,131,648 bytes · SHA256 3f66431c…9f21。
+该 exe 二进制内 `CANXSMOKE` 标记出现 **0 次**，dist 中也没有 `dbc-dialog-smoke` chunk——
+**默认构建不下发 smoke harness**。smoke 证据所用的 smoke-build exe 已被这次普通构建覆盖，其
+SHA256（3c89195c…ddf5）见上。
+
 renderer 侧报告的三步（`document.title` 通道，由 UI Automation 读取）：
 
 ```json
