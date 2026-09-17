@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-17  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-07-FINAL Native Dialog E2E Smoke Verification
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-08 Desktop DBC Import Orchestration Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -5302,11 +5302,16 @@ Independent technical acceptance complete
 
 Repository state correction complete
 
-Awaiting independent final closure
+Final Acceptance: PASS
+Status: CLOSED
 ```
 
-本轮**不自行宣布** Final Acceptance: PASS / Status: CLOSED；正式关闭由项目负责人独立执行。
-本轮也不开始 V0.3-08。
+正式关闭依据：项目负责人在下达 V0.3-08 开工任务书时明确授权将本阶段记为正式关闭
+（2026-09-17，本会话）。该授权是 *phase transition* 授权，**不**改写上文的验收结论
+本身——`Independent technical acceptance: PASS`（P0: 0 · P1: 0 · P2: 1，唯一 P2 已由
+`f90a1b9` 修正）与「证据来源（诚实区分）」一节逐条保持原样，历史记录未被修改。
+本阶段正式关闭后，文件顶部的 `Current Phase` 推进到 `V0.3-08`。
+
 
 
 ---
