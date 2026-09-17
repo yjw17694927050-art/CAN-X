@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-10 — Read-Only DBC Workspace UI Foundation — Final Acceptance PASS, CLOSED; Current step V0.3-11)
+> **Updated**: 2026-09-17 (V0.3-11 — Project Runtime Read Model API Foundation — awaiting independent acceptance)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -197,7 +197,11 @@ V0.3-10 — Read-Only DBC Workspace UI Foundation   (Final Acceptance: PASS, Sta
 
 Current step:
 V0.3-11 — Project Runtime Read Model API Foundation
-  Implementation not started
+  Implementation complete
+  Local verification complete
+  Awaiting independent acceptance
+
+No further implementation step has been started.
 ```
 
 The `Final Acceptance: PASS / Status: CLOSED` verdicts recorded here are **project-owner /
@@ -209,6 +213,11 @@ V0.3-10 was implemented and self-verified by a development agent, whose evidence
 now recorded for it is an **independent acceptance result** (project owner / independent
 reviewer — P0: 0, P1: 0, Blocking P2: 0), supplied after that self-verification; the agent did
 not write `Final Acceptance: PASS` for its own work.
+
+V0.3-11 was implemented and self-verified by a development agent; its evidence is in
+`docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md`. It carries **no**
+verdict here: the status above is `Awaiting independent acceptance`, and the agent did not
+write `Final Acceptance: PASS` for it.
 
 This document's own maintenance task (*Maintenance — PROJECT_STATE Documentation Compaction*)
 is a documentation-only task, **not** a numbered development phase, and did not touch any
@@ -347,6 +356,8 @@ Verified against the current working tree (Runtime routers, desktop modules, Age
 
 ```text
 Project foundation                         ✅
+Project Runtime read-model API (HTTP)      ✅ implemented, locally verified —
+                                             awaiting independent acceptance
 SQLite project metadata                    ✅
 Parquet session persistence                ✅
 DuckDB query foundation                    ✅
@@ -390,6 +401,10 @@ acceptance; the phase has since been independently accepted (**Final Acceptance:
 Status: CLOSED**), so they now carry the same ✅ as the rows inherited from earlier CLOSED
 phases.
 
+The `Project Runtime read-model API (HTTP)` row is annotated deliberately: it is
+**implemented and locally verified** by V0.3-11 but is **awaiting independent acceptance** —
+unlike the rows inherited from CLOSED phases, it is not yet an accepted capability.
+
 ---
 
 ## 8. Current Architecture / Boundary Summary
@@ -407,7 +422,8 @@ canx/dbc/         canonical domain, parser (cantools boundary), service, registr
                   project_service, asset model
 canx/transport/   MessagePack realtime codec
 canx/agent/       tool registry + trace.summary
-canx/api/         FastAPI app + routers (app.py, trace.py, dbc.py, frame.py, errors.py)
+canx/api/         FastAPI app + routers (app.py, trace.py, dbc.py, project.py,
+                  frame.py, errors.py)
 canx/runtime/     RuntimeService (capture lifecycle, status truthfulness)
 ```
 
@@ -422,6 +438,8 @@ GET  /metrics
 POST /tools/execute
 POST /runtime/shutdown
 WS   /stream/frames
+
+GET  /project/inspect
 
 POST /trace/query
 POST /trace/summary
@@ -588,13 +606,14 @@ independent acceptance result" — and must not present its own conclusion as th
 
 ```text
 V0.3-10 — Final Acceptance: PASS · Status: CLOSED
-V0.3-11 — Project Runtime Read Model API Foundation — NOT STARTED
+V0.3-11 — Project Runtime Read Model API Foundation — IMPLEMENTED · AWAITING INDEPENDENT ACCEPTANCE
 ```
 
-V0.3-10 has been independently accepted (P0: 0, P1: 0, Blocking P2: 0); its evidence is in
-`docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md`. V0.3-11 —
-a formal, typed, read-only Project inspection/read-model Runtime API — is the next step and
-has not been started.
+V0.3-11 adds one read-only Runtime endpoint — `GET /project/inspect?project_path=…` — built as
+a thin adapter over the existing `ProjectService`. It is implemented and locally verified; the
+evidence is in `docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md`. It must
+not be recorded as PASS / CLOSED until an independent acceptance result exists, and no later
+phase (V0.3-12) may start before that.
 
 ---
 
@@ -615,6 +634,9 @@ docs/acceptance/README.md
 docs/acceptance/v0.3-10-read-only-dbc-workspace-ui-foundation.md
     V0.3-10 acceptance evidence. Final Acceptance: PASS · Status: CLOSED
     (independent acceptance — project owner / independent reviewer).
+
+docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md
+    V0.3-11 acceptance evidence (self-verified; awaiting independent acceptance).
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
