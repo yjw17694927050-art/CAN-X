@@ -479,7 +479,7 @@ Runtime 组件：runtime/canx/safety/
 具体到 Agent Tool：一个 effect risk 为 `READ` 的 tool，
 只要 `required_capabilities` 含 `CAN_TX`，`ToolExecutor` 就拒绝直接执行它。
 
-该文档中的安全不变量 `S1`–`S24` 为**冻结条款**。
+该文档中的安全不变量 `S1`–`S25` 为**冻结条款**。
 它们不能被任务 prompt 绕过——如果某条指令要求打破不变量，
 正确做法是指出冲突并停止，而不是静默执行。
 
@@ -517,6 +517,26 @@ subsystem 以稳定的 `CancellerId` 注册（`"tx.periodic"`，不是
 reason **digest**；raw subsystem text 与 raw operator reason 都不得跨越
 cancellation audit 边界。malformed 返回不得阻止 E-stop engagement——
 它被记录为结构化的 `CancellationFailure`。
+
+**Emergency-stop metadata 是非权威的（S25）。** E-stop 的 reason、timestamp、
+audit、cancellation reporting 全部是 **optional metadata**：
+
+```text
+No optional reason, timestamp, audit, or cancellation-reporting failure
+may prevent the runtime from entering the safe stopped state.
+```
+
+优先级固定为 `safety reduction > attribution > observability`——
+better an unattributed stop than an attributed non-stop。
+因此：
+
+- raw reason 必须经 best-effort digest 处理（不可计算 → `reason_digest = None`），
+  不得用 `errors="ignore"` / `errors="replace"` 伪造一个 digest，
+  也不得把 raw reason 当作 fallback 存下来（那会重开 S19）；
+- `OperationCanceller.reason_digest` 是 `str | None`：`None` 表示
+  attribution unavailable，**绝不是** skip cancellation 的理由；
+- 不得把这一 lenient 处理扩散到 authority-*increasing* 路径——
+  那里 digest 失败是 caller bug，保持 strict。
 
 ---
 

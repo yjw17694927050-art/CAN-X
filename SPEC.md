@@ -1209,7 +1209,22 @@ release 之后既不是 ARMED，也不存在遗留 Approval。取消（cancellat
 structured failure code，而不是任意子系统文本；canceller 收到的是 reason digest，
 不是 operator 的原始 reason。
 
-该文档冻结的安全不变量（S1-S24）是架构条款：任何任务指令都不得绕过。
+**Emergency Stop metadata failure（S25）。** E-stop 的 reason / timestamp /
+audit / cancellation reporting 都是 optional metadata：
+
+```text
+Emergency Stop metadata failure
+→ degrade attribution
+→ never degrade safety effect
+```
+
+优先级固定为 `safety reduction > attribution > observability`：reason 不可
+digest、clock 不可读、canceller 返回 malformed、audit 写入失败，都只降低
+attribution/observability，不得使 stop 失效——stop 保持 engaged、ARM 保持
+DISARMED、approvals 保持清空。不得用 `errors="ignore"` / `errors="replace"`
+伪造 digest，也不得把 raw reason 作为 fallback 落盘。
+
+该文档冻结的安全不变量（S1-S25）是架构条款：任何任务指令都不得绕过。
 SAFETY-01 只建立 domain / policy / state machine / contract / test，
 不引入任何真实 TX、replay 发送、UDS 或 ECU 变更能力——
 那些能力由后续任务的 SPEC 变更引入，并且必须经过 Safety Kernel。

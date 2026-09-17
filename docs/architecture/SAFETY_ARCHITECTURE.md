@@ -164,6 +164,12 @@ S23  Releasing the emergency stop restores only the possibility of rebuilding
 S24  Every cancellation reference persisted by Safety Audit is a typed identifier
      or a bounded structured failure code. The raw operator reason and arbitrary
      subsystem text do not cross the cancellation audit boundary.
+S25  Optional Emergency Stop metadata processing must never veto safety
+     reduction. Reason encoding, reason hashing, timestamping, cancellation
+     reporting or audit failure may reduce attribution or observability, but the
+     stop must remain engaged, ARM must remain DISARMED and approvals must remain
+     cleared. Safety reduction outranks attribution, which outranks
+     observability.
 ```
 
 S1–S14 were frozen by SAFETY-01. S15–S19 were added by SAFETY-01-FIX-1 after the
@@ -173,7 +179,9 @@ SAFETY-01-FIX-2 after the second independent review returned `NOT PASS`, and the
 are the two things that review found it still could not hold (§25). S22–S24 were
 added by SAFETY-01-FIX-3 after the **third** independent review returned
 `NOT PASS`, and they are the two properties that review found the model could not
-hold, plus the boundary that follows from the second of them (§26).
+hold, plus the boundary that follows from the second of them (§26). S25 was added
+by SAFETY-01-FIX-4 after the **fourth** independent review returned `NOT PASS`,
+and it is the one property that review found (§27).
 
 ### How each invariant is held
 
@@ -203,6 +211,7 @@ hold, plus the boundary that follows from the second of them (§26).
 | S22 | `_require_emergency_stop_released` gates `arm`, `confirm_arm` and `grant_approval` *before* any mutation and inside the kernel lock; a broken clock or a malformed canceller answer cannot prevent the stop itself | `safety/kernel.py`, `safety/emergency.py` |
 | S23 | `release_emergency_stop` disarms and clears approvals as part of the release, deliberately outside the commit guard so a failed audit cannot put them back; only the stop's engagement is rolled back | `safety/kernel.py`, `tests/unit/safety/test_emergency_stop.py` |
 | S24 | `OperationCanceller` returns `OperationId` and receives `reason_digest`; the controller revalidates every returned value and records a structured `CancellationFailure`; `CancellerId` replaces `type(x).__name__`; `EmergencyStopState.__post_init__` re-checks its audit-facing fields | `safety/emergency.py`, `safety/identifiers.py`, `safety/kernel.py`, `tests/unit/safety/test_emergency_stop.py` |
+| S25 | The raw reason reaches the stop path only through `digest_reason_best_effort`, which degrades an uncomputable digest to `None` instead of raising; `engage_emergency_stop` digests *after* nothing that could be vetoed, and the cancellation fan-out is unconditional on attribution | `safety/kernel.py`, `safety/audit.py`, `safety/emergency.py`, `tests/unit/safety/test_emergency_stop.py` |
 
 ---
 
@@ -894,11 +903,29 @@ after the release  no dangerous authority exists
                    authority has to be explicitly rebuilt afterwards
 ```
 
+And the whole emergency path runs in one priority order (invariant S25):
+
+```text
+1  reduce authority        ARM → DISARMED
+2  establish stop state    engaged = True
+3  clear approvals
+4  request cancellation    unconditionally
+5  best-effort attribution reason_digest · engaged_at · canceller reporting
+6  audit
+```
+
+Steps 1–4 are the stop and may not be conditional on steps 5–6. The order is
+load-bearing: **better an unattributed stop than an attributed non-stop.** Every
+value in step 5 is optional metadata *about* a reduction, so a failure there costs
+attribution or observability and never the reduction itself.
+
 * **Any caller kind may engage it.** An Agent, script or automation rule that
   detects danger can pull it. Engaging only ever reduces authority — which is
-  also why nothing on the engage path can fail it: a clock that cannot be read
-  records `engaged_at = None`, a digest that is not a digest records
-  `reason_digest = None`, a canceller that raises or answers with prose is
+  also why nothing on the engage path can fail it: the reason is digested
+  *best-effort* (a reason that will not encode to UTF-8 becomes
+  `reason_digest = None` rather than an exception, invariant S25), a clock that
+  cannot be read records `engaged_at = None`, a digest that is not a digest
+  records `reason_digest = None`, a canceller that raises or answers with prose is
   reported in the state, and the stop still engages. In every case the loss is
   visible in the state rather than fatal to the stop, and the reduction stands
   even when the audit cannot be written (invariant S17).
@@ -926,6 +953,11 @@ after the release  no dangerous authority exists
   than a runtime guarantee, the controller revalidates every value: identifiers
   it can keep are kept, anything else becomes a structured `CancellationFailure`
   and the text itself is never stored.
+* **Cancellation is unconditional on attribution** (S25). The digest a canceller
+  receives is `str | None`: `None` means the reason could not be digested, and it
+  is passed through rather than withheld. Cancellation is mandatory and the
+  reason is optional — a canceller that needs the reason in order to stop has the
+  dependency backwards — so an absent digest must never skip the fan-out.
 * A subsystem that cannot confirm cancellation is **reported**, not swallowed:
   `EmergencyStopState.cancellation_failures` names it, by validated canceller id
   and bounded failure code — never by the exception's message.
@@ -938,6 +970,7 @@ after the release  no dangerous authority exists
 ```python
 register_canceller("tx.periodic", canceller)
 canceller.cancel_active_operations(reason_digest=…) -> tuple[OperationId, ...]
+# reason_digest is str | None — None means "attribution unavailable", not "skip me"
 ```
 
 > **NOT VERIFIED:** interrupting a real device write. There is no real transmit
@@ -984,6 +1017,10 @@ R20  A release that could not be audited restores the stop's engagement and
 R21  A cancellation answer that violates the typed contract is recorded as a
      structured failure, never defeats the stop, and never reaches the trail as
      text (S24)
+R22  Optional Emergency Stop metadata cannot veto the reduction: a reason that
+     will not encode, a clock that will not read, a digest that is not a digest, a
+     canceller that misbehaves and an audit that will not write each degrade
+     attribution or observability, and none of them prevents the stop (S25)
 ```
 
 R8 deserves its own line because it is the least obvious. `NaN` compares false
@@ -1004,6 +1041,14 @@ sides. R19 says a stop blocks authority instead of parking it; R20 says the
 release therefore cannot hand any back; R21 says the cancellation reporting that
 accompanies both enters the trail under the same typed contract as everything
 else. Together they make the emergency stop an epoch boundary rather than a mode.
+
+R22 is what SAFETY-01-FIX-4 added, and it is the rule that makes the other two
+directions usable. A reduction that can be vetoed by the bookkeeping around it is
+not a reduction the operator can rely on: FIX-3 made the stop *available*, and
+FIX-4 makes it *unconditional*. The asymmetry with the increasing direction is
+deliberate and mirrors S17: on an authority-*increasing* path a metadata failure
+is a caller bug worth knowing about loudly, while on a *reducing* path it is a loss
+of detail that must never become a loss of safety.
 
 ---
 
@@ -1154,9 +1199,10 @@ runtime/canx/safety/
 ├─ operation.py    OperationRequest
 ├─ decision.py     DecisionOutcome · SafetyReason · PolicyDecision
 ├─ policy.py       SafetyPolicy · SafetyContext · ApprovalRequirement
-├─ audit.py        SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink
+├─ audit.py        SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink ·
+│                  digest_reason (strict) · digest_reason_best_effort (S25)
 ├─ emergency.py    EmergencyStopController · EmergencyStopState · OperationCanceller ·
-│                  CancellationFailure · CancellationFailureCode (S22–S24)
+│                  CancellationFailure · CancellationFailureCode (S22–S25)
 ├─ kernel.py       SafetyKernel — the authority · the audit commit guard
 └─ errors.py       SafetyError and its typed family (safety.*)
 ```
@@ -1640,3 +1686,121 @@ TX / UDS     still absent — the boundary is enforced; no capability was added
 
 S22–S24 are the properties the third review found the model could not hold, and
 each is asserted by tests rather than by this document.
+
+---
+
+## 27. Acceptance remediation (SAFETY-01-FIX-4)
+
+SAFETY-01's **fourth** independent review returned `NOT PASS`:
+
+```text
+Final Acceptance: NOT PASS
+Status: AWAITING FIX-4
+
+P0 = 1
+P1 = 0
+P2 = 0
+```
+
+One finding, and it was correct. It was not a redesign and it reopened nothing:
+S22–S24 were already right, and this is the property that made them *reachable*
+rather than *conditional*.
+
+### P0 — optional metadata could veto the safety reduction
+
+`SafetyKernel.engage_emergency_stop` digested the raw reason **before** the stop
+engaged:
+
+```python
+reason_digest = digest_reason(reason)          # reason.encode("utf-8")
+state = self._emergency.engage(caller=caller, reason_digest=reason_digest)
+```
+
+and `digest_reason` encodes to UTF-8. A reason that is a perfectly legal Python
+`str` but not UTF-8 encodable — a lone surrogate, `"\ud800"` — therefore raised
+`UnicodeEncodeError` before the second line ever ran:
+
+```text
+operator requests E-stop
+→ reason encoding fails
+→ exception
+→ E-stop NOT engaged
+→ ARM may remain ARMED, approval may remain active
+```
+
+Reproduced on the public kernel path, with the runtime armed under `CAN_TX` and
+holding an approval:
+
+```text
+RED     BEFORE: arm_state=armed approvals=1 engaged=False
+        EXCEPTION: UnicodeEncodeError 'utf-8' codec can't encode character
+                   '\ud800' in position 0: surrogates not allowed
+        AFTER : arm_state=armed approvals=1 engaged=False
+                scope=ArmScope(...) canceller_calls=[]
+```
+
+The stop did not happen and the canceller was never called. An optional piece of
+attribution metadata, describing a reduction that had not yet been performed, had
+vetoed the reduction — and it vetoed it in the worst direction, because "the
+caller saw an exception" is indistinguishable from "the stop failed" unless the
+operator then checks the arm state during an emergency.
+
+Fixed by moving the raw-reason processing to the far side of the reduction's
+safety, in three small pieces (invariant **S25**):
+
+```text
+Kernel      engage_emergency_stop processes the reason through
+            digest_reason_best_effort, which returns None instead of raising
+            — one line, at the public boundary, before anything else
+
+Contract    OperationCanceller.reason_digest is str | None, and the controller
+            hands cancellers the normalised value: None means "attribution
+            unavailable", never "skip the fan-out"
+
+Priority    reduce authority · establish the stop · clear approvals · request
+            cancellation   all before   best-effort attribution · audit
+```
+
+The fallback is `None` and specifically **not** a substituted encoding:
+
+```text
+errors="ignore"   two different reasons hash to one digest — attribution silently lies
+errors="replace"  the digest is of text nobody supplied — attribution visibly lies
+None              attribution unavailable — an honest, visible absence
+```
+
+A fabricated digest would be worse than no digest: `reason_digest: null` beside
+`engaged: true` tells a reviewer "the stop happened, the reason was not
+recordable", while a digest of mangled text tells them the operator said something
+they did not.
+
+`digest_reason` itself is deliberately **unchanged and still strict**. On an
+authority-*increasing* path a reason that cannot be digested is a caller bug and
+knowing about it is worth more than proceeding; the asymmetry is the same one S17
+draws between the two directions, and a test pins it so a future edit cannot
+quietly soften both.
+
+```text
+GREEN   engage returned normally
+        AFTER : arm_state=disarmed approvals=0 engaged=True
+                scope=None canceller_calls=[None]
+```
+
+### What the remediation did not change
+
+```text
+S1–S24       unchanged, and none weakened
+FIX-1        every FIX-1 protection intact — two-axis authority, derived
+             provenance, finite dangerous-permission expiry, reason digests
+FIX-2        every FIX-2 protection intact — the whole-transaction audit commit,
+             SafetyRollbackError, the identifier contract
+FIX-3        every FIX-3 protection intact — the epoch boundary, the arm/approval
+             gates, the release postconditions, the typed cancellation boundary
+tests        none deleted, skipped or loosened; twelve added
+ci.yml       untouched
+ruleset      untouched
+TX / UDS     still absent — the boundary is enforced; no capability was added
+```
+
+S25 is the property the fourth review found the model could not hold, and it is
+asserted by tests rather than by this document.

@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3 — awaiting independent re-acceptance, see §17)
+> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4 — awaiting final independent acceptance, see §17)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -237,13 +237,16 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
   Implementation complete · remediation complete (SAFETY-01-FIX-1) ·
   hardening complete (SAFETY-01-FIX-2) ·
   emergency-stop epoch hardening complete (SAFETY-01-FIX-3) ·
-  Awaiting independent re-acceptance
+  emergency-stop metadata hardening complete (SAFETY-01-FIX-4) ·
+  Awaiting final independent acceptance
   First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — all six fixed by
   SAFETY-01-FIX-1; the first verdict is preserved in §17.
   Second independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 1) — all three fixed
   by SAFETY-01-FIX-2; the second verdict is preserved in §17 too.
   Third independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 0) — both fixed by
   SAFETY-01-FIX-3; the third verdict is preserved in §17 as well.
+  Fourth independent acceptance: NOT PASS (P0: 1, P1: 0, P2: 0) — fixed by
+  SAFETY-01-FIX-4; the fourth verdict is preserved in §17 too.
   Adds runtime/canx/safety/ and docs/architecture/SAFETY_ARCHITECTURE.md —
   safety domain, policy, contracts and tests only. It introduces no dangerous
   execution capability. See §17.
@@ -771,10 +774,12 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Remediation complete (SAFETY-01-FIX-1)
           Hardening complete (SAFETY-01-FIX-2)
           Emergency-stop epoch hardening complete (SAFETY-01-FIX-3)
-          AWAITING INDEPENDENT RE-ACCEPTANCE
+          Emergency-stop metadata hardening complete (SAFETY-01-FIX-4)
+          AWAITING FINAL INDEPENDENT ACCEPTANCE
           First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — preserved in §17
           Second independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 1) — preserved in §17
           Third independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 0) — preserved in §17
+          Fourth independent acceptance: NOT PASS (P0: 1, P1: 0, P2: 0) — preserved in §17
           Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
 ```
 
@@ -812,7 +817,10 @@ non-empty string (invariant S21). SAFETY-01-FIX-3 then closed the two findings o
 independent review inside the same package: the emergency stop is now an epoch boundary rather
 than a pause — `arm`, `confirm_arm` and `grant_approval` are all refused while it is engaged
 (invariant S22) and a successful release leaves the runtime `DISARMED` with no outstanding
-approval (S23) — and the cancellation boundary it reports through is typed (S24). It adds **no**
+approval (S23) — and the cancellation boundary it reports through is typed (S24). SAFETY-01-FIX-4
+then closed the fourth review's single finding on the same path: the raw reason is digested
+best-effort, so a reason that cannot be UTF-8 encoded degrades the *attribution* to `None` instead
+of vetoing the stop (invariant S25). It adds **no**
 dangerous capability: no TX, no replay send, no
 injection, no diagnostic request, no ECU mutation, no new endpoint and no new UI control. Its own
 verdict is external as well; §17 records what was implemented and what remains unverified.
@@ -857,12 +865,13 @@ docs/engineering/INTEGRATION_POLICY.md
     merely described) by the `main-protected-integration` GitHub Repository Ruleset — see §15.
 
 docs/architecture/SAFETY_ARCHITECTURE.md
-    SAFETY-01 safety architecture. The frozen invariants S1–S24, the risk taxonomy,
+    SAFETY-01 safety architecture. The frozen invariants S1–S25, the risk taxonomy,
     operation / caller / ARM / scope / permission / approval / audit /
     audit-safe-identifier / emergency-stop (epoch-boundary) / cancellation contracts,
-    the audit transaction semantics, the Agent and script safety boundaries, the
-    adapter boundary, restart and concurrency semantics, the future-integration
-    rules, and the list of items that remain NOT VERIFIED — see §17.
+    the audit transaction semantics, the emergency-stop metadata priority, the Agent
+    and script safety boundaries, the adapter boundary, restart and concurrency
+    semantics, the future-integration rules, and the list of items that remain
+    NOT VERIFIED — see §17.
 
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
@@ -1020,7 +1029,8 @@ Level 3  Protected Integration Workflow        DONE
 Safety Foundation (SAFETY-01)                  IMPLEMENTED · REMEDIATED (FIX-1) ·
                                                HARDENED (FIX-2) ·
                                                EPOCH-HARDENED (FIX-3) ·
-                                               AWAITING INDEPENDENT RE-ACCEPTANCE
+                                               METADATA-HARDENED (FIX-4) ·
+                                               AWAITING FINAL INDEPENDENT ACCEPTANCE
 Level 4  Multi-Agent Orchestration             NOT STARTED
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
@@ -1097,12 +1107,37 @@ P1  OperationCanceller returned tuple[str], and that tuple reached the audit
     fanned out to every canceller by the same route.
 ```
 
+```text
+Fourth independent acceptance (after SAFETY-01-FIX-3):
+Project-owner / independent reviewer
+
+Final Acceptance: NOT PASS
+Status: AWAITING FIX-4
+
+P0 = 1
+P1 = 0
+P2 = 0
+```
+
+The finding was correct as well. It is remediated by SAFETY-01-FIX-4 (§17.13
+below). This verdict is preserved unedited too:
+
+```text
+P0  Emergency Stop metadata could veto the safety reduction:
+    SafetyKernel.engage_emergency_stop digested the raw reason before the stop
+    engaged, and digest_reason encodes to UTF-8 — so a reason that is a legal
+    Python str but not UTF-8 encodable ("\ud800") raised UnicodeEncodeError and
+    the stop never ran, leaving an ARMED runtime and a live approval in place
+    while the operator believed they had pulled the stop.
+```
+
 **Status: implementation complete · remediation complete (FIX-1) · hardening
 complete (FIX-2) · emergency-stop epoch hardening complete (FIX-3) ·
-self-verification complete · AWAITING INDEPENDENT RE-ACCEPTANCE.** The development
-agent did not write a `Final Acceptance: PASS` for this work at any point — not on
-the first submission, not after the first remediation, not after the second, and
-not after the third.
+emergency-stop metadata hardening complete (FIX-4) · self-verification
+complete · AWAITING FINAL INDEPENDENT ACCEPTANCE.** The development agent did not
+write a `Final Acceptance: PASS` for this work at any point — not on the first
+submission, not after the first remediation, not after the second, not after the
+third, and not after the fourth.
 
 ### 17.1 The question it answers
 
@@ -1128,14 +1163,16 @@ runtime/canx/safety/            a new Runtime domain package (14 modules)
   operation.py   OperationRequest (parameter digest, never parameters)
   decision.py    DecisionOutcome · SafetyReason · PolicyDecision
   policy.py      SafetyPolicy · SafetyContext · ApprovalRequirement
-  audit.py       SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink
+  audit.py       SafetyAuditEvent · SafetyAuditSink · InMemoryAuditSink ·
+                 digest_reason (strict) · digest_reason_best_effort (FIX-4)
   emergency.py   EmergencyStopController · EmergencyStopState · OperationCanceller ·
                  CancellationFailure · CancellationFailureCode (FIX-3: typed cancellation)
   kernel.py      SafetyKernel — the authority · the audit commit guard ·
-                 the emergency-stop authority gate (FIX-3)
+                 the emergency-stop authority gate (FIX-3) ·
+                 best-effort reason digesting (FIX-4)
   errors.py      SafetyError family, all codes prefixed `safety.`
 
-docs/architecture/SAFETY_ARCHITECTURE.md   the frozen contract (26 sections, S1–S24)
+docs/architecture/SAFETY_ARCHITECTURE.md   the frozen contract (27 sections, S1–S25)
 tests/unit/safety/                         refusal paths, fault injection, cross-caller
                                            matrices, anti-escalation, the audit
                                            transaction's failure points, the
@@ -1157,7 +1194,10 @@ Scope              device / channel / target address; a blank request coordinate
 Emergency stop     an epoch boundary, not a pause (S22–S24): globally disarm ·
                    clear approvals · block arm/confirm_arm/grant_approval while
                    engaged · request cancellations with a reason digest · audit.
-                   Release leaves DISARMED + no outstanding approval
+                   Release leaves DISARMED + no outstanding approval.
+                   Metadata is non-authoritative (S25): reason encoding, clock,
+                   canceller reporting and audit failures degrade attribution or
+                   observability, never the stop
 Audit              ALLOW and DENY both recorded; references are typed identifiers and
                    digests, never free text; the whole commit path is the transaction
                    (S20, S21); unrecordable ⇒ fault. Cancellation feedback obeys the
@@ -1583,3 +1623,178 @@ The exact run id and head SHA live in the PR #4 body rather than here (a FIX-1
 finding, §17.8 P2-1). `.github/workflows/ci.yml` and the `main` ruleset are
 untouched: the FIX-3 tests live in `tests/` and are covered by the existing gate,
 and the explicit instruction for this round was to leave both alone.
+
+### 17.13 Remediation (SAFETY-01-FIX-4)
+
+The **fourth** independent review returned `NOT PASS` with one P0 and nothing else
+(§17 above). It was correct, and it reopened none of FIX-1/2/3: S22–S24 were
+already right, and this is the property that made them *unconditional* rather than
+merely *available*.
+
+#### P0 — optional metadata could veto the safety reduction
+
+`SafetyKernel.engage_emergency_stop` digested the raw reason **before** the stop
+engaged:
+
+```python
+reason_digest = digest_reason(reason)          # reason.encode("utf-8")
+state = self._emergency.engage(caller=caller, reason_digest=reason_digest)
+```
+
+`digest_reason` encodes to UTF-8, and a Python `str` may hold a lone surrogate —
+`"\ud800"` is legal `str` and illegal UTF-8. So the first line raised
+`UnicodeEncodeError` and the second never ran:
+
+```text
+operator requests E-stop
+→ reason encoding fails
+→ exception
+→ E-stop NOT engaged
+→ ARM may remain ARMED, approval may remain active
+```
+
+Reproduced on the **public kernel path** with the runtime armed under `CAN_TX` and
+holding an approval — before any edit:
+
+```text
+RED     BEFORE: arm_state=armed approvals=1 engaged=False
+        EXCEPTION: UnicodeEncodeError 'utf-8' codec can't encode character
+                   '\ud800' in position 0: surrogates not allowed
+        AFTER : arm_state=armed approvals=1 engaged=False
+                scope=ArmScope(...) canceller_calls=[]
+```
+
+The stop did not happen and the canceller was never called. An optional piece of
+attribution metadata, describing a reduction that had not yet been performed, had
+vetoed the reduction.
+
+Fixed in three small pieces (invariant **S25**):
+
+```text
+Kernel    engage_emergency_stop processes the reason through
+          digest_reason_best_effort, which returns None instead of raising
+Contract  OperationCanceller.reason_digest is str | None, and cancellers are
+          handed the *normalised* value: None means "attribution unavailable",
+          never "skip the fan-out"
+Priority  reduce authority · establish the stop · clear approvals · request
+          cancellation   all before   best-effort attribution · audit
+```
+
+```text
+GREEN   engage returned normally
+        AFTER : arm_state=disarmed approvals=0 engaged=True
+                scope=None canceller_calls=[None]
+```
+
+The fallback is `None` and specifically **not** a substituted encoding:
+`errors="ignore"` would make two different reasons hash alike, and
+`errors="replace"` would produce a digest of text nobody supplied. A fabricated
+digest is worse than an absent one — it claims a reason was recorded when the one
+recorded is not the one given. `reason_digest: null` beside `engaged: true` says
+"the stop happened, the reason was not recordable", which a reviewer can act on.
+
+`digest_reason` itself is **unchanged and still strict**, and a test pins that: on
+an authority-*increasing* path a reason that cannot be digested is a caller bug
+worth knowing about loudly. The leniency is confined to the reducing path, the
+same asymmetry S17 draws.
+
+No raw reason is retained as a fallback (§10): the degrade direction is
+`None`, never the text, so S19 stays intact.
+
+#### Compound failures
+
+The four metadata failures are independent, and the brief asked for the
+combinations rather than the sum of their parts. All four are asserted:
+
+```text
+unencodable reason + failing audit sink
+    → caller may receive SafetyAuditError
+    → E-stop ENGAGED · ARM DISARMED · active_scope None · approvals empty
+
+unencodable reason + clock that fails the engaged_at read
+    → the call returns normally
+    → engaged True · engaged_at None · reason_digest None
+    → E-stop ENGAGED · ARM DISARMED · approvals empty
+
+unencodable reason + malformed canceller output
+    → E-stop ENGAGED · requested_cancellations keeps the valid OperationId
+    → neither the prose nor the surrogate reaches the trail
+
+unencodable reason + release
+    → the stop releases on the normal path afterwards (FIX-3 behaviour intact)
+```
+
+#### What the remediation did not change
+
+```text
+S1–S24       unchanged, and none weakened
+FIX-1        every FIX-1 protection intact — two-axis authority, derived provenance,
+             finite dangerous-permission expiry, reason digests
+FIX-2        every FIX-2 protection intact — the whole-transaction audit commit,
+             SafetyRollbackError, the identifier contract
+FIX-3        every FIX-3 protection intact — the epoch boundary, the arm/approval
+             gates, the release postconditions, the typed cancellation boundary
+tests        none deleted, skipped or loosened; twelve added
+ci.yml       untouched
+ruleset      untouched
+TX / UDS     still absent — the boundary is enforced; no capability was added
+```
+
+### 17.14 Verification (current tree, SAFETY-01-FIX-4)
+
+Local runs against the tree this section describes. §17.5, §17.10 and §17.12 are
+**historical** — they are the runs that were made then, and they have deliberately
+not been restated as current.
+
+```text
+python -m pytest tests/unit/safety/test_emergency_stop.py -q         66 passed
+python -m pytest tests/unit/safety/test_audit_secret_boundary.py -q   15 passed
+python -m pytest tests/unit/safety/test_authority_audit_atomicity.py -q  22 passed
+python -m pytest tests/unit/safety/test_audit_identifiers.py -q      222 passed
+python -m pytest tests/unit/safety -q                                567 passed
+python -m pytest -q                                                  2233 passed, 1 skipped in 150.98 s
+python -m ruff check runtime tests tools                             All checks passed
+python -m mypy runtime                                               Success: no issues found in 80 source files
+```
+
+The single skip is the same pre-existing Windows directory-link privilege skip in
+an unrelated DBC test.
+
+The RED was checked two ways. The `.rivet/scratch/` probe above shows the public
+path failing before the edit. Separately, because a fix that is never re-broken is
+a fix nobody has tested, the pins were re-run with the kernel's
+`digest_reason_best_effort` global rebound to the strict `digest_reason` — the
+exact pre-FIX-4 code path, with no tracked file touched:
+
+```text
+4 pins run against the pre-fix code path: 4 raised UnicodeEncodeError
+(headline stop · cancellation fan-out · +failing audit · +broken clock)
+```
+
+For reference, the historical progression is `555` safety tests before FIX-4 (the
+FIX-3 tree), `522` before FIX-3 (the FIX-2 tree), `286` before FIX-2 (the FIX-1
+tree) and `183` at the end of the initial SAFETY-01 implementation (§17.5).
+
+```text
+GitHub Quality Gate on the FIX-4 head
+  Runtime / Python          required
+  Frontend / TypeScript     required
+  Desktop System / Rust     required
+  Quality Gate              required — must be `success`
+```
+
+The exact run id and head SHA live in the PR #4 body rather than here (a FIX-1
+finding, §17.8 P2-1). `.github/workflows/ci.yml` and the `main` ruleset are
+untouched: the FIX-4 tests live in `tests/` and are covered by the existing gate,
+and the explicit instruction for this round was to leave both alone.
+
+**Known residue, recorded rather than fixed.** `SafetyKernel.disarm(reason=…)`
+still digests strictly, so an unencodable reason there raises `UnicodeEncodeError`
+instead of a typed fault. It does **not** veto anything: `self._arm.disarm()` runs
+before the digest, so the reduction has already happened and the exception only
+costs the audit record and the return value — the safe direction, exactly what S17
+describes. It is out of FIX-4's scope (the review's finding and the frozen S25 both
+concern the emergency-stop path, and §6 of the brief is explicit that the
+best-effort helper must not be applied globally), and it is a diagnosability
+defect rather than a safety one. Recorded so the next review sees it was
+considered rather than missed.
