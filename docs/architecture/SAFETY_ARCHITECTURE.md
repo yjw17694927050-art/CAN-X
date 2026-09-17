@@ -897,9 +897,11 @@ after the release  no dangerous authority exists
 * **Any caller kind may engage it.** An Agent, script or automation rule that
   detects danger can pull it. Engaging only ever reduces authority — which is
   also why nothing on the engage path can fail it: a clock that cannot be read
-  records `engaged_at = None`, a canceller that raises or answers with prose is
-  reported in the state, and the stop still engages. A reduction that could not
-  be recorded stands (invariant S17).
+  records `engaged_at = None`, a digest that is not a digest records
+  `reason_digest = None`, a canceller that raises or answers with prose is
+  reported in the state, and the stop still engages. In every case the loss is
+  visible in the state rather than fatal to the stop, and the reduction stands
+  even when the audit cannot be written (invariant S17).
 * **Only an operator or the host may release it.** Releasing restores the
   *possibility* of dangerous work, which is an authority decision. The caller
   check runs before anything is mutated, so a refused release cannot leave the
@@ -1529,6 +1531,12 @@ Layer 2  assert the release postcondition instead of assuming it (S23)
 `confirm_arm` carries its own gate because it is a real bypass, not a duplicate:
 a runtime that was already `ARMING` when the stop engaged reaches `ARMED` through
 the confirmation and never calls `arm` again.
+
+Neither layer may itself become a way for the stop to fail. The engage path is
+fail-safe in the same sense (S22): a clock that cannot be read records
+`engaged_at = None` and a digest that is not a digest records `reason_digest = None`,
+so a broken input costs attribution rather than the stop — and the loss is visible
+as `null` in the state and the trail rather than swallowed.
 
 The gate is a typed *fault*, not a `PolicyDecision.DENY`. These are control-plane
 authority mutations that never reach `evaluate`; there is no verdict for a `DENY`

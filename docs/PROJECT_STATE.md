@@ -1456,6 +1456,11 @@ the confirmation and never calls `arm` again. The gate is a typed fault rather t
 a `PolicyDecision.DENY` because these are control-plane authority mutations that
 never reach `evaluate` — there is no verdict for a `DENY` to be.
 
+Neither layer may itself become a way for the stop to fail (S22): a clock that
+cannot be read records `engaged_at = None`, and a reason digest that is not a digest
+records `reason_digest = None`. The loss is visible as `null` in the state and the
+trail; the stop still engages.
+
 ```text
 GREEN   P0 arm during e-stop: refused -> SafetyEmergencyStopError safety.emergency_stop_active
         P0 confirm_arm during e-stop: refused -> SafetyEmergencyStopError
@@ -1552,9 +1557,9 @@ Local runs against the tree this section describes. §17.5 and §17.10 are
 not been restated as current.
 
 ```text
-python -m pytest tests/unit/safety/test_emergency_stop.py -q    53 passed
-python -m pytest tests/unit/safety -q                           554 passed
-python -m pytest -q                                             2220 passed, 1 skipped in 151.75 s
+python -m pytest tests/unit/safety/test_emergency_stop.py -q    54 passed
+python -m pytest tests/unit/safety -q                           555 passed
+python -m pytest -q                                             2221 passed, 1 skipped in 151.53 s
                                                                 (the skip is the same pre-existing
                                                                 Windows directory-link privilege in an
                                                                 unrelated DBC test)
