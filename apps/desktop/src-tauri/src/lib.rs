@@ -1,3 +1,4 @@
+pub mod dbc_file_bridge;
 pub mod runtime_sidecar;
 
 use std::env;
@@ -154,8 +155,17 @@ pub fn run() {
     let runtime = ManagedRuntime::discover();
     let _ = runtime.start();
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(runtime)
-        .invoke_handler(tauri::generate_handler![runtime_status, restart_runtime])
+        .invoke_handler(tauri::generate_handler![
+            runtime_status,
+            restart_runtime,
+            // The bridge's command is registered through its module path: it is the
+            // module that owns the filesystem decision, and naming it here is what
+            // keeps `lib.rs` an assembly point rather than a place where file access
+            // is declared.
+            dbc_file_bridge::select_dbc_file
+        ])
         .build(tauri::generate_context!())
         .expect("failed to build the CAN-X desktop shell");
     app.run(|handle, event| {

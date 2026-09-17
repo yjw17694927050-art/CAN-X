@@ -4527,6 +4527,478 @@ CLOSED；最终验收由项目负责人独立执行。不得由本轮自行开�
 
 ---
 
+### Step V0.3-07 — Tauri Safe DBC File Bridge Foundation
+
+V0.3-06 / V0.3-06-FINAL 已由项目负责人独立验收：**Independent Final Acceptance: PASS**
+（P0: 0 · P1: 0 · P2: 0 · Status: CLOSED；验收时 HEAD
+`fcbeb3da9b4c192ea3fc2953057f1e4fa5f39cfd`）。本轮开工前核对本地 HEAD 与该值一致，工作区除
+未跟踪的 `.rivet/` 外干净，未发现冲突；V0.3-06 的 Runtime content import contract 本轮
+**未修改**。
+
+#### Objective
+
+在 Tauri desktop **system layer** 建立安全、bounded、typed 的 DBC 文件选择与读取桥：renderer
+可以获得用户通过 native file dialog 明确选择的 DBC 内容，但不能向 Rust 提交任意 filesystem
+path，也不能获得外部源文件完整路径。
+
+```text
+User
+ ↓
+Native OS file dialog                由 Rust 打开，不由 renderer 打开
+ ↓
+Tauri trusted system layer
+ ↓
+bounded exact-byte read              空 / 越界在发布前就被拒
+ ↓
+SelectedDbcContent { source_name, content_base64 }
+ ↓
+typed TypeScript desktop bridge      apps/desktop/src/desktop/dbc-file-bridge.ts
+```
+
+本轮**未**实现最后一段（Runtime `POST /dbc/assets` orchestration）——那是 V0.3-08。
+
+#### Architecture
+
+```text
+apps/desktop/src/desktop/dbc-file-bridge.ts     renderer 侧 typed bridge（IPC，不碰 HTTP）
+        ↓ Tauri IPC · command 无任何 caller 参数
+apps/desktop/src-tauri/src/dbc_file_bridge.rs   桌面 system layer 全权负责
+   select_dbc_file()         唯一 command：开 dialog → 拿内部 path → 读 → 发布
+        ↓
+   read_selected_dbc(path)   私有函数（非 command）：validate → metadata 预检 → bounded read
+        ↓
+   read_bounded_exact_bytes  Take(MAX + 1) + read_to_end，实际读取有界
+apps/desktop/src-tauri/src/lib.rs               仅 module / plugin / invoke_handler 注册
+```
+
+`lib.rs` 没有变成第二个业务模块：新增只有 `pub mod dbc_file_bridge;`、
+`.plugin(tauri_plugin_dialog::init())`、以及 handler 列表里的一行
+（`dbc_file_bridge::select_dbc_file`）。
+
+#### Security boundary
+
+```text
+renderer 不能提交 path —— 唯一 command 的 caller 参数为空
+renderer 不能拿到 path —— 成功 payload 只有 source_name + content_base64
+错误响应不含 path —— 所有错误消息是静态文本，构造器不接受任何 path / 文件名
+renderer 未获得任何新增 capability —— capabilities/default.json 仍只有 core:default
+Runtime 仍只接受 content —— runtime/canx/api/dbc.py 本轮未改
+```
+
+#### Tauri command contract
+
+```text
+command     select_dbc_file
+arguments   none          唯一的参数 AppHandle<R> 由 Tauri 注入，不是 caller 提供的
+```
+
+```text
+成功     Ok(Some(SelectedDbcContent))
+取消     Ok(None)                    → renderer 收到 null
+失败     Err(DbcFileBridgeError)
+```
+
+命令用 `pub(crate)` 而非 `pub`：Tauri 的 command 宏只在函数为完整 `pub` 时把生成的 wrapper 宏
+`#[macro_export]` 到 crate root，那会让 `generate_handler!` 里的模块路径失去可解析的宏（本轮
+实际撞到了这一点，见下）。命令由本 crate 装配、也只对本 crate 可达。
+
+#### SelectedDbcContent
+
+```text
+source_name      basename only（例如 vehicle.dbc）
+content_base64   原始字节的 Base64（标准 alphabet，带 padding）
+```
+
+**没有** path / absolute_path / directory / parent_directory / canonical_path。
+
+#### Cancellation semantics
+
+```text
+Rust   Result<Option<SelectedDbcContent>, DbcFileBridgeError>
+TS     SelectedDbcContent | null
+```
+
+取消是控制流，不是失败：不存在 `desktop.file_cancelled` 这类错误码。
+
+#### File validation
+
+dialog filter（`*.dbc`）只是给用户的便利，不是安全不变量；选择后 Rust 重新验证：
+
+```text
+selected entry exists      fs::metadata 失败 → desktop.dbc_file_read_failed
+regular file               目录 → desktop.dbc_file_invalid_type
+basename available         file_name 不可取 → desktop.dbc_file_invalid_type
+extension == .dbc          Path::extension + eq_ignore_ascii_case（大小写不敏感）
+```
+
+```text
+vehicle.dbc        ACCEPT
+BODY.DBC           ACCEPT
+车辆-总线.dbc       ACCEPT
+vehicle.txt        REJECT
+directory          REJECT
+missing file       REJECT
+```
+
+#### Size bound
+
+```text
+MAX_DBC_IMPORT_BYTES = 16 MiB     与 Runtime HTTP import guard 同值
+```
+
+这是 desktop bridge 的**传输 / 资源边界**，不是 DBC domain 的永久限制。Rust 侧有测试断言该
+常量与 `runtime/canx/api/dbc.py` 的 `MAX_DBC_IMPORT_BYTES = 16 * 1024 * 1024` 保持同值——
+两个独立声明一旦漂移，用户能选中的文件会被下一阶段以一个与内容无关的理由拒绝。
+
+#### Bounded IO implementation
+
+```text
+open file
+↓ optional metadata fast precheck（len > MAX 立刻拒，省掉 read）
+↓ reader.take(MAX + 1)
+↓ read_to_end
+↓ 0 < len <= MAX ?
+```
+
+metadata **不是**唯一安全检查：它可以在读取开始前就过期。`+1` 是让「恰好在界上」与「越过界」
+成为两个不同观测的关键——若只读到界，就无法区分「恰好 16 MiB」与「5 GiB」。
+
+#### Exact-byte guarantee
+
+```text
+selected file bytes == decode(content_base64)
+```
+
+不读成 text、不规范化换行、不按 UTF-8 解码、不重写编码、不剥 BOM、不重渲染。BOM、非 UTF-8
+字节序列、CRLF 全部原样保留（各有独立测试）。
+
+#### Base64 / binary IPC decision
+
+选用 **Base64**（`base64 0.22.1`，标准 alphabet + padding），未采用 binary IPC，也未把 16 MiB
+序列化成 JSON integer array。理由：Runtime 的 durable transport contract 已经是
+`content_base64`，desktop bridge 直接产出同一形状即可，既不需要 frontend 再处理 filesystem
+bytes，也不必在本轮引入 Tauri 的 raw-response IPC 通道。
+
+#### Path privacy
+
+不跨 IPC 返回：绝对路径 / 父目录 / canonical path / OS 用户名 / 客户项目目录。
+
+测试构造 `canx-dbc-bridge-secret-program-<pid>-<n>\vehicle.dbc` 这样的临时目录，断言：
+
+```text
+成功 payload 序列化后恰好两个 key（content_base64, source_name），不含 secret-program
+失败 payload 不含 secret-program，也不含被拒文件名（vehicle.txt / empty.dbc）
+```
+
+#### Rust module structure
+
+```text
+apps/desktop/src-tauri/src/dbc_file_bridge.rs          实现（model / error / validate / read / dialog / command）
+apps/desktop/src-tauri/src/dbc_file_bridge/tests.rs    28 条单测（真实文件系统 + 架构回归）
+apps/desktop/src-tauri/src/lib.rs                      module / plugin / invoke_handler 注册
+```
+
+#### TypeScript bridge
+
+```text
+apps/desktop/src/desktop/dbc-file-bridge.ts
+```
+
+```ts
+export interface SelectedDbcContent { readonly sourceName: string; readonly contentBase64: string }
+export async function selectDbcContent(): Promise<SelectedDbcContent | null>
+export function toRuntimeImportFields(content: SelectedDbcContent): RuntimeDbcImportFields
+export class DbcFileBridgeError extends Error { code; recoverable }
+```
+
+放在 `src/desktop/` 而不是 `src/runtime/`：`runtime/` 是 Python Runtime 的 HTTP / stream client，
+把 Tauri filesystem bridge 混进去会把 OS 系统层与 Runtime client 揉成一个 service。
+
+`selectDbcContent` 用**新建对象**只取两个具名字段来投影返回值，而不是相信 payload 的形状：若
+shell 将来多回一个 `path`，它在这里被丢弃，不会变成一个所有消费方都当作受支持属性来读的字段。
+
+#### Rust 实现过程中被证伪的两个假设（保留记录）
+
+```text
+1 假设：command 可以写成 `pub async fn` 并从 lib.rs 用裸名注册。
+  事实：`pub` 会触发 `#[macro_export]`，宏被移到 crate root，`lib.rs` 里既解析不到裸名，
+       也无法用模块路径 `dbc_file_bridge::__cmd__…` 解析到。改用 `pub(crate)` +
+       模块路径注册。
+2 假设：参数表可以靠「`#[tauri::command]` 之后第一个 `(`」定位。
+  事实：`pub(crate)` 自带括号，解析器拿到的是 "crate" 而不是参数表——架构回归测试当时是
+       假通过。改为定位 `fn ` 之后的括号。
+```
+
+两条都是**先看到红灯再修**，不是先写结论。
+
+#### Dependency audit
+
+```text
+name                     tauri-plugin-dialog
+exact pinned version     2.7.3
+license                  Apache-2.0 OR MIT
+why needed               官方 Tauri 2 native file dialog；已处理 desktop 平台的主线程 dispatch
+                         （run_on_main_thread），自己用 rfd 容易在消息泵 / 线程上出错
+why std 不足             Rust std 没有 native file dialog
+Tauri 2 compatibility    依赖 tauri >= 2.10；本项目 tauri = 2.11.5
+Rust compatibility       rust-version 1.77.2；本机 rustc 1.98.1
+cross-platform           Windows / macOS / Linux 官方支持；本轮只在 Windows 实测
+binary / package impact  MSI 62,947,328 → 63,127,552 bytes（+180,224，+0.29%）
+                         can-x.exe 9,128,960 → 9,796,096 bytes（+667,136，+7.30%）
+
+name                     base64
+exact pinned version     0.22.1（Cargo.lock 中已作为传递依赖存在，未新增第二份）
+license                  MIT OR Apache-2.0
+why needed               exact bytes 的 Base64 编码
+
+name                     serde（derive）
+exact pinned version     1.0.229      license MIT OR Apache-2.0
+why needed               typed IPC 需要 Serialize / Deserialize
+
+name                     serde_json（dev-dependency）
+exact pinned version     1.0.151      license MIT OR Apache-2.0
+why needed               序列化隐私断言（payload 恰好两个 key）
+```
+
+传递引入 `tauri-plugin-fs 2.5.2`（tauri-plugin-dialog 的依赖，仅用于 `FilePath` 类型与
+`FsExt`）。**未注册**其任何 command：只有显式 `.plugin(tauri_plugin_fs::init())` 才会，本项目
+没有这么做。Cargo.lock 净增 160 行。
+
+#### Capability decision（未扩大 renderer 权限）
+
+`capabilities/default.json` **未改动**，仍为：
+
+```json
+{ "windows": ["main"], "permissions": ["core:default"] }
+```
+
+tauri-plugin-dialog 注册的 `plugin:dialog|open/save/message` 因**没有任何 capability 授权**而
+对 renderer 不可达，因此它内部「把选中路径加入 fs scope」的逻辑（`commands::open` 里的
+`tauri_scope.allow_file`）也无法被 renderer 触发。native dialog 全部从 Rust trusted layer 调用
+（`desktop::pick_file`，不经过 `commands::open`）。Rust 侧有测试断言 capability 文件不含
+`dialog` / `fs:` / `shell` / `process`。
+
+#### Rust unit tests（28 passed）
+
+行为测试跑真实文件系统与真实 reader（不自动化 OS dialog）：
+
+```text
+valid .dbc bytes                 vehicle.dbc 逐字节保真
+uppercase .DBC                   BODY.DBC
+non-ASCII file name              车辆-总线.dbc 作为 source_name 保真
+BOM preserved                    0xEF 0xBB 0xBF 前缀原样
+non-UTF8 bytes preserved         0xFF 0xFE 0x80 0x00 0xC3 0x28 原样
+CRLF not normalised              \r\n 原样
+Base64 round-trip                decode(content_base64) == file bytes
+empty file                       desktop.dbc_file_empty
+wrong extension                  desktop.dbc_file_invalid_type
+directory                        desktop.dbc_file_invalid_type
+missing file                     desktop.dbc_file_read_failed
+exactly 16 MiB                   ACCEPT + 内容完整
+16 MiB + 1                       desktop.dbc_file_too_large
+endless stream（io::repeat）      拒绝，且实测只交出 MAX + 1 字节
+bounded read at the bound        ACCEPT
+bounded read empty stream        desktop.dbc_file_empty
+```
+
+架构回归（读本 crate 源码与 capability 文件）：
+
+```text
+registered command surface == {runtime_status, restart_runtime, select_dbc_file}
+每个第一方 command 的参数列表都不含 path / file_name / source_name / directory / bytes
+select_dbc_file 唯一参数 == ["app: AppHandle<R>"]
+禁用名 read_dbc_file / read_file / read_bytes / load_file / open_path / read_path 均未注册
+read_selected_dbc 仍是非 command 的普通函数
+capability 不含 dialog / fs: / shell / process
+desktop bound == Runtime HTTP import bound
+SelectedDbcContent 序列化 key == Runtime 的 source_name / content_base64
+```
+
+#### RED evidence（证明测试真的在检验有界读取）
+
+先把 bound 从 `MAX + 1` 改成 `MAX`（off-by-one 变异），再跑：
+
+```text
+cargo test --lib an_endless_stream
+→ test dbc_file_bridge::tests::an_endless_stream_is_never_read_beyond_the_bound ... FAILED
+  panicked at src\dbc_file_bridge\tests.rs:308:
+  an endless stream must be refused rather than read to completion
+  test result: FAILED. 0 passed; 1 failed; 27 filtered out
+```
+
+恢复 `MAX + 1` 后同一条测试转绿。该断言记录的是围绕**真实读取字节数**的计数（`CountingReader`
++ `AtomicU64`），不是从 `take()` 被调用推断出来的。
+
+诚实记录另一件事：变异过程中 `expect_err` 会把 `Ok` 分支里 16 MiB 的 buffer 格式化进 panic
+消息（数十 MB 输出，把一次运行拖过了 120 s），因此该断言改为 `match` + `Ok(_) => panic!`，
+不渲染值。这是测试写法的缺陷，已修。
+
+#### TypeScript tests（16 passed）
+
+```text
+src/desktop/dbc-file-bridge.test.ts
+  selected payload → typed result
+  command 调用恰好一次、且只有命令名一个参数（renderer 没有任何可填入的 path 参数）
+  cancel → null
+  Tauri typed error → DbcFileBridgeError（code / message / recoverable 原样透传）
+  unavailable bridge → desktop.dbc_bridge_unavailable（不回显原始 cause）
+  payload 缺字段 / 字段类型错 / 非对象 / 数组 → rejected
+  意外 response 里的 path / absolute_path 不被提升；结果恰好两个 key
+  toRuntimeImportFields：sourceName → source_name、contentBase64 → content_base64
+  跨语言一致性：Rust lib.rs 注册的 command 名、Rust 常量、本模块常量三者一致
+```
+
+#### Rust checks
+
+```text
+cargo fmt --check                                        exit 0
+cargo clippy --all-targets --all-features -- -D warnings  exit 0（无警告）
+cargo check                                              exit 0
+cargo test                                               28 passed（lib）
+                                                         3 passed（tests/runtime_sidecar.rs，含真实 Python sidecar）
+```
+
+`scripts\rust-check.cmd` 在本机不可直接使用：它 `call` 的
+`C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat`
+在当前环境不存在（VS 不在该路径，`INCLUDE` / `LIB` 也未设置），脚本会在第一步
+`if errorlevel 1 exit /b` 处退出。本轮的 Rust 检查改为直接调用上表中的 cargo 命令
+（`rustc 1.98.1`、host `x86_64-pc-windows-msvc`；编译与链接均可用，`cargo test --no-run`
+验证过链接）。**未**修改 `rust-check.cmd`：修脚本不在本轮范围内。
+
+#### Frontend checks
+
+```text
+npm test           8 files / 44 tests passed（既有 28 + 新增 16）
+npm run lint       exit 0（eslint . --max-warnings 0，无输出）
+npm run typecheck  exit 0
+npm run build      exit 0（tsc -b && vite build，689 modules）
+```
+
+#### Python regression（Runtime 未修改）
+
+```text
+python -m pytest -q              1623 passed, 1 skipped in 140.35s
+ruff check runtime tests tools   All checks passed!
+mypy runtime                     Success: no issues found in 64 source files
+```
+
+用例总数与 V0.3-06-FINAL 基线完全一致（1623 passed / 1 skipped），本轮未新增也未修改任何
+Python 测试。1 skipped 为既有已知项（本机无权限创建目录链接 WinError 1314）。
+
+#### Windows packaging
+
+```text
+cmd.exe /c scripts\package-windows.cmd      exit 0
+  · [1/6] runtime build + staged sidecar       PASS
+  · [2/6] staged sidecar verified              ok
+  · [3/6] packaged-runtime smoke test          5 passed in 24.06s
+  · [4/6] Tauri MSI build                      PASS（release 编译 1m33s；candle + light 产出 MSI）
+  · [5/6] MSI artifact check                   ok: CAN-X_0.1.0_x64_en-US.msi
+  · [6/6] packaging complete                   exit 0
+
+build\runtime-dist\canx-runtime.exe                       60,125,722 bytes（V0.3-06-FINAL: 60,123,803）
+apps\...\binaries\canx-runtime-x86_64-pc-windows-msvc.exe 60,125,722 bytes（与上一致）
+apps\...\bundle\msi\CAN-X_0.1.0_x64_en-US.msi             63,127,552 bytes（V0.3-06-FINAL: 62,947,328）
+apps\...\target\release\can-x.exe                          9,796,096 bytes（V0.3-06-FINAL: 9,128,960）
+```
+
+`scripts\package-windows.cmd` 未修改；本轮只是首次需要一个能编译 `rfd` / `tauri-plugin-dialog`
+的 Windows 构建，它已经满足。
+
+#### Native dialog verification
+
+```text
+Native dialog interactive smoke: NOT VERIFIED
+```
+
+自动化测试无法可靠点击 OS file dialog，本轮没有人工执行「打开构建产物 → 触发选择 → 取消一次
+→ 选一次」。已完成的替代证据：Rust bounded-read / validation 单测（真实文件系统）、plugin
+编译与链接、Tauri MSI 打包成功、TS invoke 契约测试（mock）。
+
+作为补充（**不是** dialog 交互的替代），对打包产物做了一次受控的运行时启动验证：
+
+```text
+启动 apps\desktop\src-tauri\target\release\can-x.exe
+  → can-x.exe (PID 26344) 存活                   桌面壳启动成功
+  → canx-runtime.exe (PID 5068 / 25868) 存活     sidecar 生命周期未被 bridge 破坏
+  → GET http://127.0.0.1:8765/health
+     {"status":"ready","service":"canx-runtime","schema_version":1}
+  → taskkill 清理，无残留进程
+```
+
+这说明 `tauri_plugin_dialog::init()` 的注册没有让 app 启动 panic，也说明 §29 所列的既有
+runtime sidecar 启动 / 健康检查仍然正常。它**不**证明 native dialog 本身可用——那段路径仍为
+NOT VERIFIED。
+
+#### macOS status
+
+```text
+macOS: NOT VERIFIED
+```
+
+实现未使用任何 Windows-only 的路径逻辑（`Path::file_name` / `Path::extension` /
+`eq_ignore_ascii_case` 均为平台无关），dialog 由 tauri-plugin-dialog 提供跨平台实现；但本轮
+只在 Windows 上构建与打包，也**不**声称 macOS 已验证。
+
+#### Schema / dependency changes
+
+```text
+SQLite schema / project.json / Parquet / Frame / FrameBatch / canonical DBC model /
+DecodedFrame / WebSocket                                    未改
+runtime/canx/**                                             未改
+GET / POST /dbc/assets 全部 endpoint contract               未改
+capabilities/default.json                                   未改（未扩大 renderer 权限）
+tauri.conf.json                                             未改
+新增 Rust dependency    tauri-plugin-dialog 2.7.3（+ 传递 tauri-plugin-fs 2.5.2）
+                        base64 0.22.1（pin）/ serde 1.0.229（pin）/ serde_json 1.0.151（pin, dev）
+新增 JS dependency      none
+新增 Python dependency  none
+```
+
+#### Known limitations（诚实记录）
+
+```text
+ 1 Native file dialog 的交互本身未验证（见 Native dialog verification）。
+ 2 capability 层面的「renderer 调不到 plugin:dialog|open」是**静态断言**（capability 文件不含
+   dialog 权限 + 源代码级 command surface 断言），不是运行时 IPC 拒绝的实测。
+ 3 metadata 预检会在读取前拒绝明显超界的文件；真正不可绕过的边界是 bounded read，它有独立
+   于 metadata 的测试（endless stream）。
+ 4 16 MiB 是 desktop bridge 的传输边界，与 Runtime 的 HTTP guard 同值但**不是** domain 上限；
+   两个数字由一条跨界测试绑定，改动任一侧都会让该测试失败。
+ 5 本轮只在 Windows 上验证打包产物；macOS / Linux 构建形态未验证。
+ 6 未对真实 CAN 硬件 / 真实设备做任何验证（本阶段不涉及）。
+ 7 极端文件名（UTF-16 无法表示的）未覆盖；non-ASCII 已覆盖。
+ 8 `scripts\rust-check.cmd` 在本机不可用（见 Rust checks），本轮以等价 cargo 命令代替，该脚本
+   本身未修。
+```
+
+#### Deferred（本轮明确未做）
+
+```text
+POST /dbc/assets orchestration from frontend
+DBC React Workspace / Import button / DBC tree / message list / signal list / toast / modal
+drag & drop / active DBC UI / Trace decoded columns
+project selector / channel ↔ DBC binding / decoded realtime stream / Plot signal binding
+DBC editor / asset delete / rename / replace / dedup / Agent dbc.decode
+V0.4 / UAT-specific product closure
+```
+
+#### 状态
+
+```text
+V0.3-07 Tauri Safe DBC File Bridge Foundation
+
+Implementation complete
+Local verification complete
+Awaiting independent acceptance
+```
+
+本轮**不自行宣布** Final Acceptance: PASS / CLOSED；最终验收由项目负责人独立执行。不得由本轮
+自行开始下一阶段（V0.3-08 Desktop DBC Import Orchestration Foundation）。
+
+
+---
+
 ## V0.3 — Professional Trace & DBC Foundation
 
 目标：

@@ -12,5 +12,11 @@ name = "can_x_lib"
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
+base64 = "=0.22.1"
+serde = { version = "=1.0.229", features = ["derive"] }
 tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-dialog = "=2.7.3"
 uuid = { version = "=1.26.1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "=1.0.151"
