@@ -1,30 +1,32 @@
 <#
 .SYNOPSIS
-    Windows end-to-end smoke for the V0.3-07 native DBC file dialog bridge.
+    Windows end-to-end smoke for the V0.3-08 DBC import orchestration.
 
 .DESCRIPTION
-    Drives the *real* renderer path of the desktop DBC bridge inside a **packaged**
-    can-x.exe:
+    Drives the *real* renderer path of a desktop DBC import inside a **packaged**
+    can-x.exe, from the native dialog all the way to a project-owned asset:
 
-        renderer selectDbcContent()
-          -> Tauri invoke("select_dbc_file")
-          -> Rust select_dbc_file
-          -> native Windows file dialog
-          -> bounded exact-byte read
+        renderer selectDbcContent()                  renderer
+          -> Tauri invoke("select_dbc_file")           importDbcFromNativeDialog(projectPath)
+          -> Rust select_dbc_file                        -> POST /dbc/assets (Runtime)
+          -> native Windows file dialog                  -> ProjectDbcService
+          -> bounded exact-byte read                     -> project-owned DBC asset
           -> SelectedDbcContent
-          -> TypeScript typed projection
 
-    and checks the three things the bridge promises:
+    and checks what each half promises:
 
-      * Step 1 — Cancel: the dialog is dismissed with its own Cancel button and the
-        renderer receives `null` (cancel is control flow, not an error).
-      * Step 2 — Select: a real `.dbc` fixture is chosen with the dialog's own Open
-        button; the returned `sourceName` is a basename only and the SHA-256 of the
-        bytes that crossed IPC equals the fixture's own SHA-256 (the exact-byte
-        guarantee, measured at the far end of the chain).
-      * Step 3 — Payload shape: one raw `invoke` observes the payload the Rust layer
-        actually publishes, which must carry `source_name` and `content_base64` and
-        nothing else — no path, no directory, no absolute path.
+      * Step 1 - Cancel: the dialog is dismissed with its own Cancel button; the
+        renderer receives `null`; the orchestration reports `cancelled`; the project
+        gains no asset and the Runtime records no mutation.
+      * Step 2 - Payload shape: one raw `invoke` observes the payload the Rust layer
+        actually publishes, which must still carry exactly `source_name` and
+        `content_base64`. V0.3-08 did not widen the V0.3-07 IPC surface.
+      * Step 3 - Import: a real `.dbc` fixture is chosen and the production
+        orchestration runs against the smoke project. The Runtime's own asset
+        metadata comes back, and - after the desktop is closed - the project is
+        reopened **from the source side** (the Python domain, not the Runtime HTTP
+        API) to prove the asset persisted: count, basename, bytes, SHA-256, size,
+        registry metadata and loadability.
 
     Nothing here clicks inside the webview. The buttons it presses belong to the
     operating system's own file dialog, located through UI Automation and invoked
@@ -32,27 +34,37 @@
     control's screen rectangle).
 
 .PARAMETER ExePath
-    The packaged executable under test. The V0.3-07 verification used
+    The packaged executable under test, for example
     `apps\desktop\src-tauri\target\release\can-x.exe`.
 
 .PARAMETER FixturePath
     A real `.dbc` file to select. `tests\fixtures\dbc\basic_standard.dbc` works, but a
     fixture in a directory with a distinctive name makes the path-privacy check
-    louder: if the directory name ever came back through IPC, the step-3 payload
-    keys and the source name would show it.
+    louder: if the directory name ever came back through IPC or into the request, the
+    payload keys, the source name and the stored bytes would show it.
 
 .PARAMETER EvidencePath
     Where the JSON evidence record is written.
 
+.PARAMETER ProjectPath
+    The CAN-X project to import into. When omitted, a temporary project is created
+    under the system temp directory and its path is recorded in the evidence.
+
+.PARAMETER PythonPath
+    Interpreter used for the source-side project checks (create and reopen). Defaults
+    to the repository virtualenv.
+
 .NOTES
-    Requires a **smoke build**: one made with `VITE_CANX_DBC_SMOKE=1` in the
-    environment, so that the test-only harness in `apps/desktop/src/smoke/` is
-    compiled in. An ordinary build contains no harness and this script will time out
-    waiting for a dialog.
+    Requires a **smoke build**: one made with `VITE_CANX_DBC_SMOKE=1` and
+    `VITE_CANX_DBC_SMOKE_PROJECT_PATH=<project>` in the environment, so that the
+    test-only harness in `apps/desktop/src/smoke/` is compiled in and knows which
+    project to import into. An ordinary build contains no harness and this script
+    will time out waiting for a dialog.
 
         set VITE_CANX_DBC_SMOKE=1
+        set VITE_CANX_DBC_SMOKE_PROJECT_PATH=<temp project>
         cmd.exe /c scripts\package-windows.cmd
-        powershell -File scripts\smoke-native-dbc-dialog.ps1 -ExePath <exe> -FixturePath <dbc> -EvidencePath <json>
+        powershell -File scripts\smoke-native-dbc-dialog.ps1 -ExePath <exe> -FixturePath <dbc> -EvidencePath <json> -ProjectPath <temp project>
 
     The harness publishes its state through `document.title`; WebView2 exposes that
     as the UI Automation name of the web-content pane inside the Tauri window, which
@@ -62,7 +74,9 @@
 param(
   [Parameter(Mandatory = $true)][string]$ExePath,
   [Parameter(Mandatory = $true)][string]$FixturePath,
-  [Parameter(Mandatory = $true)][string]$EvidencePath
+  [Parameter(Mandatory = $true)][string]$EvidencePath,
+  [Parameter(Mandatory = $false)][string]$ProjectPath = '',
+  [Parameter(Mandatory = $false)][string]$PythonPath = '.venv\Scripts\python.exe'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,6 +99,8 @@ public static class CanxSmokeInput {
 $OpenButtonId = '1'
 $CancelButtonId = '2'
 $FileNameEditId = '1148'
+
+$RuntimeBase = 'http://127.0.0.1:8765'
 
 $script:Events = New-Object System.Collections.ArrayList
 
@@ -202,35 +218,114 @@ function Set-DialogFileName($Dialog, [string]$Path) {
 
 function Get-Health {
   try {
-    return (Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 5).Content
+    return (Invoke-WebRequest -Uri "$RuntimeBase/health" -UseBasicParsing -TimeoutSec 5).Content
   } catch {
     return "HEALTH_ERROR: $($_.Exception.Message)"
   }
 }
 
+function Wait-Health([int]$TimeoutSec) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    $health = Get-Health
+    if ($health -like '*"status":"ready"*') { return $health }
+    Start-Sleep -Milliseconds 500
+  }
+  return (Get-Health)
+}
+
+# The Runtime is the authority for "what does this project own"; asking it over HTTP
+# is an observation the renderer cannot fake, and it is the same endpoint a future DBC
+# Workspace will read.
+function Get-ProjectAssets([string]$ProjectRoot) {
+  $encoded = [uri]::EscapeDataString($ProjectRoot)
+  try {
+    $response = Invoke-WebRequest -Uri "$RuntimeBase/dbc/assets?project_path=$encoded" -UseBasicParsing -TimeoutSec 10
+    return ($response.Content | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
+function Invoke-Python([string]$Source, [string[]]$Arguments) {
+  $script = Join-Path $env:TEMP "canx-dbc-smoke-$([guid]::NewGuid().ToString('N')).py"
+  Set-Content -Path $script -Value $Source -Encoding UTF8
+  $previous = $env:PYTHONPATH
+  $env:PYTHONPATH = Join-Path (Get-Location) 'runtime'
+  try {
+    return (& $PythonPath $script @Arguments) | Out-String
+  } finally {
+    $env:PYTHONPATH = $previous
+    Remove-Item -LiteralPath $script -ErrorAction SilentlyContinue
+  }
+}
+
 if (-not (Test-Path -LiteralPath $ExePath)) { throw "executable not found: $ExePath" }
 if (-not (Test-Path -LiteralPath $FixturePath)) { throw "fixture not found: $FixturePath" }
+if (-not (Test-Path -LiteralPath $PythonPath)) { throw "python not found: $PythonPath" }
 
 $fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $FixturePath).Hash.ToLowerInvariant()
 $fixtureSize = (Get-Item -LiteralPath $FixturePath).Length
+$fixtureName = Split-Path -Leaf $FixturePath
+
+# ---- Step 0 — a project that owns nothing yet ----------------------------------
+$createdProject = $false
+if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
+  $ProjectPath = Join-Path $env:TEMP "canx-dbc-smoke-project-$([guid]::NewGuid().ToString('N'))"
+  $createdProject = $true
+}
+
+$createSource = @'
+import sys
+from pathlib import Path
+
+from canx.project.service import ProjectService
+
+root = Path(sys.argv[1])
+handle = ProjectService().create(root, display_name="V0.3-08 DBC import smoke")
+handle.close()
+print(root)
+'@
+
+if (-not (Test-Path -LiteralPath $ProjectPath)) {
+  $created = Invoke-Python $createSource @($ProjectPath)
+  Write-Evidence "smoke project created: $ProjectPath"
+} else {
+  $created = $ProjectPath
+  Write-Evidence "smoke project reused: $ProjectPath"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $ProjectPath 'project.json'))) {
+  throw "the smoke project was not created at $ProjectPath ($created)"
+}
+
+$initialDbFiles = @(Get-ChildItem -LiteralPath (Join-Path $ProjectPath 'dbc') -File -ErrorAction SilentlyContinue)
+Write-Evidence "project dbc/ initial file count: $($initialDbFiles.Count)"
 
 $evidence = [ordered]@{
-  executable    = $ExePath
-  executableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
-  fixture       = $FixturePath
-  fixtureSize   = $fixtureSize
-  fixtureSha256 = $fixtureHash
-  startedAt     = (Get-Date).ToString('s')
-  appPid        = 0
-  cancel        = [ordered]@{ dialogOpened = $false; dialogName = ''; method = ''; dialogClosed = $false }
-  select        = [ordered]@{ dialogOpened = $false; method = ''; dialogClosed = $false }
-  payloadShape  = [ordered]@{ dialogOpened = $false; method = ''; dialogClosed = $false }
-  smokeState    = ''
-  healthBefore  = ''
-  healthAfter   = ''
-  appResponding = $true
-  verdict       = [ordered]@{}
-  events        = @()
+  executable        = $ExePath
+  executableSha256  = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
+  fixture           = $FixturePath
+  fixtureName       = $fixtureName
+  fixtureSize       = $fixtureSize
+  fixtureSha256     = $fixtureHash
+  projectPath       = $ProjectPath
+  projectWasCreated = $createdProject
+  startedAt         = (Get-Date).ToString('s')
+  appPid            = 0
+  initialAssetCount = -1
+  cancel            = [ordered]@{ dialogOpened = $false; dialogName = ''; method = ''; dialogClosed = $false }
+  payloadShape      = [ordered]@{ dialogOpened = $false; method = ''; dialogClosed = $false }
+  import            = [ordered]@{ dialogOpened = $false; method = ''; dialogClosed = $false }
+  smokeState        = ''
+  assetsAfterCancel = -1
+  assetsAfterImport = -1
+  runtimeAsset      = $null
+  sourceCheck       = $null
+  healthBefore      = ''
+  healthAfter       = ''
+  appResponding     = $true
+  verdict           = [ordered]@{}
+  events            = @()
 }
 
 $process = Start-Process -FilePath $ExePath -PassThru
@@ -238,7 +333,13 @@ $appPid = $process.Id
 $evidence.appPid = $appPid
 Write-Evidence "packaged app started: pid=$appPid"
 
-# ---- Step 1 — Cancel ---------------------------------------------------------
+$evidence.healthBefore = Wait-Health 60
+Write-Evidence "runtime health before dialogs: $($evidence.healthBefore)"
+$initialAssets = Get-ProjectAssets $ProjectPath
+if ($null -ne $initialAssets) { $evidence.initialAssetCount = @($initialAssets.assets).Count }
+Write-Evidence "runtime asset count before any dialog: $($evidence.initialAssetCount)"
+
+# ---- Step 1 — Cancel ------------------------------------------------------------
 $dialog = Wait-CanxDialog $appPid 120
 if ($null -eq $dialog) {
   Write-Evidence 'STEP1 FAILED: no native dialog appeared within 120s'
@@ -251,44 +352,48 @@ if ($null -eq $dialog) {
   $evidence.cancel.method = Invoke-DialogButton $dialog $CancelButtonId 'Button'
   Write-Evidence "STEP1 cancel dispatched via: $($evidence.cancel.method)"
   $evidence.cancel.dialogClosed = Wait-NoCanxDialog $appPid 40
-  Start-Sleep -Milliseconds 1200
+  Start-Sleep -Milliseconds 1500
   Write-Evidence "STEP1 dialog closed=$($evidence.cancel.dialogClosed)"
 }
 
-# ---- Step 2 — select the fixture ---------------------------------------------
+$afterCancel = Get-ProjectAssets $ProjectPath
+if ($null -ne $afterCancel) { $evidence.assetsAfterCancel = @($afterCancel.assets).Count }
+Write-Evidence "runtime asset count after cancel: $($evidence.assetsAfterCancel)"
+
+# ---- Step 2 — raw payload shape -------------------------------------------------
 $dialog = Wait-CanxDialog $appPid 90
 if ($null -eq $dialog) {
   Write-Evidence 'STEP2 FAILED: no native dialog appeared within 90s'
 } else {
-  $evidence.select.dialogOpened = $true
+  $evidence.payloadShape.dialogOpened = $true
   [CanxSmokeInput]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle) | Out-Null
   Start-Sleep -Milliseconds 400
   Write-Evidence "STEP2 file name set via: $(Set-DialogFileName $dialog $FixturePath)"
   Start-Sleep -Milliseconds 400
-  $evidence.select.method = Invoke-DialogButton $dialog $OpenButtonId 'Button'
-  Write-Evidence "STEP2 open dispatched via: $($evidence.select.method)"
-  $evidence.select.dialogClosed = Wait-NoCanxDialog $appPid 40
-  Start-Sleep -Milliseconds 1200
-  Write-Evidence "STEP2 dialog closed=$($evidence.select.dialogClosed)"
+  $evidence.payloadShape.method = Invoke-DialogButton $dialog $OpenButtonId 'Button'
+  Write-Evidence "STEP2 open dispatched via: $($evidence.payloadShape.method)"
+  $evidence.payloadShape.dialogClosed = Wait-NoCanxDialog $appPid 40
+  Start-Sleep -Milliseconds 1500
+  Write-Evidence "STEP2 dialog closed=$($evidence.payloadShape.dialogClosed)"
 }
 
-# ---- Step 3 — raw payload shape ----------------------------------------------
+# ---- Step 3 — the real import ---------------------------------------------------
 $dialog = Wait-CanxDialog $appPid 90
 if ($null -eq $dialog) {
   Write-Evidence 'STEP3 FAILED: no native dialog appeared within 90s'
 } else {
-  $evidence.payloadShape.dialogOpened = $true
+  $evidence.import.dialogOpened = $true
   [CanxSmokeInput]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle) | Out-Null
   Start-Sleep -Milliseconds 400
   Write-Evidence "STEP3 file name set via: $(Set-DialogFileName $dialog $FixturePath)"
   Start-Sleep -Milliseconds 400
-  $evidence.payloadShape.method = Invoke-DialogButton $dialog $OpenButtonId 'Button'
-  Write-Evidence "STEP3 open dispatched via: $($evidence.payloadShape.method)"
-  $evidence.payloadShape.dialogClosed = Wait-NoCanxDialog $appPid 40
-  Write-Evidence "STEP3 dialog closed=$($evidence.payloadShape.dialogClosed)"
+  $evidence.import.method = Invoke-DialogButton $dialog $OpenButtonId 'Button'
+  Write-Evidence "STEP3 open dispatched via: $($evidence.import.method)"
+  $evidence.import.dialogClosed = Wait-NoCanxDialog $appPid 40
+  Write-Evidence "STEP3 dialog closed=$($evidence.import.dialogClosed)"
 }
 
-$deadline = (Get-Date).AddSeconds(60)
+$deadline = (Get-Date).AddSeconds(90)
 $title = ''
 while ((Get-Date) -lt $deadline) {
   $title = Get-SmokeTitle $appPid
@@ -304,28 +409,31 @@ if ($title -like 'CANXSMOKE *') {
 if ($null -ne $smoke) { $evidence.smokeState = $smoke.state }
 
 $cancelStep = $null
-$selectStep = $null
 $payloadStep = $null
+$importStep = $null
 if ($null -ne $smoke) {
   $cancelStep = $smoke.results | Where-Object { $_.step -eq 'cancel' } | Select-Object -First 1
-  $selectStep = $smoke.results | Where-Object { $_.step -eq 'select' } | Select-Object -First 1
   $payloadStep = $smoke.results | Where-Object { $_.step -eq 'payload_shape' } | Select-Object -First 1
+  $importStep = $smoke.results | Where-Object { $_.step -eq 'import' } | Select-Object -First 1
 }
 
-$evidence.verdict = [ordered]@{
-  cancelDialogOpened = [bool]$evidence.cancel.dialogOpened
-  cancelReturnedNull = ($null -ne $cancelStep) -and ($cancelStep.returnedNull -eq $true)
-  selectDialogOpened = [bool]$evidence.select.dialogOpened
-  selectReturnedContent = ($null -ne $selectStep) -and ($selectStep.returnedNull -eq $false)
-  basenameOnly       = ($null -ne $selectStep) -and ($selectStep.sourceNameHasSeparator -eq $false)
-  exactBytes         = ($null -ne $selectStep) -and ($selectStep.byteCount -eq $fixtureSize)
-  sha256Match        = ($null -ne $selectStep) -and ($selectStep.sha256 -eq $fixtureHash)
-  payloadKeyCount    = if ($null -ne $payloadStep -and $null -ne $payloadStep.payloadKeys) { $payloadStep.payloadKeys.Count } else { -1 }
-  payloadKeys        = if ($null -ne $payloadStep) { $payloadStep.payloadKeys } else { @() }
-  selectedSourceName = if ($null -ne $selectStep) { $selectStep.sourceName } else { '' }
-  returnedByteCount  = if ($null -ne $selectStep) { $selectStep.byteCount } else { -1 }
-  returnedSha256     = if ($null -ne $selectStep) { $selectStep.sha256 } else { '' }
+$afterImport = Get-ProjectAssets $ProjectPath
+$runtimeAssets = @()
+if ($null -ne $afterImport) {
+  $runtimeAssets = @($afterImport.assets)
+  $evidence.assetsAfterImport = $runtimeAssets.Count
 }
+if ($runtimeAssets.Count -ge 1) {
+  $evidence.runtimeAsset = [ordered]@{
+    assetId      = $runtimeAssets[0].asset_id
+    sourceName   = $runtimeAssets[0].source_name
+    sha256       = $runtimeAssets[0].sha256
+    sizeBytes    = $runtimeAssets[0].size_bytes
+    encoding     = $runtimeAssets[0].encoding
+    importedAt   = $runtimeAssets[0].imported_at
+  }
+}
+Write-Evidence "runtime asset count after import: $($evidence.assetsAfterImport)"
 
 $evidence.healthAfter = Get-Health
 Write-Evidence "runtime health after dialogs: $($evidence.healthAfter)"
@@ -337,17 +445,127 @@ try {
 }
 Write-Evidence "app responding: $($evidence.appResponding)"
 
+# ---- Close the desktop, then reopen the project from the source side ------------
+$closed = $process.CloseMainWindow()
+if (-not $process.WaitForExit(30000)) {
+  Write-Evidence 'desktop did not exit on window close; terminating'
+  Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue
+  $null = $process.WaitForExit(10000)
+}
+Write-Evidence "desktop closed (CloseMainWindow=$closed)"
+
+$sidecarDeadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $sidecarDeadline) {
+  if ((Get-Health) -notlike '*"status":"ready"*') { break }
+  Start-Sleep -Milliseconds 500
+}
+$healthAfterClose = Get-Health
+Write-Evidence "runtime health after desktop close: $healthAfterClose"
+
+$verifySource = @'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+from canx.dbc.asset import resolve_asset_path
+from canx.dbc.project_service import ProjectDbcService
+
+root = Path(sys.argv[1])
+fixture = Path(sys.argv[2])
+
+service = ProjectDbcService(root)
+assets = service.list_assets()
+report = {
+    "assetCount": len(assets),
+    "dbFiles": sorted(path.name for path in (root / "dbc").glob("*.dbc")),
+}
+if len(assets) == 1:
+    asset = assets[0]
+    stored = resolve_asset_path(root, asset).read_bytes()
+    source = fixture.read_bytes()
+    document = service.load_asset(asset.asset_id)
+    report.update(
+        {
+            "assetId": asset.asset_id,
+            "projectIdPresent": bool(asset.project_id),
+            "sourceName": asset.source_name,
+            "relativePath": asset.relative_path,
+            "sizeBytes": asset.size_bytes,
+            "encoding": asset.encoding,
+            "importedAtIso": asset.imported_at.isoformat(),
+            "storedSize": len(stored),
+            "storedSha256": hashlib.sha256(stored).hexdigest(),
+            "bytesEqualToSource": stored == source,
+            "messageCount": len(document.database.messages),
+            "signalCount": sum(len(message.signals) for message in document.database.messages),
+        }
+    )
+print(json.dumps(report))
+'@
+
+$sourceReport = Invoke-Python $verifySource @($ProjectPath, $FixturePath)
+Write-Evidence "source-side reopen report: $($sourceReport.Trim())"
+try {
+  $evidence.sourceCheck = ($sourceReport | ConvertFrom-Json)
+} catch {
+  $evidence.sourceCheck = $null
+}
+
+$check = $evidence.sourceCheck
+$evidence.verdict = [ordered]@{
+  initialAssetCountZero = ($evidence.initialAssetCount -eq 0)
+  initialDbcDirectoryEmpty = ($initialDbFiles.Count -eq 0)
+  cancelDialogOpened = [bool]$evidence.cancel.dialogOpened
+  cancelReturnedNull = ($null -ne $cancelStep) -and ($cancelStep.returnedNull -eq $true)
+  cancelStoredNothing = ($evidence.assetsAfterCancel -eq 0)
+  payloadKeyCount = if ($null -ne $payloadStep -and $null -ne $payloadStep.payloadKeys) { $payloadStep.payloadKeys.Count } else { -1 }
+  payloadKeys = if ($null -ne $payloadStep) { $payloadStep.payloadKeys } else { @() }
+  importDialogOpened = [bool]$evidence.import.dialogOpened
+  orchestrationImported = ($null -ne $importStep) -and ($importStep.outcome -eq 'imported')
+  runtimeAssetCountOne = ($evidence.assetsAfterImport -eq 1)
+  runtimeShaMatchesFixture = ($null -ne $evidence.runtimeAsset) -and ($evidence.runtimeAsset.sha256 -eq $fixtureHash)
+  runtimeSizeMatchesFixture = ($null -ne $evidence.runtimeAsset) -and ($evidence.runtimeAsset.sizeBytes -eq $fixtureSize)
+  runtimeNameIsFixtureBasename = ($null -ne $evidence.runtimeAsset) -and ($evidence.runtimeAsset.sourceName -eq $fixtureName)
+  sourceAssetCountOne = ($null -ne $check) -and ($check.assetCount -eq 1)
+  sourceBytesEqualFixture = ($null -ne $check) -and ($check.bytesEqualToSource -eq $true)
+  sourceStoredSha256MatchesFixture = ($null -ne $check) -and ($check.storedSha256 -eq $fixtureHash)
+  sourceSizeMatchesFixture = ($null -ne $check) -and ($check.sizeBytes -eq $fixtureSize)
+  sourceNameIsFixtureBasename = ($null -ne $check) -and ($check.sourceName -eq $fixtureName)
+  sourceAssetLoads = ($null -ne $check) -and ($check.messageCount -gt 0)
+  rendererPayloadClean = ($null -ne $importStep) -and ($importStep.sourceNameHasSeparator -eq $false)
+  runtimeHealthyThroughout = ($evidence.healthBefore -like '*"status":"ready"*') -and ($evidence.healthAfter -like '*"status":"ready"*')
+  runtimeStoppedWithDesktop = ($healthAfterClose -notlike '*"status":"ready"*')
+  appResponding = [bool]$evidence.appResponding
+}
+
 $evidence.events = @($script:Events)
 $evidence.finishedAt = (Get-Date).ToString('s')
-$evidence | ConvertTo-Json -Depth 6 | Set-Content -Path $EvidencePath -Encoding UTF8
+$evidenceJson = $evidence | ConvertTo-Json -Depth 8
+$evidenceDir = Split-Path -Parent $EvidencePath
+if (-not [string]::IsNullOrWhiteSpace($evidenceDir) -and -not (Test-Path -LiteralPath $evidenceDir)) {
+  New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+}
+Set-Content -Path $EvidencePath -Value $evidenceJson -Encoding UTF8
 
 Write-Output ''
-Write-Output 'Cancel smoke:                ' + $(if ($evidence.verdict.cancelReturnedNull) { 'PASS' } else { 'FAIL' })
-Write-Output 'Valid selection smoke:       ' + $(if ($evidence.verdict.selectReturnedContent) { 'PASS' } else { 'FAIL' })
-Write-Output 'sourceName basename-only:    ' + $(if ($evidence.verdict.basenameOnly) { 'PASS' } else { 'FAIL' })
-Write-Output 'exact byte count:            ' + $(if ($evidence.verdict.exactBytes) { 'PASS' } else { 'FAIL' })
-Write-Output 'SHA256 equality:             ' + $(if ($evidence.verdict.sha256Match) { 'PASS' } else { 'FAIL' })
-Write-Output 'payload key count == 2:      ' + $(if ($evidence.verdict.payloadKeyCount -eq 2) { 'PASS' } else { 'FAIL' })
-Write-Output 'runtime sidecar health:      ' + $(if ($evidence.healthAfter -like '*"status":"ready"*') { 'PASS' } else { 'FAIL' })
-Write-Output 'app responsiveness:          ' + $(if ($evidence.appResponding) { 'PASS' } else { 'FAIL' })
+Write-Output 'Cancel dialog opened:              ' + $(if ($evidence.verdict.cancelDialogOpened) { 'PASS' } else { 'FAIL' })
+Write-Output 'Cancel returned null:              ' + $(if ($evidence.verdict.cancelReturnedNull) { 'PASS' } else { 'FAIL' })
+Write-Output 'Cancel stored nothing:             ' + $(if ($evidence.verdict.cancelStoredNothing) { 'PASS' } else { 'FAIL' })
+Write-Output 'IPC payload key count == 2:        ' + $(if ($evidence.verdict.payloadKeyCount -eq 2) { 'PASS' } else { 'FAIL' })
+Write-Output 'Orchestration imported:            ' + $(if ($evidence.verdict.orchestrationImported) { 'PASS' } else { 'FAIL' })
+Write-Output 'Runtime asset count == 1:          ' + $(if ($evidence.verdict.runtimeAssetCountOne) { 'PASS' } else { 'FAIL' })
+Write-Output 'Runtime SHA256 == fixture:         ' + $(if ($evidence.verdict.runtimeShaMatchesFixture) { 'PASS' } else { 'FAIL' })
+Write-Output 'Runtime size == fixture:           ' + $(if ($evidence.verdict.runtimeSizeMatchesFixture) { 'PASS' } else { 'FAIL' })
+Write-Output 'Source reopen asset count == 1:    ' + $(if ($evidence.verdict.sourceAssetCountOne) { 'PASS' } else { 'FAIL' })
+Write-Output 'Stored bytes == source bytes:      ' + $(if ($evidence.verdict.sourceBytesEqualFixture) { 'PASS' } else { 'FAIL' })
+Write-Output 'Stored SHA256 == source SHA256:    ' + $(if ($evidence.verdict.sourceStoredSha256MatchesFixture) { 'PASS' } else { 'FAIL' })
+Write-Output 'Stored size == source size:        ' + $(if ($evidence.verdict.sourceSizeMatchesFixture) { 'PASS' } else { 'FAIL' })
+Write-Output 'Source name == fixture basename:   ' + $(if ($evidence.verdict.sourceNameIsFixtureBasename) { 'PASS' } else { 'FAIL' })
+Write-Output 'Asset loads from the project:      ' + $(if ($evidence.verdict.sourceAssetLoads) { 'PASS' } else { 'FAIL' })
+Write-Output 'Renderer saw a basename only:      ' + $(if ($evidence.verdict.rendererPayloadClean) { 'PASS' } else { 'FAIL' })
+Write-Output 'Runtime healthy throughout:        ' + $(if ($evidence.verdict.runtimeHealthyThroughout) { 'PASS' } else { 'FAIL' })
+Write-Output 'Runtime stopped with desktop:      ' + $(if ($evidence.verdict.runtimeStoppedWithDesktop) { 'PASS' } else { 'FAIL' })
+Write-Output 'App responsiveness:                ' + $(if ($evidence.verdict.appResponding) { 'PASS' } else { 'FAIL' })
 Write-Output "EVIDENCE_WRITTEN=$EvidencePath"
+Write-Output "SMOKE_PROJECT=$ProjectPath"

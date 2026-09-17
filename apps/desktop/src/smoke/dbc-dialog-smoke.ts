@@ -1,11 +1,17 @@
 /**
- * V0.3-07 native-dialog end-to-end smoke harness — **test-only, not a product feature**.
+ * Native-dialog DBC smoke harness — **test-only, not a product feature**.
  *
  * This module exists for exactly one purpose: to let an operator or a verification
- * script drive the *real* renderer path of the desktop DBC bridge — `selectDbcContent()`
- * → Tauri IPC → Rust `select_dbc_file` → native Windows file dialog → bounded
- * exact-byte read — inside a **packaged** `can-x.exe`, and read back a safe summary
- * of what happened.
+ * script drive the *real* renderer path of a desktop DBC import inside a **packaged**
+ * `can-x.exe`, and read back a safe summary of what happened.
+ *
+ * ```text
+ * V0.3-07 half                        V0.3-08 half
+ * selectDbcContent()                  importDbcFromNativeDialog(projectPath)
+ *   → Tauri IPC → Rust → dialog         → selectDbcContent()
+ *   → bounded exact-byte read           → POST /dbc/assets on the Runtime
+ *   → SelectedDbcContent                → project-owned asset
+ * ```
  *
  * It is deliberately not wired into the product:
  *
@@ -13,21 +19,25 @@
  *   `VITE_CANX_DBC_SMOKE=1`, and the import in `main.tsx` is guarded by a
  *   statically-replaceable `import.meta.env` check so a normal build drops this
  *   module (and its chunk) entirely;
- * * it calls no Runtime HTTP endpoint, and in particular never `POST /dbc/assets`;
- * * it reports only what a smoke run needs — whether the dialog was cancelled, the
- *   selected basename, the decoded byte count and the SHA-256 of the decoded bytes.
- *   It never renders a filesystem path, a directory, the raw content or the full
- *   Base64 payload.
+ * * it publishes only what a smoke run needs to be judged — whether the dialog was
+ *   cancelled, the selected basename, the raw Rust payload's key set, the decoded
+ *   byte count and SHA-256 of the bytes that crossed IPC, and the asset metadata the
+ *   Runtime returned. It never renders a project path, a source path, a directory,
+ *   the raw content or the Base64 payload;
+ * * the project it imports into comes from `VITE_CANX_DBC_SMOKE_PROJECT_PATH`, which
+ *   is a *build-time* input. The harness never invents a project and never keeps one
+ *   in state.
  *
- * The sequence is deliberately scripted rather than interactive: each step publishes
- * its state to the document title (`CANXSMOKE …`) before it opens a dialog, so an
- * external driver knows which dialog is on screen and can act on the real native
- * window — Cancel for the first step, a chosen fixture for the second and third.
+ * The sequence is scripted rather than interactive: each step publishes its state to
+ * the document title (`CANXSMOKE …`) before it opens a dialog, so an external driver
+ * knows which dialog is on screen and can act on the real native window — Cancel for
+ * the first step, a chosen fixture for the second and third.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 
 import { SELECT_DBC_CONTENT_COMMAND, selectDbcContent } from "../desktop/dbc-file-bridge";
+import { importDbcFromNativeDialog } from "../orchestration/dbc-import";
 
 /** Prefix under which this harness publishes its results in the document title. */
 export const SMOKE_TITLE_PREFIX = "CANXSMOKE";
@@ -50,6 +60,12 @@ interface SmokeStepResult {
   readonly byteCount?: number;
   readonly sha256?: string;
   readonly payloadKeys?: readonly string[];
+  /** The orchestration outcome for the import step: `cancelled` or `imported`. */
+  readonly outcome?: string;
+  readonly assetId?: string;
+  readonly assetSha256?: string;
+  readonly assetSizeBytes?: number;
+  readonly assetEncoding?: string;
   readonly error?: string;
 }
 
@@ -71,13 +87,13 @@ async function runSequence(): Promise<void> {
   publishState("cancel-done", results);
 
   await delay(STEP_DELAY_MS);
-  publishState("waiting-for-select-dialog", results);
-  results.push(await guarded("select", selectStep));
-  publishState("select-done", results);
-
-  await delay(STEP_DELAY_MS);
   publishState("waiting-for-payload-dialog", results);
   results.push(await guarded("payload_shape", payloadShapeStep));
+  publishState("payload-done", results);
+
+  await delay(STEP_DELAY_MS);
+  publishState("waiting-for-import-dialog", results);
+  results.push(await guarded("import", importStep));
 
   publishState("done", results);
 }
@@ -89,31 +105,12 @@ async function cancelStep(): Promise<SmokeStepResult> {
 }
 
 /**
- * Step 2 — the operator picks a real `.dbc` fixture.
- *
- * The SHA-256 is computed **here**, from the bytes that crossed IPC, so comparing it
- * with the fixture's own digest on disk proves the exact-byte guarantee at the far
- * end of the chain rather than merely asserting it.
- */
-async function selectStep(): Promise<SmokeStepResult> {
-  const selected = await selectDbcContent();
-  if (selected === null) {
-    return { step: "select", returnedNull: true };
-  }
-  const bytes = decodeBase64(selected.contentBase64);
-  return {
-    step: "select",
-    returnedNull: false,
-    sourceName: selected.sourceName,
-    sourceNameHasSeparator: /[\\/]/.test(selected.sourceName),
-    byteCount: bytes.length,
-    sha256: await sha256Hex(bytes),
-  };
-}
-
-/**
- * Step 3 — one raw `invoke`, bypassing this module's own projection, so the *shape*
+ * Step 2 — one raw `invoke`, bypassing this module's own projection, so the *shape*
  * of the payload the Rust layer actually publishes can be observed at runtime.
+ *
+ * V0.3-08 added a third field to nothing: the payload must still carry exactly
+ * `source_name` and `content_base64`, which is what keeps the IPC surface the same
+ * one V0.3-07 established.
  */
 async function payloadShapeStep(): Promise<SmokeStepResult> {
   const raw: unknown = await invoke(SELECT_DBC_CONTENT_COMMAND);
@@ -133,6 +130,48 @@ async function payloadShapeStep(): Promise<SmokeStepResult> {
   };
 }
 
+/**
+ * Step 3 — the real orchestration, end to end.
+ *
+ * The operator picks a real `.dbc` fixture and this calls the *production* function
+ * with the build-configured project path: native dialog → Tauri IPC → bounded read →
+ * `POST /dbc/assets` → project-owned asset. Everything reported here is what the
+ * Runtime returned; nothing is recomputed or inferred in the renderer, so the
+ * evidence a driver reads is the Runtime's own account of the import.
+ */
+async function importStep(): Promise<SmokeStepResult> {
+  const projectPath = readSmokeProjectPath();
+  if (projectPath === null) {
+    return {
+      step: "import",
+      error: "VITE_CANX_DBC_SMOKE_PROJECT_PATH is not configured for this build",
+    };
+  }
+
+  const outcome = await importDbcFromNativeDialog(projectPath);
+  if (outcome.status === "cancelled") {
+    return { step: "import", outcome: "cancelled" };
+  }
+  const asset = outcome.asset;
+  return {
+    step: "import",
+    outcome: "imported",
+    assetId: asset.assetId,
+    sourceName: asset.sourceName,
+    sourceNameHasSeparator: /[\\/]/.test(asset.sourceName),
+    assetSha256: asset.sha256,
+    assetSizeBytes: asset.sizeBytes,
+    assetEncoding: asset.encoding,
+  };
+}
+
+/** The build-configured project, or `null` when the smoke build forgot to set one. */
+function readSmokeProjectPath(): string | null {
+  const value = import.meta.env.VITE_CANX_DBC_SMOKE_PROJECT_PATH;
+  if (typeof value !== "string" || value.length === 0) return null;
+  return value;
+}
+
 async function guarded(step: string, run: StepRunner): Promise<SmokeStepResult> {
   try {
     return await run();
@@ -144,24 +183,6 @@ async function guarded(step: string, run: StepRunner): Promise<SmokeStepResult> 
 function describe(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   return String(cause);
-}
-
-function decodeBase64(value: string): Uint8Array<ArrayBuffer> {
-  const binary = atob(value);
-  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  let hex = "";
-  for (const byte of new Uint8Array(digest)) {
-    hex += byte.toString(16).padStart(2, "0");
-  }
-  return hex;
 }
 
 /**
