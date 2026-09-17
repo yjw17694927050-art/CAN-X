@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-17  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-06-FINAL-2 Event Loop Responsiveness Verification
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-07-FINAL Native Dialog E2E Smoke Verification
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -5216,6 +5216,80 @@ harness 缺席且打包流程不变。
  5 未对真实 CAN 硬件做任何验证（本阶段不涉及）。
 ```
 
+##### Independent acceptance（2026-09-17）
+
+V0.3-07-FINAL 已由项目负责人执行独立技术验收，结论：
+
+```text
+Independent technical acceptance: PASS
+
+P0: 0
+P1: 0
+P2: 1
+```
+
+唯一一项 P2 是文档状态问题，不是实现问题：
+
+```text
+P2:
+PROJECT_STATE.md top-level Current Phase was stale and still pointed to
+V0.3-06-FINAL-2 after that stage had already been independently closed.
+```
+
+该 P2 由本次 docs-only 提交修正：本文件顶部的 `Current Phase` 已推进到
+`V0.3-07-FINAL Native Dialog E2E Smoke Verification`。本次提交不改动任何其他内容。
+
+独立技术验收同时确认了本轮链路事实：
+
+```text
+Packaged Windows native dialog actually opened
+Cancel returned null
+Valid .dbc selection succeeded
+sourceName was basename-only
+decoded byte count matched source
+SHA256 of bytes after IPC matched source file SHA256
+raw Rust IPC payload contained exactly:
+  content_base64
+  source_name
+no filesystem path field crossed IPC
+app remained responsive
+Runtime sidecar remained healthy
+```
+
+##### 证据来源（诚实区分）
+
+**独立审查确认**——对提交内容的静态与结构审查：
+
+```text
+Git history / diff scope
+smoke harness implementation
+PowerShell driver implementation
+real Windows #32770 native-dialog driving logic
+Cancel / Open UI Automation path
+renderer-side result collection
+exact-byte SHA256 verification design
+raw Rust IPC payload-shape verification
+path privacy evidence structure
+```
+
+**开发方本地执行记录**——以下全部是本机运行结果，**不是** CI：
+
+```text
+cargo fmt / cargo clippy / cargo check / cargo test
+npm test / npm run lint / npm run typecheck / npm run build
+python -m pytest / ruff check / mypy runtime
+Windows packaging（cmd.exe /c scripts\package-windows.cmd）
+packaged native-dialog smoke execution
+```
+
+```text
+GitHub commit status: none
+GitHub workflow runs: none
+```
+
+因此本文件**不**声称 GitHub CI 通过，也**不**声称 CI 独立复现过任何测试或 smoke 结果。
+上文各项数字均为本机实测输出；GitHub 侧没有任何 workflow 参与本轮验证。
+
 ##### 状态
 
 ```text
@@ -5224,10 +5298,15 @@ V0.3-07-FINAL Native Dialog E2E Smoke Verification
 Implementation complete
 Local verification complete
 Native dialog smoke complete
-Awaiting independent final acceptance
+Independent technical acceptance complete
+
+Repository state correction complete
+
+Awaiting independent final closure
 ```
 
-本轮**不自行宣布** V0.3-07 Final Acceptance: PASS / CLOSED，也不开始 V0.3-08。
+本轮**不自行宣布** Final Acceptance: PASS / Status: CLOSED；正式关闭由项目负责人独立执行。
+本轮也不开始 V0.3-08。
 
 
 ---
