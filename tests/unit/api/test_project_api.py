@@ -32,6 +32,7 @@ failure after it was opened, and even when the response itself cannot be built.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import UTC
@@ -400,20 +401,106 @@ async def test_a_missing_project_path_is_a_request_validation_failure() -> None:
     assert body["code"] != "project.not_found"
 
 
-async def test_the_runtime_normalizes_nothing_about_the_supplied_path(tmp_path: Path) -> None:
-    """The domain decides what a path means; this layer must not rewrite it.
+@pytest.mark.parametrize(
+    "target",
+    ["/project/inspect?project_path=", "/project/inspect?project_path"],
+    ids=["empty-value", "bare-parameter"],
+)
+async def test_an_empty_project_path_is_refused_before_any_project_is_opened(
+    target: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty value is not "unset", and it is not a path either.
 
-    An empty value is handed through untouched rather than silently expanded into
-    the runtime's working directory, and the answer it gets is the domain's answer
-    for *that* string — a rejection, not an inspection of somewhere else.
+    ``?project_path=`` and ``?project_path`` are two encodings of the same empty
+    value, and ``Path("")`` is ``Path(".")``. Letting either through to the domain
+    would silently turn ``GET /project/inspect`` into "inspect whatever directory
+    this runtime happens to be running in" — and would answer with that project's
+    identity. Neither is an explicit project path, so both are refused at the
+    *request* boundary — before any project is opened — with the shared
+    request-validation envelope, never with a ``project.*`` diagnosis and never by
+    reaching ``ProjectService.open``.
     """
-    async with _client() as client:
-        response = await client.get("/project/inspect", params={"project_path": ""})
+    spy = _spy_on_open(monkeypatch)
 
-    # Whatever the domain decided, this must not have become "inspect the cwd".
-    assert response.status_code == 400, response.text
-    assert response.json()["source"] == "project"
-    assert response.json()["code"].startswith("project.")
+    async with _client() as client:
+        response = await client.get(target)
+
+    body = response.json()
+    _assert_validation_envelope(response.status_code, body)
+    assert not str(body["code"]).startswith("project.")
+    assert spy.threads == [], "the empty path must never reach the project domain"
+    assert spy.paths == []
+    assert spy.handles == []
+
+
+async def test_an_empty_project_path_is_never_read_as_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression that the original bug would have passed.
+
+    The pre-fix behaviour only *looked* safe because the test process happened to run
+    from a directory that is not a CAN-X project. This test removes that luck: the
+    process is moved into a real, valid CAN-X project first, so an empty path — if it
+    were ever reached — would resolve to a project and answer 200.
+
+    Two facts make this non-vacuous rather than merely passing:
+
+    * ``Path("").resolve()`` really does equal the project root here, so the scenario
+      under test is the dangerous one; and
+    * ``ProjectService.open(Path(""))`` is called directly and **succeeds**, which is
+      the counterfactual proof that the domain would have accepted that path.
+
+    A 422 therefore cannot be explained by "the domain happened to refuse": it comes
+    from the new request boundary, and it comes with zero project-domain calls.
+    """
+    root = tmp_path / "working-directory.canx"
+    with ProjectService().create(root, display_name="Working Directory") as created:
+        expected_id = created.project_id
+
+    spy = _spy_on_open(monkeypatch)
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(root)
+
+        # The scenario is genuinely the dangerous one...
+        assert Path("").resolve() == root.resolve()
+        # ...and the domain would really have accepted that path.
+        with ProjectService().open(Path("")) as counterfactual:
+            assert counterfactual.project_id == expected_id
+
+        async with _client() as client:
+            response = await client.get("/project/inspect", params={"project_path": ""})
+    finally:
+        os.chdir(original_cwd)
+
+    assert os.getcwd() == original_cwd, "the working directory must be restored"
+
+    body = response.json()
+    _assert_validation_envelope(response.status_code, body)
+    assert not str(body["code"]).startswith("project.")
+    assert spy.threads == []
+    assert spy.paths == []
+
+
+async def test_a_non_empty_project_path_reaches_the_domain_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hardening the empty case must not turn the route into a path normalizer.
+
+    The caller's string is what the project domain is asked about — no ``resolve()``,
+    no ``expanduser()``, no case folding and no separator rewriting. A trailing
+    separator is the cheapest observable form of "the caller wrote something slightly
+    unusual": it is still a valid target, and it must still arrive unmodified.
+    """
+    root = _make_project(tmp_path)
+    supplied = str(root) + os.sep
+    spy = _spy_on_open(monkeypatch)
+
+    async with _client() as client:
+        response = await _inspect(client, supplied)
+
+    assert response.status_code == 200, response.text
+    assert spy.paths == [supplied], "the runtime must not rewrite the caller's path"
 
 
 async def test_a_rejected_request_never_reaches_the_project_domain(tmp_path: Path) -> None:
@@ -439,10 +526,11 @@ async def test_a_rejected_request_never_reaches_the_project_domain(tmp_path: Pat
 
 
 class _OpenSpy:
-    """Records the thread and the handle of every project open."""
+    """Records the thread, the raw path and the handle of every project open."""
 
     def __init__(self) -> None:
         self.threads: list[int] = []
+        self.paths: list[str] = []
         self.handles: list[ProjectHandle] = []
 
     @property
@@ -460,6 +548,7 @@ def _spy_on_open(monkeypatch: pytest.MonkeyPatch) -> _OpenSpy:
         # The thread is recorded *before* the open, because a refused target never
         # returns a handle and its validation is exactly what has to be off-loop.
         spy.threads.append(threading.get_ident())
+        spy.paths.append(project_path)
         handle = original(project_path)
         spy.handles.append(handle)
         return handle

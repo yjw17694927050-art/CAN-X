@@ -743,6 +743,13 @@ async def test_packaged_runtime_serves_the_project_read_model_api(tmp_path: Path
     ``canx.api.project`` is reached because the runtime entry point imports the
     application factory, which mounts the router — this test is what turns "the new
     endpoint is in the image" from an expectation into evidence.
+
+    V0.3-11-FINAL adds one more configuration, and it is the dangerous one: the
+    packaged process is launched **with the project as its working directory**. That
+    is exactly the situation in which ``Path("")`` would have resolved to a valid
+    project and an empty ``project_path`` would have answered 200 with that
+    project's identity. Launching it any other way would let the empty-path
+    assertions pass for the wrong reason.
     """
     exe = packaged_runtime()
     assert exe is not None
@@ -755,6 +762,10 @@ async def test_packaged_runtime_serves_the_project_read_model_api(tmp_path: Path
     token = "v0311-project-token"
     proc = subprocess.Popen(
         [str(exe), "--host", "127.0.0.1", "--port", str(port), "--session-token", token],
+        # The packaged runtime's own working directory is a valid CAN-X project, so
+        # `Path("")` would have resolved to it. Nothing in the runtime reads or
+        # writes the working directory, so this leaves the project untouched.
+        cwd=str(project_root),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -817,6 +828,39 @@ async def test_packaged_runtime_serves_the_project_read_model_api(tmp_path: Path
             assert missing_body["code"] == "api.request_validation_failed"
             assert missing_body["source"] == "api"
             assert missing_body["recoverable"] is False
+
+            # An empty project path is a request-contract failure — not "inspect the
+            # directory this process happens to run in". This process was launched
+            # *from* a valid CAN-X project, so the un-fixed runtime would have
+            # answered 200 here with that project's identity.
+            for target in (
+                "/project/inspect?project_path=",
+                "/project/inspect?project_path",
+            ):
+                empty = await client.get(target)
+                assert empty.status_code == 422, f"{target}: {empty.text}"
+                empty_body = empty.json()
+                assert set(empty_body) == {
+                    "code",
+                    "message",
+                    "details",
+                    "recoverable",
+                    "source",
+                }
+                assert empty_body["code"] == "api.request_validation_failed"
+                assert empty_body["source"] == "api"
+                assert empty_body["recoverable"] is False
+                # It must not have answered about the working directory.
+                assert "project_id" not in empty_body
+                assert empty_body["code"] != "project.not_found"
+
+            # ...and the launched-from-a-project configuration really was the
+            # dangerous one: the same project still answers when it is named.
+            named_from_cwd = await client.get(
+                "/project/inspect", params={"project_path": str(project_root)}
+            )
+            assert named_from_cwd.status_code == 200, named_from_cwd.text
+            assert named_from_cwd.json() == body
 
             shutdown = await client.post(
                 "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
