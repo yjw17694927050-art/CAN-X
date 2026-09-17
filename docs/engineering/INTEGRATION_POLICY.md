@@ -1,0 +1,228 @@
+# CAN-X — Integration Policy
+
+> **Document**: `docs/engineering/INTEGRATION_POLICY.md`
+> **Applies To**: every change that reaches `main` — human or agent
+> **In force from**: Maintenance CI-02 (Protected Integration Gate Foundation)
+> **Owner**: CAN-X sole author
+> **Enforced by**: a GitHub Repository Ruleset (the platform, not this file, is the authority)
+
+This document states how code is allowed to reach `main`. The ruleset is the
+mechanism; this file explains the policy behind it and what to do when the
+mechanism cannot be used.
+
+---
+
+## 1. Why this exists
+
+CAN-X now has three levels of verification. Each answers a different question.
+
+```text
+Level 1  Local Automated Verification   pytest · ruff · mypy · cargo · pnpm   DONE
+Level 2  Repository Continuous Integration   .github/workflows/ci.yml         DONE
+Level 3  Protected Integration Workflow   this policy + the GitHub ruleset    ACTIVE
+```
+
+Level 2 answers *"does CI check the code?"*. Level 3 answers the stronger
+question: *"can code that CI has not passed reach `main` through the normal
+process?"* The answer must be **no**.
+
+CAN-X is being built toward a future real test-vehicle environment — real CAN /
+CAN FD capture, DBC, diagnostics, UDS, TX, ECU-mutating operations and
+agent-assisted workflows. An unverified change that reaches `main` is an
+unverified change that can later reach a vehicle. This policy makes that
+boundary real now, while the code is still harmless.
+
+## 2. The one rule
+
+> **No green required Quality Gate = no normal merge into `main`.**
+
+Everything below follows from this.
+
+## 3. `main` is the integration branch
+
+- `main` is the branch a release candidate would be cut from. It must stay green.
+- `main` is protected by a GitHub **Repository Ruleset** named
+  `main-protected-integration` (target: the default branch, enforcement:
+  `active`). The ruleset — not convention or trust — enforces this policy.
+- Product work does **not** happen on `main`.
+
+```text
+main branch role     integration branch — protected, always green
+branch role          all development (feature / fix / maintenance / docs)
+```
+
+## 4. Branches for development, Pull Requests for integration
+
+1. Branch off `main` (`feature/…`, `fix/…`, `maintenance/…`, `docs/…`).
+2. Commit there and push the branch.
+3. Open a Pull Request into `main`.
+4. CI runs on the PR.
+5. Merge only when the required gate is green.
+
+The ruleset's `pull_request` rule rejects any direct update to `main` — including
+from a repository administrator/owner — so a PR is the only normal path.
+
+## 5. Required status check
+
+The required check is the aggregated gate produced by `.github/workflows/ci.yml`:
+
+```text
+Runtime / Python        pytest -q · ruff check · mypy
+Frontend / TypeScript   lint · typecheck · test · build
+Desktop System / Rust   cargo fmt --check · clippy -D warnings · test --locked
+        ↓
+Quality Gate            REQUIRED — must be `success`
+```
+
+Only **`Quality Gate`** is configured as a required status check. It already
+fails closed unless all three domain jobs report `success`, so requiring the
+aggregate is both sufficient and stronger than requiring the three separately
+(it cannot be satisfied by a partial run).
+
+`Quality Gate` is a **strict-success** check: only `success` passes. All of the
+following block the merge:
+
+```text
+failure   cancelled   timed_out   skipped   neutral   queued   in_progress   missing
+```
+
+## 6. Red CI is a blocking failure
+
+- A red CI run is a blocked merge, not an inconvenience to work around.
+- "There is no CI run" is **not** a pass.
+- It is forbidden to make CI green by weakening the gate: `continue-on-error:
+  true`, `|| true`, swallowed exit codes, deleted or skipped tests, or lowered
+  assertions (AGENTS.md §14, §43).
+
+## 7. When CI does not start (missing check)
+
+Because the check is a *required* context, a PR whose `Quality Gate` never
+reports stays blocked, with the check shown as *expected*. A missing gate blocks
+exactly like a red one. If CI fails to trigger, that is an infrastructure
+incident to fix — never a reason to bypass.
+
+## 8. Post-merge CI
+
+A merge into `main` is itself a `push → main` event, so CI runs again on the merge
+commit. `main` is expected to stay green; a red post-merge run is a regression to
+fix immediately — and to revert if it cannot be fixed promptly.
+
+## 9. Stale Pull Requests and merge conflicts
+
+- A PR whose head has drifted far behind `main`, or that carries unresolved
+  conflicts, is not merged as-is. Rebase or merge `main` into the branch and let
+  CI re-run on the updated head.
+- The ruleset does **not** require the branch to be strictly up to date with
+  `main`, so an otherwise-green PR is not force-rebased on every unrelated `main`
+  commit. A green `Quality Gate` on the PR head is the bar.
+- Stale/unwanted PRs and their branches are closed and deleted, not left open.
+
+## 10. Force push and branch deletion
+
+- **Force push to `main` is blocked** (ruleset rule `non_fast_forward`).
+- **Deleting `main` is blocked** (ruleset rule `deletion`).
+- Force push remains allowed on short-lived *feature* branches (nothing protects
+  them): rewriting an unpublished branch before review is normal.
+
+## 11. Conversation resolution
+
+The ruleset requires **all review conversations to be resolved before merging**.
+On a sole-author repository this cannot deadlock — the author resolves their own
+threads — and it exists so that a review comment, especially an automated or
+future multi-agent one, cannot be silently swallowed by a merge.
+
+## 12. Administrator / owner bypass — the truth
+
+The ruleset declares **no bypass actors** (`bypass_actors: []`). Observed on this
+repository: a direct push to `main` is rejected for the owner too —
+
+```text
+remote: error: GH013: Repository rule violations found for refs/heads/main.
+! [remote rejected] … -> main (push declined due to repository rule violations)
+```
+
+Under normal operation **no role is exempt from the gate**. The only way to change
+that is to edit or disable the ruleset itself, which requires repository
+administration rights and is by definition a deliberate configuration change —
+the break-glass path, not a bypass.
+
+## 13. Break-glass policy
+
+Break-glass means temporarily relaxing protection to land a change the gate cannot
+process. Permitted **only** for:
+
+- emergency repository recovery;
+- critical infrastructure repair;
+- a CI outage in which no green run can be produced at all.
+
+**Never** permitted for saving time, "CI is too slow", "the test failed but it is
+probably fine", or an agent wanting to merge faster.
+
+Every use must record:
+
+```text
+reason · the exact commit · the responsible human · a full CI run afterwards
+```
+
+If the follow-up CI is red: fix immediately, or revert immediately.
+
+**An AI agent may never decide to use break-glass.** If an agent believes the gate
+itself is broken, it raises a separate maintenance task — it does not disable the
+gate inside a product task.
+
+## 14. Agent restrictions
+
+Agents — and future sub-agents — are ordinary contributors to this policy, with
+extra prohibitions. An agent must never:
+
+```text
+disable branch protection / remove the ruleset
+remove or rename the required status check to make its PR mergeable
+turn CI off, or edit ci.yml to weaken it
+force push main
+bypass a red or missing gate
+```
+
+If an agent finds a bug in the gate, it files a maintenance task. It never
+silently edits the protection mechanism as part of a product task.
+
+## 15. Independent Acceptance is not the gate
+
+These four things are **not** interchangeable:
+
+```text
+Local Verification   ≠   GitHub CI   ≠   Protected Merge   ≠   Independent Acceptance
+```
+
+```text
+Local Verification      developer/agent runs the suites locally
+        ↓
+GitHub CI               the required Quality Gate (automatic)
+        ↓
+Protected Integration   this policy: the only normal path into main
+        ↓
+Integration Review      human / reviewer judgement
+        ↓
+Independent Acceptance  project owner / independent reviewer verdict
+```
+
+Merging a green PR does **not** grant a phase `Final Acceptance: PASS`, and no
+agent may write that verdict for its own work. A green gate means "safe to
+integrate" — never "accepted". Acceptance stays external
+(`docs/PROJECT_STATE.md` §11).
+
+## 16. Future-facing notes (recorded, not implemented here)
+
+- **Safety.** Later work introduces high-risk code regions —
+  `runtime/canx/safety/`, `runtime/canx/devices/`, `runtime/canx/protocols/`,
+  `runtime/canx/agent/`, and eventually TX, replay, injection, diagnostics, UDS,
+  automation and ECU-mutating operations. A later **SAFETY-01** task will add
+  Safety Architecture & Risk Control. This policy deliberately introduces nothing
+  that would let an agent bypass safety verification; no path-specific safety gate
+  is added here.
+- **Multi-agent.** CAN-X will move to one main agent plus up to four sub-agents.
+  This policy already guarantees that any number of parallel agent PRs cannot
+  bypass `main`'s required gate. Task orchestration itself is out of scope here.
+- **Delivery.** A later CD phase will build and publish artifacts from a trusted
+  `main`. This policy makes `main` trustworthy enough to be that source; it adds
+  no build, release, signing or updater capability.
