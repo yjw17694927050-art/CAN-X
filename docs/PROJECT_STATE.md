@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline added)
+> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline added and executed on GitHub Actions — awaiting independent acceptance, see §14)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -675,7 +675,6 @@ independent acceptance result" — and must not present its own conclusion as th
 ## 12. Immediate Next Action
 
 ```text
-V0.3-10 — Final Acceptance: PASS · Status: CLOSED
 V0.3-11 — Project Runtime Read Model API Foundation
           Final Acceptance: PASS · Status: CLOSED   (independent acceptance —
           P0: 0, P1: 0, Blocking P2: 0)
@@ -683,6 +682,14 @@ V0.3-11 — Project Runtime Read Model API Foundation
           → V0.3-11-FINAL (empty project_path contract hardening)
           → V0.3-11-FINAL-2 (post-fix full regression recorded on a18a4f3)
           → independent re-acceptance: PASS / CLOSED
+
+V0.3-12 — NOT STARTED. No V0.3-12 implementation exists in this tree.
+
+Maintenance CI-01 — Continuous Integration Baseline Foundation   (not a numbered phase)
+          Implementation complete
+          Self-verification complete
+          Real GitHub Actions runs executed, RED → GREEN (§14)
+          AWAITING INDEPENDENT ACCEPTANCE
 ```
 
 V0.3-11 is CLOSED. It added one read-only Runtime endpoint —
@@ -695,7 +702,12 @@ evidence. The full RED → GREEN record is in
 `NOT PASS` / FINAL / FINAL-2 history was rewritten.
 
 Closing V0.3-11 does **not** begin V0.3-12. The next numbered phase must arrive as its own
-explicit task brief; no V0.3-12 implementation exists in this tree.
+explicit task brief.
+
+Maintenance CI-01 is engineering infrastructure, not a product phase. It changes no behaviour, no
+schema, no API contract and no dependency, and it makes no product claim. Its own verdict is
+still external — the development agent did not write `Final Acceptance: PASS` for it. See §14 for
+the CI baseline and its real run record.
 
 ---
 
@@ -724,6 +736,11 @@ docs/acceptance/v0.3-11-project-runtime-read-model-api-foundation.md
     (P0: 0, P1: 1, P2: 0); the P1 was fixed by V0.3-11-FINAL, and §19 records the
     V0.3-11-FINAL-2 post-fix full regression on a18a4f3. History preserved unedited.
 
+.github/workflows/ci.yml
+    Maintenance CI-01 continuous-integration baseline. Three independent Windows quality jobs
+    (Runtime / Python, Frontend / TypeScript, Desktop System / Rust) plus a fail-closed Quality
+    Gate. The operational record of its first real GitHub Actions runs is in §14.
+
 docs/ADR/0001-recorder-pressure-policy.md
     Normative recorder backpressure decision (V0.1.1).
 
@@ -733,3 +750,62 @@ docs/V0.1_TECH_VALIDATION.md, docs/V0.1.1_HANDOFF_AUDIT.md, docs/DEPENDENCIES.md
 ```
 
 The dependency baseline is tracked in `docs/DEPENDENCIES.md`.
+
+---
+
+## 14. Continuous Integration Baseline (Maintenance CI-01)
+
+`.github/workflows/ci.yml` is CAN-X's first real CI. Before this task the repository had no
+`.github/` at all, so every test number recorded in this document and under `docs/acceptance/`
+is a local run.
+
+**Shape.** Triggers are `pull_request → main`, `push → main` and `workflow_dispatch`, with no
+path filtering. `permissions: contents: read` only — no write, release, publish, deploy or
+secret. Superseded runs on the same ref are cancelled. Four jobs, all on `windows-latest`:
+
+```text
+Runtime / Python        pytest -q · ruff check runtime tests tools · mypy runtime
+Frontend / TypeScript   pnpm install --frozen-lockfile · lint · typecheck · test · build
+Desktop System / Rust   cargo fmt --check · clippy --all-targets --all-features --locked
+                        -- -D warnings · test --locked
+Quality Gate            needs all three, if: always(); non-zero unless every one succeeded
+```
+
+Versions and dependencies are never re-declared in the workflow: Python comes from
+`pyproject.toml` (interpreter pinned to 3.13.15), pnpm from `package.json`'s `packageManager`
+field via corepack, and Rust from `Cargo.lock` (`--locked`). Node is pinned to 24.18.0. There is
+no `continue-on-error`, no `|| true`, and no skipped or weakened test. CI-01 publishes, signs and
+releases nothing.
+
+**Real runs.** The first run is the objective infrastructure RED baseline — the workflow did not
+exist before this task, so its first execution is that baseline. Every gate is green from the run
+that follows:
+
+```text
+35217771155  pull_request       @9aff3fa  FAILURE   three jobs failed; Quality Gate failed closed
+35219911643  pull_request       @75693f6  SUCCESS   1658 passed / 6 skipped · 162 frontend tests
+                                                     · 28 + 3 Rust tests · ruff and mypy clean
+35220767729  push → main        @75693f6  SUCCESS   all four jobs success
+35221583265  workflow_dispatch  @75693f6  SUCCESS   all four jobs success
+```
+
+The Rust job runs the cross-boundary sidecar test for real rather than letting it return early:
+it sets `CANX_TEST_PYTHON` to the repository-root `.venv` interpreter, and the test that
+silently no-ops when that variable is absent (2.27 s with it, 0.00 s without, measured locally)
+reports `ok` in 1.34 s on the runner.
+
+The first run also exposed three pre-existing environment / portability defects that no local run
+had ever shown: `bundle.externalBin` pointing at a gitignored PyInstaller artifact that a fresh
+checkout does not have, a jsdom canvas gap that made `pnpm test` exit non-deterministically, and
+a capture test whose drain budget assumed a machine faster than the runner. Each was reproduced
+locally, repaired minimally, and re-run. None was repaired by skipping, deleting or weakening a
+test, and no product behaviour, schema, API contract or dependency changed. The repairs and their
+RED → GREEN evidence are in the commit messages for `75693f6`, `efb90cb` and `fc98f8e`.
+
+**What CI does not establish.** CI is an automatic quality gate, not Independent Acceptance — a
+green CI never grants `Final Acceptance: PASS`. It runs on `windows-latest` only, so macOS, Linux
+and real CAN hardware stay `NOT VERIFIED`. It does not build the MSI, the updater or a release.
+The Rust toolchain is the runner's preinstalled stable (1.98.1 at the time of these runs) and is
+not pinned by this repository, unlike Python, Node and pnpm.
+`tests/integration/test_packaged_runtime_smoke.py` (6 tests) skips on CI because no packaged
+`canx-runtime.exe` is staged there; it runs locally after `scripts\package-windows.cmd`.
