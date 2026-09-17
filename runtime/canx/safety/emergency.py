@@ -88,13 +88,21 @@ class OperationCanceller(Protocol):
     log what it is handed. The digest still lets a canceller correlate its own
     record with the trail; it just cannot read the operator's words.
 
+    ``None`` when the digest could not be computed at all — a reason that will not
+    encode to UTF-8, for instance. Attribution is optional and cancellation is
+    not, so an absent digest must never be a reason to skip the fan-out
+    (invariant S25): a canceller reconciles on "abandon everything", not on the
+    reason. A canceller that needs the reason to act has the dependency backwards.
+
     The return type is a *typing* promise, not a runtime guarantee. Python does
     not enforce it, so :class:`EmergencyStopController` revalidates every value
     on the way in; an implementation that violates this signature gets a
     structured failure recorded, not a place in the audit trail.
     """
 
-    def cancel_active_operations(self, *, reason_digest: str) -> tuple[OperationId, ...]:
+    def cancel_active_operations(
+        self, *, reason_digest: str | None
+    ) -> tuple[OperationId, ...]:
         """Abandon every active operation. Returns the identifiers requested."""
         ...
 
@@ -277,7 +285,9 @@ class EmergencyStopController:
         with self._lock:
             return self._state
 
-    def engage(self, *, caller: CallerIdentity, reason_digest: str) -> EmergencyStopState:
+    def engage(
+        self, *, caller: CallerIdentity, reason_digest: str | None
+    ) -> EmergencyStopState:
         """Engage the global stop. Idempotent, and open to every caller kind.
 
         The effects run in a fixed order and the order matters: the runtime is
@@ -291,13 +301,16 @@ class EmergencyStopController:
 
         Nothing here can fail the stop. This is the one authority-*reducing*
         entry point on the emergency path, so a broken clock, a canceller that
-        raises and a canceller that answers with prose all end the same way — the
-        stop is engaged and the fault is a line in its state (invariants S22,
-        S24). The audit write is the kernel's business and is attempted after
-        this returns; if *it* fails the stop still stands, because undoing a
-        reduction to restore dangerous authority is the failure, not the fix
-        (invariant S17).
+        raises, a canceller that answers with prose and an absent reason digest
+        all end the same way — the stop is engaged and the fault (or the absence)
+        is a line in its state (invariants S22, S24, S25). The audit write is the
+        kernel's business and is attempted after this returns; if *it* fails the
+        stop still stands, because undoing a reduction to restore dangerous
+        authority is the failure, not the fix (invariant S17).
         """
+        # Normalised once, then used for both the state and the fan-out, so a
+        # canceller can never be handed a value the state would have refused.
+        digest = self._read_reason_digest(reason_digest)
         with self._lock:
             # A second engagement keeps the original reason and timestamp — the
             # stop happened when it first happened — but still retries the
@@ -307,7 +320,7 @@ class EmergencyStopController:
                 self._state = EmergencyStopState(
                     engaged=True,
                     engaged_at=self._read_engaged_at(),
-                    reason_digest=self._read_reason_digest(reason_digest),
+                    reason_digest=digest,
                 )
             hook = self._disarm_hook
             cancellers = tuple(self._cancellers)
@@ -315,13 +328,15 @@ class EmergencyStopController:
         if hook is not None:
             hook()
 
+        # Cancellation is not conditional on attribution: an absent digest is a
+        # missing *label*, and the work being stopped is no less real for it.
         requested: list[OperationId] = []
         failures: list[CancellationFailure] = []
-        for canceller_id, canceller in cancellers:
+        for canceller_id, cancelled in cancellers:
             self._request_cancellation(
                 canceller_id=canceller_id,
-                canceller=canceller,
-                reason_digest=reason_digest,
+                canceller=cancelled,
+                reason_digest=digest,
                 requested=requested,
                 failures=failures,
             )
@@ -412,8 +427,13 @@ class EmergencyStopController:
         return now if math.isfinite(now) else None
 
     @staticmethod
-    def _read_reason_digest(reason_digest: str) -> str | None:
-        """Return a valid digest, or ``None`` when the caller's value is malformed.
+    def _read_reason_digest(reason_digest: str | None) -> str | None:
+        """Return a valid digest, or ``None`` when there is nothing valid to keep.
+
+        ``None`` is a legitimate input, not a malformed one (invariant S25): the
+        kernel hands it through when the raw reason could not be digested at all.
+        Anything else that is not a sha256 digest — a malformed string, a value
+        that is not a string — also degrades to ``None``.
 
         The one input this controller receives that can be wrong is the digest the
         kernel derived from the operator's reason. A stop is authority-*reducing*,
@@ -425,6 +445,8 @@ class EmergencyStopController:
         diagnosable as a malformed value would have been — and it is the caller's
         bug, so the fault being visible rather than fatal is the right trade.
         """
+        if reason_digest is None:
+            return None
         try:
             return validate_sha256_digest(reason_digest, role=REASON_DIGEST_ROLE)
         except SafetyIdentifierError:
@@ -435,7 +457,7 @@ class EmergencyStopController:
         *,
         canceller_id: CancellerId,
         canceller: OperationCanceller,
-        reason_digest: str,
+        reason_digest: str | None,
         requested: list[OperationId],
         failures: list[CancellationFailure],
     ) -> None:

@@ -68,6 +68,7 @@ from canx.safety.audit import (
     SafetyAuditEvent,
     SafetyAuditSink,
     digest_reason,
+    digest_reason_best_effort,
 )
 from canx.safety.caller import CallerIdentity
 from canx.safety.decision import PolicyDecision, SafetyReason
@@ -363,6 +364,16 @@ class SafetyKernel:
         S24). Subsystems outside the safety domain may log what they are handed,
         so what they are handed is not the operator's words.
 
+        **The digest is best-effort, and that is the whole point of this
+        ordering** (invariant S25). ``reason`` is optional attribution metadata
+        for an authority *reduction*, so it is processed in a way that cannot
+        veto the reduction: a reason that will not encode to UTF-8 becomes
+        ``reason_digest = None`` and the stop proceeds unattributed. Processing it
+        eagerly and strictly — which is what this method used to do — made a
+        single unencodable code point able to hold an armed runtime and a live
+        approval in place while the operator believed they had pulled the stop.
+        Better an unattributed stop than an attributed non-stop.
+
         Nothing on this path can fail the stop. The audit write is attempted
         last, and if it fails the fault is raised to the caller while the stop
         stays engaged, the runtime stays ``DISARMED`` and the approvals stay
@@ -370,7 +381,7 @@ class SafetyKernel:
         (invariants S17, S22).
         """
         with self._lock:
-            reason_digest = digest_reason(reason)
+            reason_digest = digest_reason_best_effort(reason)
             state = self._emergency.engage(caller=caller, reason_digest=reason_digest)
             self._approvals.clear()
             self._record_control(

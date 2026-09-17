@@ -31,10 +31,15 @@ from __future__ import annotations
 
 import pytest
 from canx.safety.arm import ArmState
-from canx.safety.audit import digest_reason
+from canx.safety.audit import SafetyAuditEvent, digest_reason, digest_reason_best_effort
 from canx.safety.decision import SafetyReason
 from canx.safety.emergency import CancellationFailure, CancellationFailureCode
-from canx.safety.errors import SafetyCallerError, SafetyEmergencyStopError, SafetyIdentifierError
+from canx.safety.errors import (
+    SafetyAuditError,
+    SafetyCallerError,
+    SafetyEmergencyStopError,
+    SafetyIdentifierError,
+)
 from canx.safety.identifiers import CancellerId, OperationId
 from canx.safety.risk import Capability
 from safety_builders import (
@@ -61,10 +66,12 @@ class _RecordingCanceller:
     """A subsystem that remembers it was asked to stop."""
 
     def __init__(self, requested: tuple[str, ...] = ("tx-1",)) -> None:
-        self.digests: list[str] = []
+        self.digests: list[str | None] = []
         self._requested = requested
 
-    def cancel_active_operations(self, *, reason_digest: str) -> tuple[OperationId, ...]:
+    def cancel_active_operations(
+        self, *, reason_digest: str | None
+    ) -> tuple[OperationId, ...]:
         self.digests.append(reason_digest)
         return tuple(OperationId(value) for value in self._requested)
 
@@ -72,7 +79,9 @@ class _RecordingCanceller:
 class _RefusingCanceller:
     """A subsystem that cannot answer. Its failure must be reported, not swallowed."""
 
-    def cancel_active_operations(self, *, reason_digest: str) -> tuple[OperationId, ...]:
+    def cancel_active_operations(
+        self, *, reason_digest: str | None
+    ) -> tuple[OperationId, ...]:
         raise RuntimeError("cancellation channel is down")
 
 
@@ -88,8 +97,46 @@ class _MalformedCanceller:
     def __init__(self, returned: tuple[object, ...]) -> None:
         self._returned = returned
 
-    def cancel_active_operations(self, *, reason_digest: str) -> tuple[OperationId, ...]:
+    def cancel_active_operations(
+        self, *, reason_digest: str | None
+    ) -> tuple[OperationId, ...]:
         return self._returned  # type: ignore[return-value]
+
+
+class _StoppableSink:
+    """An audit trail that records normally until it is told not to."""
+
+    def __init__(self) -> None:
+        self.failing = False
+        self.events: list[SafetyAuditEvent] = []
+
+    def record(self, event: SafetyAuditEvent) -> None:
+        if self.failing:
+            raise OSError("audit storage is unavailable")
+        self.events.append(event)
+
+
+class _OneShotFailingClock(MovableClock):
+    """A clock that fails exactly one read, then works again.
+
+    Isolates "the ``engaged_at`` read failed" from "the audit read failed": the
+    stop has to survive the first without being dragged down by the second, which
+    is a different property from the audit-failure case.
+    """
+
+    def __init__(self, now: float = 1_000.0) -> None:
+        super().__init__(now)
+        self._fail_next = False
+
+    def __call__(self) -> float:
+        if self._fail_next:
+            self._fail_next = False
+            raise RuntimeError("clock provider is unavailable")
+        return super().__call__()
+
+    def fail_next_read(self) -> None:
+        """Arm the next clock read to fail."""
+        self._fail_next = True
 
 
 # -- The stop removes authority -------------------------------------------------
@@ -653,6 +700,238 @@ def test_a_malformed_reason_digest_cannot_prevent_the_stop() -> None:
     assert state.engaged is True
     assert state.reason_digest is None
     assert controller.engaged is True
+
+
+# -- SAFETY-01-FIX-4: metadata must never veto the reduction --------------------
+#
+# The defect: `SafetyKernel.engage_emergency_stop` digested the raw reason
+# *before* the stop engaged, and `digest_reason` encodes to UTF-8. A reason that
+# is a legal Python `str` but cannot be UTF-8 encoded — a lone surrogate,
+# `"\ud800"`, which every other part of the runtime is happy to carry — therefore
+# raised `UnicodeEncodeError` and the stop never ran. An ARMED runtime holding a
+# live approval stayed exactly that way while the operator believed they had
+# pulled the stop.
+#
+# The rule this section pins (invariant S25):
+#
+#   better an unattributed stop than an attributed non-stop
+#
+# Note what every test below does: it goes through the **public kernel path**.
+# The defect was in the kernel's own ordering — it digested the reason before
+# delegating — so driving `EmergencyStopController` directly would have missed it
+# completely. The controller's own tolerance of an absent digest was already
+# there and was never the broken half.
+
+#: A legal `str` that UTF-8 cannot encode. Not exotic: any string that survived a
+#: surrogate-passing path — a JS-to-Python bridge, a mis-decoded filename, a
+#: truncation — carries one.
+UNENCODABLE_REASON = "\ud800"
+
+
+def test_unencodable_emergency_reason_cannot_prevent_the_stop() -> None:
+    """The headline: a reason that will not encode must not decide the outcome."""
+    clock = MovableClock()
+    safety = armed_kernel(
+        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
+    )
+    safety.grant_approval(
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    assert safety.arm_state is ArmState.ARMED
+    assert len(safety.approvals.outstanding()) == 1
+
+    state = safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+
+    assert safety.emergency_stop_engaged is True
+    assert state.engaged is True
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+    assert safety.approvals.outstanding() == ()
+    # Attribution is the thing that was lost, and it is visible as an absence —
+    # not as a digest of silently modified text.
+    assert state.reason_digest is None
+
+
+def test_an_unencodable_reason_still_clears_an_in_flight_arm() -> None:
+    """``ARMING`` is authority too, and the reduction has to reach it."""
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.arm(
+        scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 60),
+        caller=OPERATOR,
+    )
+    assert safety.arm_state is ArmState.ARMING
+    safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+
+
+def test_the_stop_still_blocks_authority_after_an_unencodable_reason() -> None:
+    """The FIX-3 gate must survive the FIX-4 fallback."""
+    clock = MovableClock()
+    safety = kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.arm(
+            scope(Capability.CAN_TX, granted_at=clock(), expires_at=clock() + 60),
+            caller=OPERATOR,
+        )
+    with pytest.raises(SafetyEmergencyStopError):
+        safety.grant_approval(
+            spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+            granted_by=OPERATOR,
+        )
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.approvals.outstanding() == ()
+
+
+def test_an_unencodable_reason_does_not_skip_the_cancellation_fan_out() -> None:
+    """A missing *label* is not a reason to leave dangerous work running (S25)."""
+    safety = kernel()
+    canceller = _RecordingCanceller()
+    safety.register_canceller("tx.periodic", canceller)
+
+    state = safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+
+    assert canceller.digests == [None]
+    assert state.requested_cancellations == ("tx-1",)
+    assert state.cancellation_failures == ()
+
+
+def test_an_unencodable_reason_is_still_audited_as_an_absent_digest() -> None:
+    """The audit attempt happens; only the attribution is missing (S19, S25)."""
+    safety = kernel()
+    safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+    engaged = [
+        event for event in safety.audit_events() if event.operation_id.endswith("engaged")
+    ][-1]
+    assert engaged.outcome == "control"
+    assert engaged.emergency_stop_engaged is True
+    assert engaged.reason_digest is None
+    assert engaged.arm_state == "disarmed"
+
+
+def test_an_unencodable_reason_never_reaches_the_trail() -> None:
+    """The fallback is an absence, never the raw text — S19 is not weakened."""
+    safety = kernel()
+    safety.register_canceller(
+        "tx.periodic", _MalformedCanceller(("tx-1", "operator secret is hunter2"))
+    )
+    safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+    recorded = " | ".join(str(event.describe()) for event in safety.audit_events())
+    assert "\ud800" not in recorded
+    assert "hunter2" not in recorded
+
+
+def test_the_best_effort_digest_degrades_and_never_fabricates() -> None:
+    """The three-way choice S25 makes, asserted directly.
+
+    ``errors="ignore"`` would make two different reasons collide;
+    ``errors="replace"`` would record a digest of text nobody supplied. The
+    contract is ``None`` — attribution unavailable — and specifically *not* the
+    digest of an empty or substituted string.
+    """
+    assert digest_reason_best_effort("bench smoke") == digest_reason("bench smoke")
+    assert digest_reason_best_effort(UNENCODABLE_REASON) is None
+    assert digest_reason_best_effort(UNENCODABLE_REASON) != digest_reason("")
+    assert digest_reason_best_effort(UNENCODABLE_REASON) != digest_reason("\ufffd")
+
+
+def test_the_strict_digest_still_refuses_an_unencodable_reason() -> None:
+    """The best-effort variant is a deliberate exception, not a global softening.
+
+    On an authority-*increasing* path a reason that cannot be digested is a caller
+    bug, and knowing about it is worth more than proceeding — the same asymmetry
+    S17 makes between the two directions.
+    """
+    with pytest.raises(UnicodeEncodeError):
+        digest_reason(UNENCODABLE_REASON)
+
+
+# -- Compound metadata failures -------------------------------------------------
+
+
+def test_a_failed_reason_and_a_failed_audit_still_leave_the_stop_engaged() -> None:
+    """Two metadata failures at once; the reduction outranks both.
+
+    The caller may be told the trail could not be written. It must not be able to
+    read that as "the stop did not happen".
+    """
+    clock = MovableClock()
+    sink = _StoppableSink()
+    safety = armed_kernel(
+        clock=clock,
+        duration=600.0,
+        permission_set=permissions(Capability.CAN_TX),
+        audit_sink=sink,
+    )
+    safety.grant_approval(
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    assert len(safety.approvals.outstanding()) == 1
+    sink.failing = True
+
+    with pytest.raises(SafetyAuditError):
+        safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+
+    assert safety.emergency_stop_engaged is True
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+    assert safety.approvals.outstanding() == ()
+
+
+def test_a_failed_reason_and_a_broken_clock_still_engage_the_stop() -> None:
+    """Both pieces of attribution are gone; the stop is not."""
+    clock = _OneShotFailingClock()
+    safety = armed_kernel(
+        clock=clock, duration=600.0, permission_set=permissions(Capability.CAN_TX)
+    )
+    safety.grant_approval(
+        spec(single_use=False, issued_at=clock(), expires_at=clock() + 600),
+        granted_by=OPERATOR,
+    )
+    clock.fail_next_read()
+
+    state = safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+
+    assert state.engaged is True
+    assert state.engaged_at is None
+    assert state.reason_digest is None
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.active_scope is None
+    assert safety.approvals.outstanding() == ()
+
+
+def test_a_malformed_cancellation_and_a_failed_reason_still_engage_the_stop() -> None:
+    """A violating canceller plus an absent digest: still a stop, still no prose."""
+    safety = kernel()
+    safety.register_canceller(
+        "tx.periodic", _MalformedCanceller(("tx-1", "operator secret is hunter2"))
+    )
+
+    state = safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+
+    assert state.engaged is True
+    assert state.reason_digest is None
+    assert state.requested_cancellations == ("tx-1",)
+    assert [failure.failure_code for failure in state.cancellation_failures] == [
+        CancellationFailureCode.CANCELLER_INVALID_REFERENCE
+    ]
+    assert safety.emergency_stop_engaged is True
+    assert safety.arm_state is ArmState.DISARMED
+
+
+def test_an_unencodable_reason_does_not_disturb_a_release() -> None:
+    """Release still works normally after an unattributed stop (S23)."""
+    clock = MovableClock()
+    safety = armed_kernel(clock=clock, permission_set=permissions(Capability.CAN_TX))
+    safety.engage_emergency_stop(caller=OPERATOR, reason=UNENCODABLE_REASON)
+    state = safety.release_emergency_stop(caller=OPERATOR)
+    assert state.engaged is False
+    assert safety.arm_state is ArmState.DISARMED
+    assert safety.approvals.outstanding() == ()
 
 
 # -- The trail ------------------------------------------------------------------

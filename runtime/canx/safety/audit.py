@@ -113,6 +113,41 @@ def digest_reason(reason: str) -> str:
     return hashlib.sha256(reason.encode("utf-8")).hexdigest()
 
 
+def digest_reason_best_effort(reason: str) -> str | None:
+    """Return the reason's digest, or ``None`` when it cannot be computed.
+
+    **Only** for the emergency-stop path, where the digest is attribution
+    metadata attached to an authority *reduction* (invariant S25). A reason that
+    cannot be encoded — a lone surrogate such as ``"\\ud800"`` is the realistic
+    case, since ``str`` admits it and UTF-8 does not — must cost the attribution
+    and never the stop. Better an unattributed stop than an attributed non-stop.
+
+    Deliberately **not** a global replacement for :func:`digest_reason`. On an
+    authority-*increasing* path a reason that cannot be digested is a caller bug,
+    and knowing about it is worth more than proceeding; the asymmetry is the same
+    one S17 makes between the two directions.
+
+    ``None`` rather than a substituted encoding, and the distinction is the whole
+    point:
+
+    ```text
+    errors="ignore"   two different reasons would hash to the same digest
+    errors="replace"  the digest would be of text nobody ever supplied
+    None              attribution unavailable — an honest, visible absence
+    ```
+
+    A fabricated digest would be worse than no digest: it would claim a reason
+    was recorded when the one recorded is not the one given, and a trail that
+    lies about attribution is a trail nobody can use to answer "did the operator
+    say X or Y?". ``None`` shows up as ``reason_digest: null`` beside
+    ``engaged: true`` — diagnosable, and not a lie.
+    """
+    try:
+        return digest_reason(reason)
+    except Exception:  # recorded as an absent digest, never as a veto
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class SafetyAuditEvent:
     """One safety decision or control action, recorded.
