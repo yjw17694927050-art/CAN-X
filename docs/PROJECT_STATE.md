@@ -3,7 +3,7 @@
 > **Document**: `docs/PROJECT_STATE.md`  
 > **Purpose**: Cross-session / cross-agent project handoff  
 > **Updated**: 2026-09-17  
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-08-FINAL Packaged DBC Import Smoke Truthfulness Closure
+> **Current Phase**: V0.3 — Professional Trace & DBC Foundation · Step V0.3-09 Desktop DBC Read Model Client Foundation
 > **Project Owner**: CAN-X sole author  
 > **Development Model**: Document-Driven Development
 
@@ -5619,11 +5619,13 @@ Implementation complete
 Local verification complete
 Packaged desktop E2E smoke complete
 
-Awaiting independent acceptance
+Final Acceptance: PASS
+Status: CLOSED
 ```
 
-本轮**不自行宣布** Final Acceptance: PASS / Status: CLOSED；最终独立验收由项目负责人执行。
-本轮也不开始 V0.3-09。
+本阶段的最终验收结论由项目负责人在下达 V0.3-09 开工任务书时正式给出并授权关闭
+（`V0.3-08 / V0.3-08-FINAL Final Acceptance: PASS`），与紧随其后的 Step V0.3-08-FINAL 一并记为
+CLOSED；**不是**本 Agent 自行宣布。上文的技术记录逐条保持原样，历史记录未被修改。
 
 ---
 
@@ -5818,10 +5820,341 @@ Step V0.3-08-FINAL — Packaged DBC Import Smoke Truthfulness Closure
 Implementation complete
 Local verification complete
 
-Awaiting independent final acceptance
+Final Acceptance: PASS
+Status: CLOSED
 ```
 
-本轮**不自行宣布** Final Acceptance: PASS / Status: CLOSED。V0.3-09 未开始。
+正式关闭依据：项目负责人在下达 V0.3-09 开工任务书时正式确认
+`V0.3-08 / V0.3-08-FINAL Final Acceptance: PASS`，并授权将本阶段记为正式关闭。该结论由
+项目负责人给出，**不是**本 Agent 自行宣布；上文的修复记录、回归数字、打包证据、
+「Performance observation」与「P2 保持不变」一节逐条保持原样，历史记录未被修改。
+本阶段正式关闭后，文件顶部的 `Current Phase` 推进到 `V0.3-09`。
+
+---
+
+### Step V0.3-09 — Desktop DBC Read Model Client Foundation
+
+> **Phase gate（开工前核实，2026-09-17）**：项目负责人在下达本阶段开工任务书时正式确认
+> `V0.3-08 / V0.3-08-FINAL Final Acceptance: PASS`，并授权将 `V0.3-08` 记为正式关闭、把
+> `Current Phase` 推进到本阶段。该结论由项目负责人给出，**不是**本 Agent 自行宣布；上文
+> V0.3-08 与 V0.3-08-FINAL 的两节（含回归数字、打包证据、`Known limitations` 与「P2 保持不变」）
+> 逐条保持原样，历史记录未被改写。
+
+#### Objective
+
+在既有 Runtime DBC **只读 HTTP surface** 之上，建立 Desktop 的正式、强类型、可验证的读模型
+客户端，且只建立这一段：
+
+```text
+React / future DBC Workspace
+  → Desktop Runtime DBC client（只读）
+  → Python Runtime HTTP API
+  → ProjectDbcService
+  → project-owned DBC asset
+```
+
+本阶段**不**开发 DBC Workspace UI、不引入 Import 按钮、不定义 active DBC、不引入 channel ↔ DBC
+绑定、不引入 `decode-batch` 前端集成、不建立 global current project。V0.3-08 的 `importDbcAsset`
+（写路径）一行未改；Python Runtime、Rust bridge、capability、Tauri command 均未修改。
+
+#### Architecture
+
+生产数据流（只读方向）：
+
+```text
+src/runtime/dbc-client.ts
+  ├─ listDbcAssets(projectPath)
+  │    ↓ GET http://127.0.0.1:8765/dbc/assets?project_path=<URLSearchParams 编码>
+  │    ↓ 200 { assets: [ DbcAssetResponse, … ] }
+  ├─ getDbcAsset(projectPath, assetId)
+  │    ↓ GET http://127.0.0.1:8765/dbc/assets/<encodeURIComponent(assetId)>?project_path=<…>
+  │    ↓ 200 DbcAssetResponse
+  └─ getDbcDatabase(projectPath, assetId)
+       ↓ GET http://127.0.0.1:8765/dbc/assets/<encodeURIComponent(assetId)>/database?project_path=<…>
+       ↓ 200 DbcDatabaseResponse { version, messages[], nodes[] }
+Python Runtime（未改）→ canx/api/dbc.py → ProjectDbcService → project-owned DBC asset
+  ↓
+readResponse(response)
+  ├─ 非 2xx → readErrorEnvelope → RuntimeDbcApiError（五字段原样）或 RuntimeDbcTransportError
+  └─ 2xx   → readAsset / readAssetList / readDatabase
+             unknown → validate → construct fresh camelCase object
+  ↓
+RuntimeDbcAsset / readonly RuntimeDbcAsset[] / RuntimeDbcDatabase
+```
+
+三层边界与本阶段前完全一致，只是 `runtime/` 这一层从「只写」变成「读 + 写」：
+
+```text
+desktop/        = OS / Tauri IPC 边界（本阶段未改）
+runtime/        = Python Runtime HTTP client 边界（本阶段扩展：只读 surface）
+orchestration/  = 两边界之间的流程协调（本阶段未改）
+Python Runtime  = DBC domain / persistence 权威
+```
+
+#### Files changed
+
+```text
+apps/desktop/src/runtime/dbc-client.ts        扩展 · 读模型类型 + 三个只读 API + 深度校验 + URL 安全编码
+apps/desktop/src/runtime/dbc-client.test.ts   扩展 · 只读 surface / 数据库映射 / 嵌套 malformed / 编码证明
+docs/PROJECT_STATE.md                         更新 · V0.3-08 正式关闭 + 本节
+```
+
+```text
+runtime/canx/**                       未改
+apps/desktop/src-tauri/**             未改（无新 Tauri command）
+capabilities/default.json             未改
+apps/desktop/src/desktop/*.ts         未改（V0.3-07 桥一行未动）
+apps/desktop/src/orchestration/*.ts   未改（V0.3-08 编排一行未动）
+apps/desktop/src/main.tsx             未改
+apps/desktop/src/components/**        未改（无 DBC UI）
+```
+
+#### API（新增 public surface）
+
+```ts
+listDbcAssets(projectPath: string): Promise<readonly RuntimeDbcAsset[]>
+getDbcAsset(projectPath: string, assetId: string): Promise<RuntimeDbcAsset>
+getDbcDatabase(projectPath: string, assetId: string): Promise<RuntimeDbcDatabase>
+```
+
+`importDbcAsset(input)`、`ImportDbcAssetInput`、`RuntimeDbcAsset` 与三个 error class
+（`RuntimeDbcApiError` / `RuntimeDbcTransportError` / `RuntimeDbcContractError`）保持原签名与
+原语义。`importDbcAsset` 内部改为复用新的 `readResponse`（成功/失败分流），行为不变——原有
+21 项 import 契约测试逐条通过。
+
+#### Desktop canonical wire types
+
+```text
+RuntimeDbcDatabase { version, messages[], nodes[] }
+RuntimeDbcMessage  { frameId, name, length, isExtended, isFd, senders, comment, cycleTime, signals[] }
+RuntimeDbcSignal   { name, startBit, length, byteOrder, isSigned, isFloat, factor, offset,
+                     minimum, maximum, unit, receivers[], choices[], isMultiplexer,
+                     multiplexerSignal, multiplexerIds, comment }
+RuntimeDbcChoice   { value, label }
+RuntimeDbcNode     { name, comment }
+```
+
+wire → Desktop 映射集中在 `apps/desktop/src/runtime/dbc-client.ts` 一处；UI 不消费 snake_case
+Runtime JSON。
+
+#### Runtime → Desktop field mapping
+
+```text
+asset_id → assetId        source_name → sourceName    size_bytes → sizeBytes
+imported_at → importedAt  encoding → encoding         (asset 的其余字段同名)
+
+frame_id → frameId        name → name                 length → length
+is_extended → isExtended  is_fd → isFd                senders → senders
+comment → comment         cycle_time → cycleTime      signals → signals
+
+name → name               start_bit → startBit        length → length
+byte_order → byteOrder    is_signed → isSigned        is_float → isFloat
+factor → factor           offset → offset             minimum → minimum
+maximum → maximum         unit → unit                 receivers → receivers
+choices → choices         is_multiplexer → isMultiplexer
+multiplexer_signal → multiplexerSignal                multiplexer_ids → multiplexerIds
+comment → comment
+
+value → value             label → label        (choice)
+
+name → name               comment → comment    (node)
+
+version → version         messages → messages  nodes → nodes    (database)
+```
+
+`null` 一律保留为 `null`（`version` / `comment` / `cycleTime` / `unit` / `minimum` / `maximum` /
+`multiplexerSignal` / `multiplexerIds`）：不丢字段，使「文档未声明」与「字段未到达」保持可区分。
+
+#### Response validation strategy
+
+禁止 `response.json() as RuntimeDbcDatabase`。每个字段——一直下到嵌套 signal / choice / node——
+都被检查，并从 contract 声明的字段重建一个**全新的** camelCase 对象：
+
+```text
+string          → typeof === "string"
+boolean         → typeof === "boolean"（"true" 不接受）
+integer 字段    → Number.isSafeInteger；计数/id/位偏移（frame_id、length、start_bit、
+                  cycle_time、multiplexer_ids、size_bytes）额外要求 >= 0
+choice.value    → Number.isSafeInteger（保留符号：有符号信号的原始值可为负）
+factor/offset/minimum/maximum → Number.isFinite（NaN / Infinity 均拒绝）
+nullable 字段   → 严格 null；否则必须是该类型
+数组            → Array.isArray，逐元素递归校验
+object          → 显式拒绝 Array（typeof [] === "object"）
+嵌套 malformed  → 整个 response contract failure；不产生半合法对象
+```
+
+malformed 时继续使用既有 `RuntimeDbcContractError`，未新增第二套错误体系。
+
+#### Error boundary（不变）
+
+```text
+RuntimeDbcApiError        Runtime 自身诊断，五字段（code/message/details/recoverable/source）原样保留
+RuntimeDbcTransportError  不可达，或失败响应不是共享 envelope
+RuntimeDbcContractError   2xx 但 payload 与本 client 声明的 contract 不符
+```
+
+`project.not_found`、`dbc.asset_not_found`、`dbc.asset_integrity_failed`、
+`api.request_validation_failed` 保持各自可分支，未合并、未新增 Desktop DBC error code。
+
+#### URL / query encoding
+
+```text
+project_path → new URLSearchParams({ project_path }).toString()   ← query 参数编码
+assetId      → encodeURIComponent(assetId)                        ← 单一路径段编码
+```
+
+未新增 dependency（使用平台内建 `URL` / `URLSearchParams` / `encodeURIComponent`）。测试用
+含 `& = ? # % + 空格 /` 的敌意输入证明：query 仍只有 `project_path` 一个键，其解码值逐字符等于
+调用方传入的字符串，URL 的 `hash` 为空；asset id 仍是一个路径段（`pathname` 等于
+`/dbc/assets/<encodeURIComponent(id)>`），不改变 URL 结构。
+
+#### Privacy boundary（不变）
+
+```text
+projectPath      = CAN-X Project 的 Runtime 参数（显式入参，非全局）
+source DBC path  = Desktop trusted filesystem boundary 内部信息
+```
+
+只读模型的每一个字段都来自 contract；`RuntimeDbcDatabase` 不含任何路径字段。测试断言：注入
+`stored_path` / `source_path` 后，返回对象的键集仍为 `["messages","nodes","version"]`，序列化后
+不含 `secret-program`。三个新 API 均**显式接受 `projectPath`**，未引入 `currentProjectPath` /
+`activeDbc` 之类的模块级或 store 级全局。
+
+#### Tests
+
+`apps/desktop/src/runtime/dbc-client.test.ts`：
+
+```text
+原有 import 契约测试       21 项，全部保留并通过（未改断言、未改 expected）
+新增只读 surface 测试      +52 项（单文件合计 73）
+全仓 frontend 测试          11 files / 134 tests passed（V0.3-08-FINAL 基线 11 / 82）
+```
+
+新增覆盖：
+
+```text
+listDbcAssets   正确 method(GET) / 正确 URL / 空数组 → [] / 多 asset 顺序 /
+                完整 metadata 映射 / 未知字段被丢弃 / project_path 编码证明
+getDbcAsset     asset id path 编码证明 / project_path query 编码证明 / metadata 映射 /
+                404 envelope 原样保留（code·status·details·recoverable·source）/ project.not_found
+getDbcDatabase  完整 fixture 逐字段映射：standard + extended + CAN FD 消息 · Intel + Motorola ·
+                signed + unsigned · float metadata · factor/offset · min/max · unit · receivers ·
+                choices · multiplexer + multiplexer ids · comments · cycle_time · nodes ·
+                全部 nullable（值 与 null 两种情况）/ version null / 路径字段不进模型 /
+                asset_integrity_failed 原样保留
+嵌套 malformed  31 项：messages 非数组 / nodes 非数组 / version 非 string·null / message 处放 array /
+                frame_id 字符串·负数 / length 非安全整数 / is_extended 字符串 / senders 含非字符串 /
+                comment 数字 / cycle_time 非整数 / signals 非数组 / signal 缺 name /
+                factor NaN / factor Infinity / offset 字符串 / minimum 字符串 / start_bit 负数 /
+                receivers 含非字符串 / choices 非数组 / choice.value 字符串 / choice.label 缺失 /
+                multiplexer_ids 非整数·字符串·负数 / is_multiplexer 数字 /
+                nodes 含非对象 / node 缺 name / node.comment 非字符串 /
+                顶层 payload 非对象 / 一处坏 signal 使整个 payload 被拒（不产生半合法对象）
+transport/contract  网络 rejection → transport / 非 envelope 失败 → transport /
+                非 JSON 2xx → contract / collection 非对象 → contract / assets 非数组 → contract /
+                collection 内含 malformed asset → contract
+```
+
+对于 `NaN` / `Infinity`，测试用「`json()` 原样返回 payload 对象」的响应替身：`Response` 只能由
+body 构造，而 `JSON.stringify(NaN)` 会变成 `null`，那样一来「Runtime 发了非有限 factor」就与
+「它发的是 null」无法区分，`typeof` 检查也会顶替掉有限性检查。
+
+#### RED → GREEN evidence（negative control）
+
+把 `readDatabase` 临时变异为 `return payload as RuntimeDbcDatabase;`（去掉其全部校验）：
+
+```text
+npx vitest run src/runtime/dbc-client.test.ts
+  Test Files  1 failed (1)
+       Tests  33 failed | 40 passed (73)
+失败的 33 项 = 全部 31 项 “malformed database payloads”（如 refuses a signal whose factor is NaN、
+refuses a signal whose factor is Infinity、refuses a multiplexer_ids array containing a non-integer、
+leaves no half-valid object behind …）+ “maps every declared field of the canonical database”
++ “never lets a path reach the database read model”。
+```
+
+恢复正确实现后：
+
+```text
+npx vitest run src/runtime/dbc-client.test.ts
+  Test Files  1 passed (1)
+       Tests  73 passed (73)
+```
+
+变异代码未提交；工作树中不含 `as RuntimeDbcDatabase`。
+
+#### 回归（本机执行，不是 CI）
+
+```text
+npm test                  11 files / 134 tests passed
+npm run lint              exit 0
+npm run typecheck         exit 0
+npm run build             exit 0（不设 smoke 开关 → dist 内无 CANXSMOKE / dbc-dialog-smoke 标记）
+cargo fmt --check         exit 0
+cargo clippy --all-targets --all-features -- -D warnings   exit 0
+cargo test                28 passed（lib）+ 3 passed（tests/runtime_sidecar.rs）
+python -m pytest -q       1626 passed, 1 skipped in 144.98s
+ruff check runtime tests tools   All checks passed!
+mypy runtime              Success: no issues found in 64 source files
+GitHub workflow runs: none
+```
+
+说明：本机 `python` / `ruff` / `mypy` 不在 Git Bash 的 PATH 解析范围内（`python` 落到 Windows
+Store stub，退出码 49），因此三项均以项目 `.venv`（`Python 3.13.15`）内的
+`.venv/Scripts/python.exe` / `ruff.exe` / `mypy.exe` 执行。
+
+#### Packaging
+
+```text
+构建      cmd.exe /c scripts\package-windows.cmd
+          环境未设 VITE_CANX_DBC_SMOKE / VITE_CANX_DBC_SMOKE_PROJECT_PATH
+          [6/6] packaging complete.   exit 0
+packaged-runtime smoke（脚本 [3/6] 步骤，单独复跑取直接证据）
+          tests/integration/test_packaged_runtime_smoke.py   5 passed in 24.26s
+can-x.exe 9,796,096 bytes（与 V0.3-08 普通构建一致；dist 内无 smoke harness 标记）
+MSI       CAN-X_0.1.0_x64_en-US.msi · 63,131,648 bytes
+```
+
+前端读模型客户端未破坏 Windows production build / packaged Runtime / MSI。
+
+#### Known limitations（诚实记录）
+
+```text
+ 1 正式 DBC UI 仍未实现：没有 asset 列表、没有 Import 按钮、没有 project picker。
+   本阶段的读 API 目前没有生产调用方——`listDbcAssets` / `getDbcAsset` / `getDbcDatabase`
+   只在单测下被调用。
+ 2 Project Workspace 尚未接线：三个 API 都是显式 `projectPath` 参数式契约，但没有生产调用方传入。
+ 3 active DBC 尚未定义；没有 channel ↔ DBC 绑定；没有 decode / decode-batch 前端集成。
+ 4 client 侧校验是 *契约形状* 校验（类型 / 安全整数 / 有限性 / 非负），不是 domain 语义复刻：
+   例如 signal.length 只要求非负整数，不重申 domain 的 length >= 1；同名唯一性、frame_id 与
+   is_extended 的区间关系等由 Runtime domain 保证，client 不重复实现。
+ 5 本阶段没有新增真实 Runtime 网络往返测试：测试以 fetch 替身验证 URL 构造与 response 校验，
+   Runtime 端 HTTP surface 的真实行为由既有 Python 测试覆盖。
+ 6 macOS 真机验证 NOT VERIFIED。真实 CAN 硬件验证 NOT VERIFIED（本阶段不涉及）。
+ 7 本阶段只在 Windows 打包产物上验证。
+```
+
+#### Deferred
+
+未实现、且明确不属于本阶段：DBC Workspace UI、DBC Editor、project picker、active DBC、
+channel ↔ DBC 绑定、asset 删除/重命名/替换、拖放、多文件导入、asset 列表 UI、Trace 解码列、
+live decode、`decode-batch` 前端集成、Plot signal 绑定、Agent `dbc.*` 工具、Rust DBC domain、
+新的 Tauri command、新的 Python endpoint、SQLite schema change、DBC canonical Python model
+change、global current project、全局 active DBC。下一阶段不在本轮范围内。
+
+#### 状态
+
+```text
+Step V0.3-09 — Desktop DBC Read Model Client Foundation
+
+Implementation complete
+Local verification complete
+
+Awaiting independent acceptance
+```
+
+本轮**不自行宣布** `V0.3-09 Final Acceptance: PASS` / `Status: CLOSED`；最终独立验收由项目负责人
+执行。本轮也不开始 V0.3-10。
 
 ---
 
