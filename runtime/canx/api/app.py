@@ -32,6 +32,7 @@ from canx.api.errors import (
     request_validation_envelope,
     status_for,
 )
+from canx.api.project import create_project_router
 from canx.api.trace import create_trace_router
 from canx.dbc.errors import DbcError
 from canx.devices.virtual import VirtualAdapterConfig
@@ -241,9 +242,12 @@ def create_app(
     # The historical Trace surface reads persisted data and shares no state with
     # the capture lifecycle, so it is mounted as its own router. The DBC surface
     # owns no state at all — every request loads its own asset and compiles its own
-    # decoder — so it is mounted the same way.
+    # decoder — so it is mounted the same way. The project surface is the same
+    # pattern again: one request opens, reads and closes a project, and nothing is
+    # remembered between requests.
     app.include_router(create_trace_router())
     app.include_router(create_dbc_router())
+    app.include_router(create_project_router())
 
     broker = batch_broker if batch_broker is not None else service.broker
     registry = ToolRegistry()

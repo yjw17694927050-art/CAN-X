@@ -719,3 +719,111 @@ async def test_packaged_runtime_imports_dbc_content_and_decodes_with_it(
         assert registered.encoding == "utf-8-sig"
         assert service.list_assets() == (registered,)
         assert [message.name for message in document.database.messages] == ["EngineData"]
+
+
+@pytest.mark.skipif(
+    packaged_runtime() is None, reason="packaged canx-runtime.exe has not been built"
+)
+async def test_packaged_runtime_serves_the_project_read_model_api(tmp_path: Path) -> None:
+    """The frozen executable — not the source tree — answers ``GET /project/inspect``.
+
+    V0.3-11 adds a Runtime HTTP endpoint, and the only honest way to prove it is in
+    the distribution is to ask the distribution. Using ``/health`` as a proxy would
+    prove nothing: the endpoint could be missing from the image and health would
+    still be green.
+
+    The project is created here, then closed, and the executable is handed nothing
+    but its path. The identity asserted below is therefore read out of
+    ``project.json`` and ``project.db`` by the packaged process itself, and compared
+    against the same values read from the source tree. The negative cases are part
+    of the same proof: a domain failure and a request-shape failure must both be
+    answered by the frozen image with the shared envelope, not by a packaging
+    specific variant.
+
+    ``canx.api.project`` is reached because the runtime entry point imports the
+    application factory, which mounts the router — this test is what turns "the new
+    endpoint is in the image" from an expectation into evidence.
+    """
+    exe = packaged_runtime()
+    assert exe is not None
+    project_root = tmp_path / "packaged-project.canx"
+    with ProjectService().create(project_root, display_name="Packaged Project") as handle:
+        project_id = handle.project_id
+        metadata = handle.read_metadata()
+
+    port = _free_port()
+    token = "v0311-project-token"
+    proc = subprocess.Popen(
+        [str(exe), "--host", "127.0.0.1", "--port", str(port), "--session-token", token],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30) as client:
+            await _await_health(client)
+
+            inspected = await client.get(
+                "/project/inspect", params={"project_path": str(project_root)}
+            )
+            assert inspected.status_code == 200, inspected.text
+            body = inspected.json()
+            assert set(body) == {
+                "project_id",
+                "display_name",
+                "schema_version",
+                "created_at",
+                "updated_at",
+            }
+            assert body["project_id"] == project_id
+            assert body["display_name"] == "Packaged Project"
+            assert body["schema_version"] == 1
+            assert body["created_at"] == metadata.created_at.isoformat()
+            assert body["updated_at"] == metadata.updated_at.isoformat()
+            # A read model is not a filesystem authority.
+            assert str(project_root) not in str(body)
+
+            # Repeating the request must not depend on anything the first one left
+            # behind: there is no current project and no retained handle.
+            again = await client.get(
+                "/project/inspect", params={"project_path": str(project_root)}
+            )
+            assert again.status_code == 200, again.text
+            assert again.json() == body
+
+            # A real domain failure, produced by the packaged project domain.
+            absent = await client.get(
+                "/project/inspect", params={"project_path": str(tmp_path / "absent.canx")}
+            )
+            assert absent.status_code == 400, absent.text
+            absent_body = absent.json()
+            assert set(absent_body) == {
+                "code",
+                "message",
+                "details",
+                "recoverable",
+                "source",
+            }
+            assert absent_body["code"] == "project.not_found"
+            assert absent_body["source"] == "project"
+            assert absent_body["recoverable"] is False
+            assert not (tmp_path / "absent.canx").exists()
+
+            # The shared request-validation boundary is registered in the same
+            # application factory the frozen executable runs, so a request with no
+            # project path must be answered with that envelope here too.
+            missing = await client.get("/project/inspect")
+            assert missing.status_code == 422, missing.text
+            missing_body = missing.json()
+            assert missing_body["code"] == "api.request_validation_failed"
+            assert missing_body["source"] == "api"
+            assert missing_body["recoverable"] is False
+
+            shutdown = await client.post(
+                "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
+            )
+            assert shutdown.status_code == 202
+
+        proc.wait(timeout=30)
+        assert proc.returncode == 0
+    finally:
+        _terminate(proc)
