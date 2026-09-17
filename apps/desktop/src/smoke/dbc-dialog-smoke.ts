@@ -13,6 +13,13 @@
  *   → SelectedDbcContent                → project-owned asset
  * ```
  *
+ * Both the Cancel step and the Import step call
+ * `importDbcFromNativeDialog(projectPath)` — the function the product will call. That
+ * is what makes this harness evidence rather than a demonstration: what it reports is
+ * what the shipped orchestration does, including the Cancel contract that a dismissed
+ * dialog produces no Runtime request at all. Only the payload-shape step bypasses the
+ * orchestration, and it exists precisely to observe the Rust IPC payload directly.
+ *
  * It is deliberately not wired into the product:
  *
  * * it is only reachable when the desktop bundle is built with
@@ -36,7 +43,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-import { SELECT_DBC_CONTENT_COMMAND, selectDbcContent } from "../desktop/dbc-file-bridge";
+import { SELECT_DBC_CONTENT_COMMAND } from "../desktop/dbc-file-bridge";
 import { importDbcFromNativeDialog } from "../orchestration/dbc-import";
 
 /** Prefix under which this harness publishes its results in the document title. */
@@ -98,10 +105,34 @@ async function runSequence(): Promise<void> {
   publishState("done", results);
 }
 
-/** Step 1 — the operator dismisses the native dialog; the bridge must answer `null`. */
+/**
+ * Step 1 — the operator dismisses the native dialog, and the production
+ * orchestration must report it as `cancelled` without importing anything.
+ *
+ * This step runs `importDbcFromNativeDialog` — the function the product will call —
+ * and not `selectDbcContent`, the bridge underneath it. Both answer "no content" for
+ * a dismissed dialog, which is exactly why the distinction matters: evidencing the
+ * bridge here would let this harness report a `cancelled` outcome for a path the
+ * orchestration never ran, and the orchestration's Cancel contract — *no request is
+ * built at all* — would never actually be exercised in the packaged app.
+ *
+ * The operator is *supposed* to press Cancel. If they pick a file instead, that is
+ * reported as a mismatch rather than silently accepted as a cancellation.
+ */
 async function cancelStep(): Promise<SmokeStepResult> {
-  const selected = await selectDbcContent();
-  return { step: "cancel", returnedNull: selected === null };
+  const projectPath = readSmokeProjectPath();
+  if (projectPath === null) {
+    return {
+      step: "cancel",
+      error: "VITE_CANX_DBC_SMOKE_PROJECT_PATH is not configured for this build",
+    };
+  }
+
+  const outcome = await importDbcFromNativeDialog(projectPath);
+  if (outcome.status !== "cancelled") {
+    return { step: "cancel", outcome: outcome.status, error: "the dialog was not cancelled" };
+  }
+  return { step: "cancel", outcome: "cancelled" };
 }
 
 /**
