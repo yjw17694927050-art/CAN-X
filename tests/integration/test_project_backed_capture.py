@@ -31,6 +31,20 @@ from canx.runtime.service import CaptureSessionState, RuntimeService
 
 SEGMENT_LIMIT = 32
 
+# `RuntimeService.recorder_cleanup_timeout_seconds` defaults to 1 s — a drain budget sized for
+# realistic segment sizes. SEGMENT_LIMIT above makes these captures deliberately pathological
+# (one Parquet segment plus one registry row per 32 frames), so the drain at stop is orders of
+# magnitude larger than production. Measured on a 2-CPU-constrained host the drain normally
+# takes 0.42-0.55 s, i.e. barely 2x headroom against the 1 s default, and a slower or more
+# contended machine (a 2-vCPU CI runner) pushes it past the deadline. The recorder then fails
+# the session closed with `recorder.cleanup_timeout`, which is exactly what ADR 0001 requires:
+# under pressure it refuses to claim COMPLETED rather than silently dropping frames.
+#
+# The success-path tests below therefore state the drain budget their own configuration needs
+# instead of inheriting a production default that assumes normal segment sizes. No assertion is
+# relaxed and the workload is unchanged; each test's own bounded stop still caps the wait.
+CLEANUP_TIMEOUT_SECONDS = 6.0
+
 
 def project(tmp_path: Path, *, name: str = "vehicle.canx") -> ProjectHandle:
     return ProjectService().create(tmp_path / name, display_name="Vehicle A")
@@ -54,7 +68,10 @@ def read_every_frame(query: QueryService, session_id: str, *, limit: int = 1000)
 
 async def test_a_realtime_capture_becomes_a_queryable_completed_session(tmp_path: Path) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=SEGMENT_LIMIT)
+        service = RuntimeService(
+            project_max_frames_per_segment=SEGMENT_LIMIT,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         async with service.broker.subscribe() as stream:
             stream_id = await service.start_capture(
                 VirtualAdapterConfig(rate_hz=4_000, seed=11),
@@ -292,7 +309,10 @@ async def test_case_d_archive_saturation_never_claims_a_completed_session(
 
 async def test_case_e_a_normal_stop_flushes_the_partial_segment(tmp_path: Path) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=SEGMENT_LIMIT)
+        service = RuntimeService(
+            project_max_frames_per_segment=SEGMENT_LIMIT,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         await service.start_capture(
             VirtualAdapterConfig(rate_hz=6_000, seed=13),
             batch_size=16,
