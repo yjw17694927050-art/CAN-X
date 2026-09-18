@@ -41,6 +41,7 @@ from canx.project.errors import ProjectError
 from canx.query.errors import QueryError
 from canx.runtime.errors import CaptureConfigurationError
 from canx.runtime.service import RuntimeService
+from canx.safety.risk import Capability
 from canx.transport.broker import BatchBroker
 from canx.transport.msgpack_codec import encode_batch
 
@@ -262,7 +263,7 @@ def create_app(
             input_model=TraceSummaryInput,
             output_model=TraceSummaryOutput,
             risk_level=ToolRisk.READ,
-            permissions=frozenset({"READ"}),
+            required_capabilities=frozenset({Capability.READ}),
             timeout_seconds=2.0,
             idempotency="idempotent",
         ),
@@ -363,7 +364,9 @@ def create_app(
     async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse | JSONResponse:
         """Execute one runtime allow-listed tool with V0.1 read permission."""
         try:
-            output = await tool_executor.execute(request.name, request.input, {"READ"})
+            output = await tool_executor.execute(
+                request.name, request.input, frozenset({Capability.READ})
+            )
         except UnknownToolError:
             error = ErrorResponse(
                 code="tool.unknown",

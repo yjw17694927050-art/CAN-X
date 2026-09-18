@@ -61,6 +61,8 @@ CAN-Space 已冻结。
 docs/ADR/*                  涉及对应模块时必须读取
 docs/acceptance/*           需要某阶段验收证据时读取
 docs/REUSE_LEDGER.md        第一次实际复用 legacy code 时创建并读取
+docs/architecture/SAFETY_ARCHITECTURE.md
+                            涉及危险操作时必须读取——见 §16
 docs/project-state/*        需要历史细节时才读取（**不是**每次任务的 mandatory read）
 ```
 
@@ -459,6 +461,83 @@ Audit
 
 禁止出现绕过路径。
 
+SAFETY-01 已将这条规则落地为 Runtime-owned **Safety Kernel**：
+
+```text
+Runtime 组件：runtime/canx/safety/
+架构契约：    docs/architecture/SAFETY_ARCHITECTURE.md
+```
+
+任何涉及危险操作（`TX` / `DIAGNOSTIC_MUTATION` / `ACTUATION` / `ECU_MUTATION` /
+`CRITICAL`）的工作，动手前必须读 `SAFETY_ARCHITECTURE.md`。
+
+**READ 语义风险 ≠ 没有车辆 TX。**
+`diagnostic.read` 的 effect risk 是 `READ`（只读语义，不需要 Approval），
+但它仍然要在车辆总线上发帧，因此仍然需要 `CAN_TX` authority，并且仍然需要 ARM。
+任何"因为风险等级低、所以可以自动执行"的推断，都不得用来绕开真实 TX 的授权链路。
+
+具体到 Agent Tool：一个 effect risk 为 `READ` 的 tool，
+只要 `required_capabilities` 含 `CAN_TX`，`ToolExecutor` 就拒绝直接执行它。
+
+该文档中的安全不变量 `S1`–`S25` 为**冻结条款**。
+它们不能被任务 prompt 绕过——如果某条指令要求打破不变量，
+正确做法是指出冲突并停止，而不是静默执行。
+
+**Audit transaction 语义（S20）。** authority-increasing 动作
+（`arm` / `confirm_arm` / `grant_approval` / `release_emergency_stop`）
+只有在**整条 audit transaction** 成功时才成立：它不是
+`audit_sink.record()` 一次调用，而是 event id 生成、clock 读取、
+event 构造、sink 写入的全部。其中任何一步失败，都必须先回到安全状态，
+再把错误向上传播；rollback 本身失败时，必须抛出独立的强类型 fault，
+不得伪装成普通 audit failure。
+
+**Audit reference 必须是 identifier（S21）。** Safety Audit 的引用字段
+（`caller_id` / `operation_id` / `approval_id` / `device_id` / `channel` /
+`event_id`）是有明确 grammar 和长度预算的 identifier，不是任意 caller 文本。
+不得向 Safety Audit 契约中引入 caller 可控的自由文本字段，也不得用
+"看起来像不像 secret" 的启发式规则代替 identifier contract——
+secret 可以是任何字符串。契约在
+`runtime/canx/safety/identifiers.py` 中唯一定义。
+
+**Emergency Stop 是安全 epoch 边界，不是 pause（S22–S24）。** Stop engaged
+期间，任何 Agent / UI / Script / Automation / SYSTEM workflow 都不得建立或
+预置危险 authority：`arm` / `confirm_arm` / `grant_approval` 在 mutation 之前
+一律以 typed fault（`SafetyEmergencyStopError`）拒绝，而不是返回
+`PolicyDecision.DENY`——它们是 control-plane authority mutation，不经过
+`evaluate`。"先 arm 起来、等 release 再放开"不是优化，是缺陷。
+
+**Emergency Stop release 永远不是 resume command。** release 之后 runtime
+保持 `DISARMED`，且没有任何 outstanding approval；authority 必须被显式重建。
+不得为了"恢复事务前状态"而在 release 失败时恢复 ARM 或 Approval——
+减少 authority 的动作不可回滚成更多 authority（S17、S23）。
+
+**Cancellation audit 引用必须走 identifier contract（S24）。** 会被取消的
+subsystem 以稳定的 `CancellerId` 注册（`"tx.periodic"`，不是
+`type(x).__name__`），`cancel_active_operations` 返回 `OperationId` 并接收
+reason **digest**；raw subsystem text 与 raw operator reason 都不得跨越
+cancellation audit 边界。malformed 返回不得阻止 E-stop engagement——
+它被记录为结构化的 `CancellationFailure`。
+
+**Emergency-stop metadata 是非权威的（S25）。** E-stop 的 reason、timestamp、
+audit、cancellation reporting 全部是 **optional metadata**：
+
+```text
+No optional reason, timestamp, audit, or cancellation-reporting failure
+may prevent the runtime from entering the safe stopped state.
+```
+
+优先级固定为 `safety reduction > attribution > observability`——
+better an unattributed stop than an attributed non-stop。
+因此：
+
+- raw reason 必须经 best-effort digest 处理（不可计算 → `reason_digest = None`），
+  不得用 `errors="ignore"` / `errors="replace"` 伪造一个 digest，
+  也不得把 raw reason 当作 fallback 存下来（那会重开 S19）；
+- `OperationCanceller.reason_digest` 是 `str | None`：`None` 表示
+  attribution unavailable，**绝不是** skip cancellation 的理由；
+- 不得把这一 lenient 处理扩散到 authority-*increasing* 路径——
+  那里 digest 失败是 caller bug，保持 strict。
+
 ---
 
 # 17. Agent Safety
@@ -475,11 +554,21 @@ WRITE_PROJECT
 
 ```text
 TX
+DIAGNOSTIC_MUTATION
+ACTUATION
 ECU_MUTATION
 CRITICAL
 ```
 
 危险工具不能因为 AI 请求就绕过 Approval。
+
+风险等级只有一个定义处：`canx/safety/risk.py` 的 `RiskLevel`。
+Agent tool registry 的 `ToolRisk` 是它的别名，不是第二套体系——
+两者不得漂移。
+
+Agent 只能 *请求* 危险操作。它不得自行 arm、不得自行批准（issue approval）、
+不得扩大自身 permission、不得延长 approval 有效期、不得改 safety policy、
+不得直接调用 `Adapter.send`。这些不是约定，而是没有代码路径可以做到。
 
 ---
 

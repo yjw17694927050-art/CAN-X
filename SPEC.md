@@ -133,6 +133,7 @@ Data Storage
 │ DBC                           │
 │ Query                         │
 │ Automation                    │
+│ Safety Kernel                 │
 └───────┬──────────────┬────────┘
         │              │
 ┌───────▼──────┐ ┌────▼─────────┐
@@ -1149,6 +1150,84 @@ Audit
 ```
 
 禁止 Adapter 被 UI 直接调用发送。
+
+SAFETY-01 已将这条规则实现为 Runtime-owned Safety Kernel：
+
+```text
+Runtime 组件：runtime/canx/safety/
+架构契约：    docs/architecture/SAFETY_ARCHITECTURE.md
+```
+
+Safety Kernel 是权限决策 authority，统一持有 Risk Taxonomy、Caller Model、
+ARM State、Scope、Capability-based Permission、Approval、Policy Decision、
+Audit Contract 与 Emergency Stop Contract。危险操作默认 DENY。
+
+授权由**两个互相独立的维度**共同决定，而不是单一 RiskLevel：
+
+```text
+operation effect risk      这个操作对车辆做了什么（READ / TX / ECU_MUTATION / …）
+required capabilities      执行它需要哪些 authority（一个集合，不是单值）
+```
+
+任何会在车辆总线上发帧的操作，无论 effect risk 是什么，都必须要求 `CAN_TX`。
+因此 `diagnostic.read` 的 effect risk 是 `READ`，执行 authority 仍包含 `CAN_TX`——
+不能因为"这是只读操作"而绕开真实 TX 的授权链路。
+
+**Safety Audit contract。** Audit 事件是一组预先声明的字段，没有自由文本槽位，
+也没有 `dict[str, Any]` 兜底。每一个引用字段都是**有 grammar 与长度预算的
+identifier**：`caller_id` / `operation_id` / `approval_id` / `device_id` /
+`channel` / `event_id`；digest 字段是校验过的 sha256；`message` 是 kernel 固定文本；
+`detail` 是 kernel 自己渲染的坐标。不在其中接受 caller 可控的自由文本，
+也不用"看起来像不像 secret"作为安全边界——secret 可以是任意字符串。
+契约唯一定义在 `runtime/canx/safety/identifiers.py`。
+
+**Audit transaction 语义。** authority-increasing 动作只有在**完整** audit
+transaction 成功时才提交：event 准备 + event 构造 + sink 写入。任一步失败，
+都必须先把 authority 回退到安全状态（rollback 只能是减少方向的动作），
+再向上传播 typed fault；rollback 本身失败时抛出独立的强类型 fault。
+audit 失败可以导致 authority 丢失，但**绝不**可以导致 authority 被恢复——
+fail safe，不是 fail transactionally symmetric。
+
+**Emergency Stop 语义（S22–S24）。** Emergency Stop 是**安全 epoch 边界**，
+不是 pause/resume：
+
+```text
+ENGAGE      → DISARM
+            → clear approvals
+            → authority creation blocked（arm / confirm_arm / grant_approval 全部拒绝）
+            → request cancellation of active dangerous work
+
+RELEASE     → emergency_stop = False
+            → runtime remains DISARMED
+            → approvals empty
+            → 危险 authority 必须被显式重建
+```
+
+**Release ≠ resume。** Stop engaged 期间不得建立也不得预置危险 authority；
+release 之后既不是 ARMED，也不存在遗留 Approval。取消（cancellation）反馈同样
+属于 Safety Audit 的一部分，因此其引用必须是 typed identifier / bounded
+structured failure code，而不是任意子系统文本；canceller 收到的是 reason digest，
+不是 operator 的原始 reason。
+
+**Emergency Stop metadata failure（S25）。** E-stop 的 reason / timestamp /
+audit / cancellation reporting 都是 optional metadata：
+
+```text
+Emergency Stop metadata failure
+→ degrade attribution
+→ never degrade safety effect
+```
+
+优先级固定为 `safety reduction > attribution > observability`：reason 不可
+digest、clock 不可读、canceller 返回 malformed、audit 写入失败，都只降低
+attribution/observability，不得使 stop 失效——stop 保持 engaged、ARM 保持
+DISARMED、approvals 保持清空。不得用 `errors="ignore"` / `errors="replace"`
+伪造 digest，也不得把 raw reason 作为 fallback 落盘。
+
+该文档冻结的安全不变量（S1-S25）是架构条款：任何任务指令都不得绕过。
+SAFETY-01 只建立 domain / policy / state machine / contract / test，
+不引入任何真实 TX、replay 发送、UDS 或 ECU 变更能力——
+那些能力由后续任务的 SPEC 变更引入，并且必须经过 Safety Kernel。
 
 ---
 

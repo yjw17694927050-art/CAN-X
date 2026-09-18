@@ -1,0 +1,745 @@
+"""The Safety Kernel — the one authority every dangerous capability must pass.
+
+```text
+UI ───────────────┐
+Agent ────────────┤
+Automation ───────┤
+Script ───────────┤
+Protocol Workflow ┤
+                  ↓
+             Safety Kernel          ← the policy authority
+                  ↓
+          controlled execution
+                  ↓
+              Adapter
+```
+
+Invariant S2: this is the policy authority. Invariant S12: no future
+``Adapter.send`` path may bypass it. Neither statement is enforced by this module
+alone — a caller that never asks the kernel simply never asks — and that is
+precisely why the rule is frozen in ``docs/architecture/SAFETY_ARCHITECTURE.md``
+and in ``AGENTS.md``, and why a regression test asserts that no transmit path
+exists in the device layer today.
+
+**This stage authorises; it does not execute.** ``evaluate`` returns a verdict.
+There is no ``execute``, no adapter handle, no bus object and no transmit call
+anywhere in this package. SAFETY-01 establishes the boundary that later TX,
+replay, injection and diagnostic work has to cross; adding the crossing itself
+is explicitly out of scope, and the absence of an execution path is asserted by
+test rather than promised in prose (SAFETY-01 §6, §23).
+
+The kernel owns four pieces of authority state and lets no caller hold them
+directly:
+
+```text
+ARM state + scope      can be moved only by an authority-bearing caller
+permissions            immutable once constructed; there is no widening method
+approvals              granted only by an authority-bearing caller; consumed atomically
+emergency stop         engagable by anyone, releasable only by an operator
+```
+
+Everything the kernel does is recorded on the audit trail — ``ALLOW`` and
+``DENY`` alike, plus the control actions that move authority (arm, confirm,
+disarm, emergency engage/release, approval grant). A decision that cannot be
+recorded is not returned: it is raised as
+:class:`canx.safety.errors.SafetyAuditError`, because a verdict nobody can audit
+is not a verdict the rest of the system may act on (invariants S10, S14).
+
+**Concurrency.** The kernel takes one re-entrant lock across evaluation and
+every authority mutation, so a decision is never taken against authority that
+changed halfway through it. The lock covers the kernel's own state only. It
+cannot make an *external* execution atomic with the decision — a caller that
+evaluates and then acts still has a gap between the two — and closing that gap
+belongs to whoever owns the future execution path, not here. The limitation is
+named in the architecture document rather than papered over.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from collections.abc import Callable
+
+from canx.safety.approval import Approval, ApprovalSpec, ApprovalStore, issuer_for
+from canx.safety.arm import ArmController, ArmState
+from canx.safety.audit import (
+    InMemoryAuditSink,
+    SafetyAuditEvent,
+    SafetyAuditSink,
+    digest_reason,
+    digest_reason_best_effort,
+)
+from canx.safety.caller import CallerIdentity
+from canx.safety.decision import PolicyDecision, SafetyReason
+from canx.safety.emergency import EmergencyStopController, EmergencyStopState, OperationCanceller
+from canx.safety.errors import (
+    SafetyApprovalProvenanceError,
+    SafetyAuditError,
+    SafetyCallerError,
+    SafetyEmergencyStopError,
+    SafetyRollbackError,
+)
+from canx.safety.identifiers import new_audit_event_id
+from canx.safety.operation import OperationRequest
+from canx.safety.permission import PermissionSet
+from canx.safety.policy import SafetyContext, SafetyPolicy
+from canx.safety.scope import ArmScope
+
+
+class SafetyKernel:
+    """The runtime's safety authority.
+
+    Args:
+        clock: Source of "now" for expiry decisions. Injected so tests can expire
+            a scope or an approval without sleeping, and so a host can supply a
+            monotonic source without this module choosing for it.
+        audit_sink: Where decisions are recorded. Defaults to a bounded in-memory
+            trail, which is what this stage has use for — there is no persistence
+            requirement yet, and inventing a database table would be building
+            ahead of the need.
+        permissions: The session's standing capability grants. Defaults to the
+            empty set: a kernel that was handed no authority authorises nothing.
+        policy: The decision core. Defaults to the standard policy; passed in
+            only by tests that need a different approval table.
+    """
+
+    __slots__ = (
+        "_approvals",
+        "_arm",
+        "_audit",
+        "_clock",
+        "_emergency",
+        "_lock",
+        "_permissions",
+        "_policy",
+    )
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.time,
+        audit_sink: SafetyAuditSink | None = None,
+        permissions: PermissionSet | None = None,
+        policy: SafetyPolicy | None = None,
+    ) -> None:
+        self._lock = threading.RLock()
+        self._clock = clock
+        self._audit: SafetyAuditSink = (
+            audit_sink if audit_sink is not None else InMemoryAuditSink()
+        )
+        self._permissions = permissions if permissions is not None else PermissionSet()
+        self._policy = policy if policy is not None else SafetyPolicy()
+        self._arm = ArmController(clock=clock)
+        self._approvals = ApprovalStore()
+        self._emergency = EmergencyStopController(clock=clock)
+        # Disarm is wired here, not inside the stop controller: the controller
+        # knows how to stop the world, and the kernel knows what "disarmed" means.
+        self._emergency.attach_disarm(self._disarm_for_emergency_stop)
+
+    # -- ARM surface ------------------------------------------------------
+
+    @property
+    def arm_state(self) -> ArmState:
+        """The current arm state."""
+        return self._arm.state
+
+    @property
+    def active_scope(self) -> ArmScope | None:
+        """The authority the runtime currently holds, or ``None``."""
+        return self._arm.active_scope()
+
+    def arm(self, scope: ArmScope, *, caller: CallerIdentity) -> ArmState:
+        """Begin arming with ``scope``. Moves ``DISARMED → ARMING``.
+
+        Raises:
+            SafetyCallerError: ``caller`` may not control arm. An Agent, script
+                or automation rule is refused here — this is the structural
+                answer to "can an Agent self-arm?" (invariants S3, S4).
+            SafetyEmergencyStopError: The global stop is engaged. Authority may
+                not be *pre-staged* while the runtime is stopped, so this is a
+                gate before the mutation rather than a rollback after it
+                (invariant S22).
+        """
+        self._require_arm_authority(caller)
+        with self._lock:
+            self._require_emergency_stop_released(action="arm")
+            state = self._arm.request(scope)
+            self._commit_authority_change_with_audit(
+                action="arm.requested",
+                record=lambda: self._record_control(
+                    action="arm.requested",
+                    caller=caller,
+                    reason_code=SafetyReason.ALLOWED,
+                    message="Arming was requested with a bounded scope.",
+                    detail=_render(scope.describe()),
+                ),
+                rollback=self._arm.disarm,
+            )
+            return state
+
+    def confirm_arm(self, *, caller: CallerIdentity) -> ArmState:
+        """Complete arming. Moves ``ARMING → ARMED``.
+
+        Raises:
+            SafetyCallerError: ``caller`` may not control arm.
+            SafetyEmergencyStopError: The global stop is engaged. This needs its
+                own gate rather than relying on :meth:`arm`'s: a runtime that was
+                already ``ARMING`` when the stop engaged reaches ``ARMED``
+                through *this* call and never calls ``arm`` again, so gating only
+                the first step would leave a bypass (invariant S22).
+            SafetyStateError: The machine is not ``ARMING``.
+            SafetyScopeError: The scope lapsed before the confirmation.
+        """
+        self._require_arm_authority(caller)
+        with self._lock:
+            self._require_emergency_stop_released(action="confirm_arm")
+            state = self._arm.confirm()
+            self._commit_authority_change_with_audit(
+                action="arm.confirmed",
+                record=lambda: self._record_control(
+                    action="arm.confirmed",
+                    caller=caller,
+                    reason_code=SafetyReason.ALLOWED,
+                    message="The runtime is armed within its scope.",
+                    detail=None,
+                ),
+                rollback=self._arm.disarm,
+            )
+            return state
+
+    def disarm(self, *, caller: CallerIdentity, reason: str = "disarmed") -> ArmState:
+        """Return to ``DISARMED``. Open to every caller.
+
+        Deliberately unrestricted: disarming only removes authority, and a
+        runtime in which an Agent could not drop the arm state would be a runtime
+        where the safest available action was reserved for the most privileged
+        caller.
+        """
+        with self._lock:
+            state = self._arm.disarm()
+            self._record_control(
+                action="disarm",
+                caller=caller,
+                reason_code=SafetyReason.NOT_ARMED,
+                message="The runtime was disarmed.",
+                detail=None,
+                reason_digest=digest_reason(reason),
+            )
+            return state
+
+    # -- Approval surface -------------------------------------------------
+
+    @property
+    def approvals(self) -> ApprovalStore:
+        """The session's approval store.
+
+        Exposed so a host can revoke an approval it no longer stands behind.
+        There is no method here that *widens* authority: the store's ``grant``
+        still refuses a machine caller, and nothing in this class can mint one.
+        """
+        return self._approvals
+
+    def grant_approval(self, spec: ApprovalSpec, *, granted_by: CallerIdentity) -> Approval:
+        """Record an approval for ``spec``, with provenance derived from ``granted_by``.
+
+        The caller describes **what** it wants authorised; the kernel decides
+        **who** is authorising it, from the identity the rest of the runtime
+        already trusts for arm control and audit attribution. There is no
+        parameter through which a caller could claim a provenance that is not
+        its own (invariant S16).
+
+        Returns:
+            The stored approval, including the provenance the kernel assigned.
+
+        Raises:
+            SafetyCallerError: ``granted_by`` is an Agent, script or automation
+                rule (invariant S4).
+            SafetyApprovalProvenanceError: ``granted_by`` carries no provenance,
+                or the request is not an :class:`ApprovalSpec`.
+            SafetyEmergencyStopError: The global stop is engaged. An approval is
+                dangerous authority, so staging one while the runtime is stopped
+                would shorten the resume chain the stop exists to lengthen
+                (invariant S22).
+        """
+        if not granted_by.may_issue_approval:
+            raise SafetyCallerError(
+                "Only a human operator or the host system may issue an approval.",
+                details={"caller": str(granted_by.kind), "caller_id": granted_by.caller_id},
+            )
+        if type(spec) is not ApprovalSpec:
+            # An ``Approval`` carries an issuer, and a caller that handed one in
+            # would reasonably expect its label to matter. It does not — the
+            # kernel derives provenance — and silently overwriting it would
+            # teach that caller something false. The shape that has no label to
+            # supply is the shape that is accepted.
+            raise SafetyApprovalProvenanceError(
+                "An approval must be requested with an ApprovalSpec; provenance is "
+                "derived from the granting caller and cannot be supplied.",
+                details={"supplied_type": type(spec).__name__},
+            )
+        with self._lock:
+            self._require_emergency_stop_released(action="grant_approval")
+            approval = Approval(
+                approval_id=spec.approval_id,
+                capability=spec.capability,
+                target=spec.target,
+                issued_at=spec.issued_at,
+                expires_at=spec.expires_at,
+                issuer=issuer_for(granted_by),
+                single_use=spec.single_use,
+            )
+            self._approvals.grant(approval, granted_by=granted_by)
+            self._commit_authority_change_with_audit(
+                action="approval.granted",
+                record=lambda: self._record_control(
+                    action="approval.granted",
+                    caller=granted_by,
+                    reason_code=SafetyReason.ALLOWED,
+                    message="An approval was recorded for this session.",
+                    detail=_render(approval.describe()),
+                ),
+                rollback=lambda: self._approvals.revoke(approval.approval_id),
+            )
+            return approval
+
+    def revoke_approval(self, approval_id: str) -> bool:
+        """Drop an approval. Returns whether one was held."""
+        with self._lock:
+            return self._approvals.revoke(approval_id)
+
+    # -- Decision surface -------------------------------------------------
+
+    def evaluate(self, request: OperationRequest) -> PolicyDecision:
+        """Return the verdict for ``request``.
+
+        Raises:
+            SafetyAuditError: The decision could not be recorded. This is
+                deliberately an exception rather than a ``DENY``: the caller
+                must not be able to act on a verdict that left no trace, and it
+                must not be able to read the failure as "denied, try again
+                differently" either (invariants S10, S14).
+        """
+        with self._lock:
+            context = SafetyContext(
+                now=self._clock(),
+                arm_state=self._arm.state,
+                arm_scope=self._arm.active_scope(),
+                permissions=self._permissions,
+                approvals=self._approvals,
+                emergency_stop_engaged=self._emergency.engaged,
+            )
+            decision = self._policy.decide(request, context)
+            self._record_decision(request, decision)
+            return decision
+
+    # -- Emergency stop surface -------------------------------------------
+
+    @property
+    def emergency_stop_engaged(self) -> bool:
+        """Whether the global emergency stop is engaged."""
+        return self._emergency.engaged
+
+    def register_canceller(self, canceller_id: str, canceller: OperationCanceller) -> None:
+        """Register a subsystem whose active dangerous work the stop must reach.
+
+        ``canceller_id`` is a stable runtime identity (``"tx.periodic"``), not a
+        class name — a cancellation failure has to name a subsystem the audit
+        contract can hold, and ``type(x).__name__`` is neither stable nor
+        necessarily a bounded identifier (invariant S24).
+        """
+        self._emergency.register_canceller(canceller_id, canceller)
+
+    def engage_emergency_stop(
+        self, *, caller: CallerIdentity, reason: str
+    ) -> EmergencyStopState:
+        """Engage the global stop. Open to every caller kind.
+
+        Disarms the runtime and drops this session's approvals: a stop that left
+        an approval in place would let the next request re-arm cheaply, which is
+        the opposite of what the operator asked for.
+
+        The reason is digested here, at the boundary, and only the digest travels
+        on — to the state, to the trail and to every canceller (invariants S19,
+        S24). Subsystems outside the safety domain may log what they are handed,
+        so what they are handed is not the operator's words.
+
+        **The digest is best-effort, and that is the whole point of this
+        ordering** (invariant S25). ``reason`` is optional attribution metadata
+        for an authority *reduction*, so it is processed in a way that cannot
+        veto the reduction: a reason that will not encode to UTF-8 becomes
+        ``reason_digest = None`` and the stop proceeds unattributed. Processing it
+        eagerly and strictly — which is what this method used to do — made a
+        single unencodable code point able to hold an armed runtime and a live
+        approval in place while the operator believed they had pulled the stop.
+        Better an unattributed stop than an attributed non-stop.
+
+        Nothing on this path can fail the stop. The audit write is attempted
+        last, and if it fails the fault is raised to the caller while the stop
+        stays engaged, the runtime stays ``DISARMED`` and the approvals stay
+        gone — undoing a reduction would be the failure, not the fix
+        (invariants S17, S22).
+        """
+        with self._lock:
+            reason_digest = digest_reason_best_effort(reason)
+            state = self._emergency.engage(caller=caller, reason_digest=reason_digest)
+            self._approvals.clear()
+            self._record_control(
+                action="emergency_stop.engaged",
+                caller=caller,
+                reason_code=SafetyReason.EMERGENCY_STOP,
+                message="The global emergency stop was engaged.",
+                detail=_render(state.describe()),
+                reason_digest=reason_digest,
+            )
+            return state
+
+    def release_emergency_stop(self, *, caller: CallerIdentity) -> EmergencyStopState:
+        """Release the global stop.
+
+        Raises:
+            SafetyCallerError: ``caller`` is an Agent, script or automation rule.
+
+        Releasing restores the *possibility* of dangerous work and nothing more.
+        The postcondition is asserted rather than assumed (invariant S23): a
+        released runtime is ``DISARMED`` and holds no outstanding approval, so
+        authority has to be re-established from scratch. Releasing is therefore
+        never a resume command.
+
+        The two reductions run first and deliberately **outside** the commit
+        guard. They can only ever remove authority, so a release whose audit
+        could not be written must leave them in place — rolling authority back
+        *up* to the pre-release state would be the failure, not the fix
+        (invariant S17). Only the stop's engagement is restored, because that is
+        the half of the change that moves towards safety.
+        """
+        with self._lock:
+            before = self._emergency.state
+            # The caller is judged before anything is reduced, so a refused
+            # release cannot leave the runtime half-released.
+            self._emergency.require_release_authority(caller=caller)
+            self._arm.disarm()
+            self._approvals.clear()
+            state = self._emergency.reset(caller=caller)
+            self._commit_authority_change_with_audit(
+                action="emergency_stop.released",
+                record=lambda: self._record_control(
+                    action="emergency_stop.released",
+                    caller=caller,
+                    reason_code=SafetyReason.EMERGENCY_STOP,
+                    message="The emergency stop was released.",
+                    detail=None,
+                ),
+                rollback=lambda: self._emergency.restore_engagement(state=before),
+            )
+            return state
+
+    # -- Audit surface ----------------------------------------------------
+
+    def audit_events(self) -> tuple[SafetyAuditEvent, ...]:
+        """Return the retained audit events, when the sink is the default one.
+
+        Returns an empty tuple for a custom sink, because the kernel has no right
+        to assume a sink can be read back — the trail belongs to whoever supplied
+        it.
+        """
+        if isinstance(self._audit, InMemoryAuditSink):
+            return self._audit.events()
+        return ()
+
+    # -- Internals --------------------------------------------------------
+
+    @staticmethod
+    def _require_arm_authority(caller: CallerIdentity) -> None:
+        if not caller.may_control_arm:
+            raise SafetyCallerError(
+                "An Agent, script or automation rule may not control the arm state.",
+                details={"caller": str(caller.kind), "caller_id": caller.caller_id},
+            )
+
+    def _require_emergency_stop_released(self, *, action: str) -> None:
+        """Refuse an authority-increasing action while the global stop is engaged.
+
+        The emergency stop is a safety epoch boundary, not a pause (invariant
+        S22): while it is engaged no caller — operator, host, Agent, script or
+        automation — may establish or pre-stage dangerous vehicle authority, and
+        ARM state and approval are exactly that authority. Without this gate the
+        stop degrades into pause/resume: authority is built in the background and
+        the release hands it straight back.
+
+        Three properties of where this sits are load-bearing:
+
+        * **Before the mutation.** It is a gate, not a rollback, so a refusal
+          leaves nothing to undo and no audit transaction to open.
+        * **Inside the kernel lock.** ``engage_emergency_stop`` takes the same
+          lock, so the check cannot be overtaken by a stop arriving between it
+          and the mutation it guards.
+        * **One place, three callers.** ``arm``, ``confirm_arm`` and
+          ``grant_approval`` each route through here rather than repeating the
+          condition, so a future authority-increasing operation has an obvious
+          door to come in through — and a future *reducing* one is not tempted to
+          use it.
+
+        It is a typed fault rather than a ``PolicyDecision.DENY`` on purpose:
+        these are control-plane authority mutations that never reach
+        ``evaluate``, so there is no verdict for a ``DENY`` to be.
+
+        Raises:
+            SafetyEmergencyStopError: The stop is engaged.
+        """
+        if self._emergency.engaged:
+            raise SafetyEmergencyStopError(
+                "The global emergency stop is engaged; no dangerous authority may be "
+                "established or pre-staged while the runtime is stopped.",
+                details={"action": action},
+            )
+
+    def _disarm_for_emergency_stop(self) -> None:
+        """Drop the arm state when the global stop engages.
+
+        A named method rather than ``self._arm.disarm`` directly: the stop
+        controller wants an action with no return value, and giving it the arm
+        controller's own ``disarm`` would let it read the resulting state — which
+        is authority it has no business holding.
+        """
+        self._arm.disarm()
+
+    def _record_decision(self, request: OperationRequest, decision: PolicyDecision) -> None:
+        """Record one verdict, or fault instead of handing it back.
+
+        The **whole** preparation sits inside the guard rather than only the sink
+        write (invariant S20): an event id that cannot be generated, a clock that
+        cannot be read, a coordinate that cannot be validated and a render that
+        cannot complete are each "this decision was never recorded". A caller must
+        not be able to read any of them as "denied, try again differently", so
+        they are normalised into :class:`SafetyAuditError` with the original
+        exception kept as ``__cause__`` (invariants S10, S14).
+
+        No authority is rolled back here, and none needs to be: ``evaluate``
+        returns a verdict and mutates nothing that outlives the call. Consuming a
+        single-use approval is the one authority change on this path, and it can
+        only ever *reduce* authority — a lost approval is the safe direction.
+        """
+        try:
+            arm_scope = self._arm.scope
+            event = SafetyAuditEvent(
+                event_id=new_audit_event_id(),
+                recorded_at=self._clock(),
+                caller_kind=str(request.caller.kind),
+                caller_id=request.caller.caller_id,
+                operation_id=request.operation_id,
+                operation_class=str(request.operation_class),
+                risk_level=None if decision.risk_level is None else int(decision.risk_level),
+                device_id=request.target.device_id,
+                channel=request.target.channel,
+                target_address=request.target.target_address,
+                decision=decision.outcome.value,
+                reason_code=decision.reason_code.value,
+                message=decision.message,
+                detail=None,
+                approval_id=request.approval_id,
+                parameters_digest=request.parameters_digest,
+                reason_digest=None,
+                arm_state=self._arm.state.value,
+                arm_scope_expired=(
+                    None if arm_scope is None else arm_scope.is_expired(self._clock())
+                ),
+                emergency_stop_engaged=self._emergency.engaged,
+                outcome="decision",
+            )
+        except Exception as error:
+            raise SafetyAuditError(
+                "The safety decision could not be prepared; it is not handed back.",
+                details={"operation_id": request.operation_id, "stage": "preparation"},
+            ) from error
+        self._write(event, request.operation_id)
+
+    def _record_control(
+        self,
+        *,
+        action: str,
+        caller: CallerIdentity,
+        reason_code: SafetyReason,
+        message: str,
+        detail: str | None,
+        reason_digest: str | None = None,
+    ) -> None:
+        """Record an authority-moving control action on the same trail.
+
+        Control actions share the event shape with decisions on purpose: one
+        trail that reads in order is what makes "who armed this, and when did the
+        approval arrive?" answerable.
+
+        ``message`` is **kernel text** — a fixed sentence per action. When an
+        action carries an operator's reason, the reason is passed as
+        ``reason_digest`` and the text itself is never written down (invariant
+        S19). ``detail`` carries kernel-rendered coordinates, which are structured
+        values this domain owns and never caller-supplied payloads.
+
+        Preparation is inside the guard, so a failure to generate the event id,
+        read the clock or construct a valid event surfaces as
+        :class:`SafetyAuditError` rather than as whatever the fault happened to be
+        (invariant S20). For a *reducing* action the authority is already gone and
+        stays gone — this method is deliberately not routed through the commit
+        guard, because undoing a successful reduction would be the failure rather
+        than the fix (invariant S17).
+        """
+        try:
+            event = SafetyAuditEvent(
+                event_id=new_audit_event_id(),
+                recorded_at=self._clock(),
+                caller_kind=str(caller.kind),
+                caller_id=caller.caller_id,
+                operation_id=f"kernel.{action}",
+                operation_class="safety.control",
+                risk_level=None,
+                device_id=None,
+                channel=None,
+                target_address=None,
+                decision="control",
+                reason_code=reason_code.value,
+                message=message,
+                detail=detail,
+                approval_id=None,
+                parameters_digest=None,
+                reason_digest=reason_digest,
+                arm_state=self._arm.state.value,
+                arm_scope_expired=None,
+                emergency_stop_engaged=self._emergency.engaged,
+                outcome="control",
+            )
+        except Exception as error:
+            raise SafetyAuditError(
+                "The safety control event could not be prepared; the action is not recorded.",
+                details={"action": action, "stage": "preparation"},
+            ) from error
+        self._write(event, f"kernel.{action}")
+
+    def _write(self, event: SafetyAuditEvent, correlation: str) -> None:
+        try:
+            self._audit.record(event)
+        except Exception as error:
+            raise SafetyAuditError(
+                "The safety decision could not be recorded; it is not handed back.",
+                details={"operation_id": correlation},
+            ) from error
+
+    @staticmethod
+    def _commit_authority_change_with_audit(
+        *,
+        action: str,
+        record: Callable[[], None],
+        rollback: Callable[[], object],
+    ) -> None:
+        """Commit an authority change only if its complete audit transaction lands.
+
+        The one place this discipline is expressed, so the four
+        authority-increasing operations cannot drift into three that roll back and
+        one that does not (invariant S17), and so that "the audit" means the same
+        thing in all four (invariant S20):
+
+        > Any exception that prevents a complete, auditable commit of an
+        > authority-increasing action must return the runtime to a safe state
+        > before propagating the fault.
+
+        **"Complete" is the whole transaction, not the sink write.** An earlier
+        version caught only :class:`SafetyAuditError`, which left every failure
+        *before* the sink — event-id generation, the clock read, event
+        construction, detail rendering — propagating raw, so the authority
+        survived an action that reported failure. Every one of those steps is
+        inside the transaction, and every one of them rolls back.
+
+        Recording *before* the mutation would be the other way to satisfy the
+        invariant, but it would write down an intention rather than a fact: the
+        event's arm state, approval coordinates and emergency state all describe
+        the world *after* the change. Committing first and rolling back keeps the
+        record truthful and still leaves no unaudited authority.
+
+        ``rollback`` is always a *reducing* action — disarm, revoke, restore an
+        engagement — so a rollback can never itself create authority. That
+        asymmetry is why the reducing operations on this class do not come
+        through here: for them the authority is already gone, and undoing it would
+        be the failure rather than the fix.
+
+        Raises:
+            SafetyAuditError: The audit transaction failed and the authority was
+                rolled back. The original exception is preserved as
+                ``__cause__``; a caller that saw a bare ``RuntimeError`` could not
+                tell an audit fault apart from an ordinary product error.
+            SafetyRollbackError: The audit failed **and** the rollback failed, so
+                authority may remain with no record accounting for it. This is
+                deliberately not a ``SafetyAuditError`` — see that type.
+        """
+        try:
+            record()
+        except Exception as error:
+            SafetyKernel._roll_back_authority(
+                action=action, rollback=rollback, audit_failure=error
+            )
+            if isinstance(error, SafetyAuditError):
+                raise
+            raise SafetyAuditError(
+                "The authority change could not be committed to the safety audit "
+                "trail; it has been rolled back and is not handed back.",
+                details={"action": action, "stage": "transaction"},
+            ) from error
+
+    @staticmethod
+    def _roll_back_authority(
+        *,
+        action: str,
+        rollback: Callable[[], object],
+        audit_failure: Exception,
+    ) -> None:
+        """Undo a partially-committed authority change, or fail loudly trying.
+
+        A rollback that fails is the worst state this kernel can reach: authority
+        was created and no record accounts for it, so the runtime's safety state
+        can no longer be trusted. It must not be reported as an ordinary audit
+        fault, because that would tell the caller the rollback worked when it is
+        unknown.
+
+        The fault carries the two failure *types* and the ``safety.*`` code of
+        each, plus the exception objects themselves for an in-process debugger. It
+        carries no message text from either failure, because an error message is a
+        log line waiting to happen and this one would quote a payload.
+        """
+        try:
+            rollback()
+        except Exception as rollback_error:
+            raise SafetyRollbackError(
+                "An authority change could not be audited and could not be rolled "
+                "back; the runtime safety state can no longer be trusted.",
+                details={
+                    "action": action,
+                    "audit_failure": _fault_summary(audit_failure),
+                    "rollback_failure": _fault_summary(rollback_error),
+                },
+                audit_failure=audit_failure,
+                rollback_failure=rollback_error,
+            ) from rollback_error
+
+
+def _render(payload: dict[str, object]) -> str:
+    """Render kernel-owned coordinates into a bounded audit detail string.
+
+    Only ever called with a ``describe()`` projection of a scope, an approval or
+    an emergency state — values this domain constructed from declared fields.
+    Caller-supplied payloads never reach here, which is what keeps the audit
+    shape's no-free-text-for-secrets property intact (SAFETY-01 §20).
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _fault_summary(error: BaseException) -> str:
+    """Name a fault by type and ``safety.*`` code, never by its message.
+
+    Used by the rollback-failure path, where the two failures have to be
+    distinguishable in a report without quoting either one's text. A safety
+    fault's ``message`` is kernel prose and safe, but this helper also sees
+    foreign exceptions whose message may quote a payload, and one rule for both
+    is the only rule that cannot be forgotten.
+    """
+    code = getattr(error, "code", None)
+    name = type(error).__name__
+    return f"{name}[{code}]" if isinstance(code, str) else name
