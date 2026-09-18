@@ -429,18 +429,30 @@ Earlier CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
   → `main` e183c53 (protected merge, no bypass) · post-merge CI 35361083707 SUCCESS on attempt 1.
   Docs-only: no product code, runtime, safety, schema, API, dependency or CI-semantics change.
 
-Next prerequisite task — AGENT-CONTEXT-PROTECTION (Context Governance Protected Truth Surface)
-  Status: NOT STARTED · REQUIRED BEFORE AGENT-02
-  docs/CONTEXT_INDEX.md and docs/engineering/AGENT_CONTEXT_GOVERNANCE.md are not yet in
-  .agent/config.json protected_paths / public_truth_paths. That change belongs to the AGENT-01
-  enforcement surface and needs its own design, tests and acceptance.
+Prerequisite task — AGENT-CONTEXT-PROTECTION (Context Governance Protected Truth Surface)
+  Status: IMPLEMENTED · AWAITING INDEPENDENT ACCEPTANCE (branch maintenance/agent-02-preparation)
+  docs/CONTEXT_INDEX.md and docs/engineering/AGENT_CONTEXT_GOVERNANCE.md now enter
+  .agent/config.json protected_paths **and** public_truth_paths — two independent invariants over one
+  surface, exact paths only (no `docs/**` widening). Regression coverage:
+  tests/unit/agent_tools/test_context_protection.py (A1–A9) and
+  tests/integration/test_agent_context_protection.py (git-backed transient-touch: a modify-then-restore
+  leaves the net diff clean and is still refused). Not self-accepted — the verdict is external.
 
-Immediate next engineering task — AGENT-02, real 1 Main Agent + up to 4 Sub-Agent pilot
-  Status: NOT STARTED · BLOCKED BY AGENT-CONTEXT-PROTECTION (RELIABILITY-01: CLEARED)
+Preparation task — AGENT-02-PREP-01 (Readiness Audit + Real Pilot Design)
+  Status: PREPARATION COMPLETE · REAL PILOT NOT STARTED · AWAITING INDEPENDENT ACCEPTANCE
+  Readiness audited R01–R50 against real executable behaviour: 48 READY · 2 PARTIAL (R29 the handoff
+  write half is untested and unwired; R49 the stale local `main` ref can refuse a legitimate cleanup) ·
+  0 BLOCKED · 0 NOT IMPLEMENTED · no P0/P1-like blocker. Pilot designed: 1 Main Agent + 2 Sub-Agents,
+  C0 verified with the shipped classifier, ownership-disjoint, both contracts `PLANNED` in
+  .agent/tasks/. See docs/engineering/AGENT_02_READINESS.md · docs/engineering/AGENT_02_PILOT_PLAN.md.
+
+Immediate next engineering task — AGENT-02, real 1 Main Agent + 2 Sub-Agent pilot
+  Status: NOT STARTED · prerequisite AGENT-CONTEXT-PROTECTION implemented (above) · pilot DESIGNED only
   Read first when it starts: docs/engineering/MULTI_AGENT_PROTOCOL.md,
-  docs/ADR/0002-parallel-development-serial-integration.md, docs/engineering/INTEGRATION_POLICY.md.
+  docs/ADR/0002-parallel-development-serial-integration.md, docs/engineering/INTEGRATION_POLICY.md,
+  docs/engineering/AGENT_02_READINESS.md, docs/engineering/AGENT_02_PILOT_PLAN.md.
 
-NOT STARTED: AGENT-CONTEXT-PROTECTION · AGENT-02 · V0.3-12 · CD-01.
+NOT STARTED: AGENT-02 (real pilot) · V0.3-12 · CD-01.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
 ```
 
