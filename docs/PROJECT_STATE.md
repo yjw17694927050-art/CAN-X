@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2 — implementation and self-verification complete, awaiting independent re-acceptance, see §18)
+> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3 — implementation and self-verification complete, awaiting independent final re-acceptance, see §18)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -257,10 +257,12 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
 
 AGENT-01 — Multi-Agent Orchestration Foundation
   Implementation complete · remediation complete (AGENT-01-FIX-1) ·
-  hardening complete (AGENT-01-FIX-2) · self-verification complete
+  hardening complete (AGENT-01-FIX-2) · identity binding complete (AGENT-01-FIX-3) ·
+  self-verification complete
   First independent acceptance: NOT PASS (P0: 2, P1: 3, P2: 1) — preserved in §18.11
   Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved in §18.13
-  Awaiting independent re-acceptance (§18.12, §18.14)
+  Third independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1) — preserved in §18.15
+  Awaiting independent final re-acceptance (§18.12, §18.14, §18.16)
   Adds .agent/ and tools/agent/, docs/engineering/MULTI_AGENT_PROTOCOL.md,
   docs/ADR/0002-parallel-development-serial-integration.md and
   INTEGRATION_POLICY.md §17 — engineering tooling only, no product scope change.
@@ -806,7 +808,10 @@ AGENT-01 — Multi-Agent Orchestration Foundation   (not a numbered phase)
           Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved
           in §18.13
           AGENT-01-FIX-2 implementation complete · self-verification complete
-          Awaiting independent re-acceptance (§18.12, §18.14)
+          Third independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1) — preserved
+          in §18.15
+          AGENT-01-FIX-3 implementation complete · self-verification complete
+          Awaiting independent final re-acceptance (§18.12, §18.14, §18.16)
           Level 4 is NOT marked DONE — only an external verdict may do that
           Adds .agent/ + tools/agent/ + docs/engineering/MULTI_AGENT_PROTOCOL.md
           + docs/ADR/0002-parallel-development-serial-integration.md
@@ -1072,10 +1077,11 @@ Safety Foundation (SAFETY-01)                  DONE · CLOSED
                                                c05debf9, post-merge CI green)
 Level 4  Multi-Agent Orchestration             NOT DONE — AGENT-01 first independent
                                                acceptance NOT PASS (P0:2 P1:3 P2:1),
-                                               second independent acceptance NOT PASS
-                                               (P0:2 P1:2 P2:1); AGENT-01-FIX-2
-                                               implemented and self-verified, awaiting
-                                               independent re-acceptance (§18.11–§18.14)
+                                               second NOT PASS (P0:2 P1:2 P2:1),
+                                               third NOT PASS (P0:0 P1:2 P2:1);
+                                               AGENT-01-FIX-3 implemented and
+                                               self-verified, awaiting independent
+                                               final re-acceptance (§18.11–§18.16)
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
@@ -2443,6 +2449,127 @@ protected PR workflow remain the boundary that matters.
 AGENT-01-FIX-2 implementation complete
 Self-verification complete
 Awaiting independent re-acceptance
+```
+
+Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are
+**not** written by the development agent. `AGENT-02`, `V0.3-12` and `CD-01` have
+**not** started.
+
+### 18.15 Third independent acceptance — NOT PASS
+
+The **third** independent review returned `NOT PASS` with no P0 and is preserved
+exactly as the first two were:
+
+```text
+AGENT-01 Re-Acceptance #3
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-3
+
+P0 = 0
+P1 = 2
+P2 = 1
+```
+
+The architecture is now substantially accepted; the reviewer explicitly asked
+that already-fixed areas not be reopened. The three remaining findings were
+narrow:
+
+```text
+P1-1  the evidence collector resolved a task's worktree by its **declared path**
+      only. If the task's branch was registered in a *different* live worktree,
+      the collector did not look: with the declared path absent it fell back to
+      the branch ref, which reports clean = true and never inspects the live
+      worktree. A dirty wrong-location worktree could therefore be laundered into
+      clean evidence. The contract freezes branch *and* worktree path; Git must
+      agree with both.
+P1-2  integration evidence was not bound to the configured repository.
+      validate_repository() had supported expected_remote since FIX-1, but
+      collect_repository_evidence() called it without the identity, so a wrong
+      owner/repo, a lookalike name or a repository with no origin could still
+      produce ready = true.
+P2    the tools/agent/cli.py module docstring still advertised the old,
+      incomplete check-integration command (no --plan, no --repo).
+```
+
+Previous history is kept unedited: §18.11 (P0: 2, P1: 3, P2: 1) and §18.13
+(P0: 2, P1: 2, P2: 1). The verdict is external; the development agent did not
+write it and does not dispute it.
+
+### 18.16 Remediation — AGENT-01-FIX-3
+
+A narrow evidence-resolution and identity-binding hardening: no redesign of the
+planner, the leases, the capacity accounting, historical ownership or commit
+evidence. No product capability, no Safety change, ruleset unchanged.
+
+```text
+RED, both, against the FIX-2 tree (9f47c9f)
+  branch registered at .worktrees/wrong-location (dirty), contract declares
+    .worktrees/agent-02-a
+    -> source=branch-ref, clean=true, worktree=None      (live worktree ignored)
+  origin = other-owner/other-repo  -> ready=true         (identity unchecked)
+  origin = .../CAN-X-copy.git      -> ready=true
+  origin = <none>                  -> ready=true
+  origin = correct CAN-X           -> ready=true         (control)
+```
+
+What changed:
+
+```text
+tools/agent/evidence.py       resolve_task_worktree() classifies the full state
+                              instead of looking only at the declared path:
+                                A  declared path + branch both match  -> use it
+                                B  declared path holds another branch -> conflict
+                                C  branch registered at another path  -> conflict
+                                D  ambiguous metadata                 -> conflict
+                                E  neither registered                 -> branch-ref
+                              collect_repository_evidence() takes
+                              expected_repository and validates it, and records
+                              RepositoryEvidence.repository_identity
+tools/agent/validation.py     evaluate_integration() passes config.repository to
+                              the collector, so final integration evidence is
+                              repository-bound
+tools/agent/cli.py            the module docstring shows the complete
+                              check-integration command (--plan, --repo)
+```
+
+`agent.worktree_conflict` reports `task_id`, `expected_branch`, `expected_worktree`,
+`actual_worktree`, `actual_branch` and `declared_path`. A mismatch is never
+silently repaired: following the branch to a different worktree would make
+`task.worktree` non-authoritative, and the Main Agent decides whether a new task
+revision is required.
+
+Tests: `tests/integration/test_agent_worktree_evidence.py` grew the Case B/C/D/E
+matrix, a dirty wrong-location case, and one end-to-end trust-chain test that
+walks correct repository + correct branch/path -> wrong repository -> wrong
+worktree path. `tests/integration/test_agent_repository_identity.py` gained the
+integration-level identity gate (wrong / lookalike / unsupported host / no origin
+rejected; HTTPS and SSH accepted). `agent_git_sandbox.make_repository()` now
+stamps the canonical CAN-X origin by default, so fixtures are faithful stand-ins
+rather than repositories the tooling must refuse; the no-origin case is built
+explicitly. `test_evidence_falls_back_to_the_branch_ref_and_says_so` was moved to
+a fixture where the fallback is legitimate (the branch is registered in no
+worktree at all), which is what FIX-3 §10 requires.
+
+Both fixes were rolled back once and the suites re-run: nine tests turn red.
+
+### 18.17 Known limitations after FIX-3
+
+- `build_handoff()` is still a producer convenience and is deliberately **not**
+  identity-bound; the consumer (`evaluate_integration`) is the trust boundary and
+  binds `config.repository` independently.
+- `check-integration` now fails closed on a wrong or missing origin, which means
+  a local sandbox repository must configure the canonical origin to be verified.
+  That is the intended behaviour, but it is a new operational requirement for any
+  local reproduction.
+- The capture/finalization timing flake in
+  `tests/unit/api/test_capture_project_target.py` is carried forward unchanged
+  (FIX-3 §44).
+
+```text
+AGENT-01-FIX-3 implementation complete
+Self-verification complete
+Awaiting independent final re-acceptance
 ```
 
 Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are

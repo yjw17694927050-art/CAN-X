@@ -300,6 +300,16 @@ it onto the new head, let CI re-run, and merge only then. This is
 - The local `check-integration` verdict requires the orchestration plan as well
   as the repository: a context without it fails closed with
   `agent.integration_context_incomplete` rather than skipping the conflict gate.
+- A task's branch **and** worktree path are both contract-frozen and both must
+  match the registered worktree table (FIX-3). If the branch is registered at a
+  different path, or the declared path holds another branch, or the metadata is
+  ambiguous, the verdict is `agent.worktree_conflict`. Falling back to the branch
+  ref is allowed only when neither is registered anywhere — never when a live
+  worktree merely failed to match, because that would ignore its dirty state.
+- Final integration evidence must come from the **configured** repository
+  (`config.repository`), not merely from some valid Git repository (FIX-3). A
+  wrong owner/repo, a lookalike name, an unsupported host or a missing origin is
+  `agent.git_state_error` and the verdict is not ready.
 
 ### 17.3 Who checks what
 

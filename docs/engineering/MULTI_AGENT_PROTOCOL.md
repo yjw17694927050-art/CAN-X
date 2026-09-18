@@ -460,7 +460,9 @@ local IntegrationReadiness  the verdict
 `tools/agent/validation.py:verify_repository_evidence` compares:
 
 ```text
+repository identity     == config.repository           agent.git_state_error
 actual worktree branch  == task.branch                 agent.branch_mismatch
+actual worktree path    == task.worktree               agent.worktree_conflict
 actual HEAD             == handoff.head_sha            agent.handoff_invalid
 handoff.base_sha        == task.base_sha               agent.handoff_invalid
 base is an ancestor of head (git merge-base)           agent.base_not_ancestor
@@ -503,6 +505,39 @@ never against whichever worktree invoked the tool. `--repo` may be the main
 repository root or the task's own worktree; both must find the same registered
 task worktree, and a dirty one must block readiness from either entry point
 (FIX-2 §15-§19).
+
+The contract freezes **both** identities - the branch and the worktree path - and
+Git must agree with both. Every registered worktree is examined and the state is
+classified (AGENT-01-FIX-3 §4-§12):
+
+```text
+A  declared path + branch both match          -> use that worktree
+B  declared path exists, branch differs       -> agent.worktree_conflict
+C  branch registered at a different path      -> agent.worktree_conflict
+D  ambiguous metadata (same path/branch x2)   -> agent.worktree_conflict
+E  neither the path nor the branch registered -> branch-ref fallback
+```
+
+A mismatch is **never silently repaired**. Following the branch to a different
+worktree would make `task.worktree` non-authoritative, and falling back to the
+branch ref would ignore a live worktree that may hold dirty work: with the
+declared path absent and the branch registered elsewhere, the old collector
+reported `source = branch-ref`, `clean = true` without ever inspecting the live
+worktree. The Main Agent decides whether a contract mismatch needs a new task
+revision.
+
+`agent.worktree_conflict` carries `task_id`, `expected_branch`,
+`expected_worktree`, `actual_worktree`, `actual_branch` and `declared_path`.
+
+Repository-bound evidence (AGENT-01-FIX-3 §16-§20): the final integration gate
+collects evidence with `expected_repository = config.repository`, so "some valid
+Git repository" is never enough. A wrong owner/repo, a lookalike name, an
+unsupported host or a missing origin is `agent.git_state_error` and the verdict is
+not ready. `worktree create` already checked identity on the write path; the
+read-only integration path now does too. `RepositoryEvidence.repository_identity`
+records the canonical identity for diagnostics. `build_handoff()` stays a
+producer convenience and is deliberately not identity-bound - the consumer is the
+trust boundary.
 
 `build_handoff()` remains the convenient producer and is explicitly **not** a
 trust boundary: the consumer assumes the JSON may have been edited after
@@ -906,3 +941,68 @@ AGENT-02 / V0.3-12 / CD-01   not started
 
 `Final Acceptance` is **not** written by the development agent; the phase remains
 `awaiting independent re-acceptance`.
+
+---
+
+## 18. Remediation — AGENT-01-FIX-3
+
+The **third** independent acceptance returned `NOT PASS` with **no P0**
+(P1 = 2, P2 = 1) and is recorded, unchanged, in `docs/PROJECT_STATE.md` §18.15.
+The architecture is substantially accepted; FIX-3 is the narrow evidence
+identity-binding remediation before the final re-acceptance.
+
+The invariant it restores:
+
+> A TaskContract declares exactly `branch` + `worktree` + (implicitly)
+> `repository`, and all three must agree with reality. Branch-ref fallback is
+> allowed only when **no** registered task worktree exists - not when the
+> declared path merely failed to match while another live worktree did not.
+
+### 18.1 RED → GREEN (both reproduced against the FIX-2 tree)
+
+```text
+#1  the task branch registered at a wrong worktree path
+    setup   .worktrees/wrong-location registered on the task branch, dirty;
+            the contract declares .worktrees/agent-02-a
+    before  source = branch-ref, clean = true, worktree = None
+            (the live dirty worktree was never inspected)
+    after   agent.worktree_conflict; branch-ref is not used; the final gate
+            refuses and the dirty worktree is never laundered
+
+#2  integration evidence not bound to config.repository
+    before  other-owner/other-repo  -> ready: true
+            .../CAN-X-copy.git      -> ready: true
+            no origin               -> ready: true
+    after   each is agent.git_state_error, ready: false
+            correct CAN-X HTTPS/SSH -> still accepted
+```
+
+Both fixes were rolled back once and the suites re-run: nine tests turn red.
+
+### 18.2 What was added
+
+```text
+tools/agent/evidence.py     resolve_task_worktree() full A/B/C/D/E classification;
+                            collect_repository_evidence(expected_repository=...);
+                            RepositoryEvidence.repository_identity
+tools/agent/validation.py   evaluate_integration() binds config.repository
+tools/agent/cli.py          the docstring's check-integration example is complete
+                            (--plan, --repo) with the fail-closed note
+```
+
+### 18.3 What FIX-3 did not touch
+
+```text
+tools/agent/orchestration.py   unchanged — slots, leases, capacity, replan
+historical ownership           unchanged — history_touched_paths is authoritative
+commit evidence                unchanged — still one-to-one
+required-test gate             unchanged — every required test must be `passed`
+protected-path overlap         unchanged — pattern vs pattern
+worktree cleanup safety        unchanged — no rm -rf, git branch -d, fail-closed
+the ruleset                    unchanged, still active, still bypass_actors: []
+runtime/canx/safety/           untouched; S1–S25 unchanged
+AGENT-02 / V0.3-12 / CD-01     not started
+```
+
+`Final Acceptance` is **not** written by the development agent; the phase remains
+`awaiting independent final re-acceptance`.
