@@ -1,13 +1,29 @@
-# CAN-X — Continuous Integration baseline (Maintenance CI-01).
+# CAN-X — Continuous Integration baseline (Maintenance CI-01), change-aware since CI-03.
 #
-# Three independent quality gates run in parallel, plus one aggregating gate:
+# CI is three independent domain gates plus one aggregating gate:
 #
-#   Runtime / Python      ─┐
-#   Frontend / TypeScript ─┼─→ Quality Gate
-#   Desktop System / Rust ─┘
+#   Change Classification ─┬─→ Runtime / Python      (only if required)
+#                          ├─→ Frontend / TypeScript (only if required)
+#                          ├─→ Desktop System / Rust (only if required)
+#                          └─→ Quality Gate          (ALWAYS runs)
 #
-# Any one of the three failing fails the workflow, and the Quality Gate fails closed if any of
-# them did not report `success`.
+# The required status check remains exactly `Quality Gate`. It runs on every
+# event, on every repository state, and it fails closed: a domain job the
+# classifier marked required must report `success`, an unauthorised skip blocks,
+# and a classifier that did not succeed blocks. An authorised skip is therefore
+# not a missing validation — the classifier is what authorises it, and the
+# classifier is itself a job whose failure the gate observes.
+#
+# Change classification (CI-03) lives in `tools/ci/classify_changes.py` and the
+# gate decision in `tools/ci/evaluate_gate.py`, both standard-library only and
+# unit-tested in `tests/unit/ci/`. The workflow deliberately carries no path
+# expressions of its own: routing is a tested function, not YAML.
+#
+# Fail-closed rules, in the classifier:
+#   unknown path               → FULL CI
+#   diff cannot be established → FULL CI
+#   workflow_dispatch          → FULL CI (the manual escape hatch)
+#   classifier internal error  → FULL CI, reported as a warning
 #
 # Tool and dependency versions are never re-declared here — the repository is the source of truth:
 #   Python dependencies ... pyproject.toml  ([project] / [project.optional-dependencies].dev)
@@ -15,7 +31,7 @@
 #   Rust dependencies ..... apps/desktop/src-tauri/Cargo.lock  (enforced with --locked)
 #
 # Runner: windows-latest. Windows is CAN-X's primary real development and packaging environment,
-# so the first CI baseline is pinned to it. This workflow does NOT verify macOS, Linux or real
+# so the CI baseline is pinned to it. This workflow does NOT verify macOS, Linux or real
 # CAN hardware — those remain NOT VERIFIED in docs/PROJECT_STATE.md.
 #
 # Deliberately out of scope here (later maintenance tasks): release publishing, updater, code
@@ -41,8 +57,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  change-classifier:
+    name: Change Classification
+    runs-on: windows-latest
+    timeout-minutes: 15
+    outputs:
+      runtime_required: ${{ steps.classify.outputs.runtime_required }}
+      frontend_required: ${{ steps.classify.outputs.frontend_required }}
+      rust_required: ${{ steps.classify.outputs.rust_required }}
+      full_required: ${{ steps.classify.outputs.full_required }}
+      classification: ${{ steps.classify.outputs.classification }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          # The compared commits must both be present: a pull request is diffed
+          # from merge-base(base, head) and a push from `before`. An unresolvable
+          # commit is not an error to work around — the classifier escalates to
+          # FULL CI and the change is still fully validated.
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13.15'
+
+      - name: Classify the change
+        id: classify
+        shell: pwsh
+        env:
+          CANX_CI_EVENT: ${{ github.event_name }}
+          CANX_CI_PR_BASE: ${{ github.event.pull_request.base.sha }}
+          CANX_CI_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          CANX_CI_PUSH_BEFORE: ${{ github.event.before }}
+          CANX_CI_PUSH_HEAD: ${{ github.sha }}
+        run: python tools/ci/classify_changes.py --github-output $env:GITHUB_OUTPUT
+
   runtime-python:
     name: Runtime / Python
+    needs: change-classifier
+    if: needs.change-classifier.outputs.runtime_required == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -73,14 +127,17 @@ jobs:
       - name: ruff
         run: python -m ruff check runtime tests tools
 
-      # `tools/agent` is the AGENT-01 orchestration tooling. It is engineering
-      # tooling, not shipped product, but it is still type-checked here so it
-      # cannot rot outside the gate the rest of the repository is held to.
+      # `tools/agent` is the AGENT-01 orchestration tooling and `tools/ci` is the
+      # CI-03 control plane. Neither is shipped product, but both are type-checked
+      # here so they cannot rot outside the gate the rest of the repository is
+      # held to.
       - name: mypy
-        run: python -m mypy runtime tools/agent
+        run: python -m mypy runtime tools/agent tools/ci
 
   frontend-typescript:
     name: Frontend / TypeScript
+    needs: change-classifier
+    if: needs.change-classifier.outputs.frontend_required == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -119,6 +176,8 @@ jobs:
 
   desktop-rust:
     name: Desktop System / Rust
+    needs: change-classifier
+    if: needs.change-classifier.outputs.rust_required == 'true'
     runs-on: windows-latest
     # A cold runner has no Cargo target directory: clippy checks and `cargo test` both build the
     # full Tauri dependency graph from scratch, and the sidecar staging below adds a PyInstaller
@@ -180,25 +239,32 @@ jobs:
 
   quality-gate:
     name: Quality Gate
-    needs: [runtime-python, frontend-typescript, desktop-rust]
+    needs: [change-classifier, runtime-python, frontend-typescript, desktop-rust]
+    # `always()` is load-bearing: the gate must produce a verdict on every run,
+    # including the docs-only case where all three domain jobs are legitimately
+    # skipped, and including the case where the classifier itself failed.
     if: always()
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Require every quality job to have succeeded
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13.15'
+
+      - name: Evaluate the gate
         shell: pwsh
         env:
-          RUNTIME_RESULT: ${{ needs.runtime-python.result }}
-          FRONTEND_RESULT: ${{ needs.frontend-typescript.result }}
-          RUST_RESULT: ${{ needs.desktop-rust.result }}
-        run: |
-          Write-Host "Runtime / Python      : $env:RUNTIME_RESULT"
-          Write-Host "Frontend / TypeScript : $env:FRONTEND_RESULT"
-          Write-Host "Desktop System / Rust : $env:RUST_RESULT"
-          if ($env:RUNTIME_RESULT -ne 'success' -or
-              $env:FRONTEND_RESULT -ne 'success' -or
-              $env:RUST_RESULT -ne 'success') {
-            Write-Host "::error::CI quality gate failed - at least one quality job did not succeed."
-            exit 1
-          }
-          Write-Host "All three quality jobs succeeded."
+          CANX_CI_CLASSIFIER_RESULT: ${{ needs.change-classifier.result }}
+          CANX_CI_CLASSIFICATION: ${{ needs.change-classifier.outputs.classification }}
+          CANX_CI_FULL_REQUIRED: ${{ needs.change-classifier.outputs.full_required }}
+          CANX_CI_RUNTIME_REQUIRED: ${{ needs.change-classifier.outputs.runtime_required }}
+          CANX_CI_FRONTEND_REQUIRED: ${{ needs.change-classifier.outputs.frontend_required }}
+          CANX_CI_RUST_REQUIRED: ${{ needs.change-classifier.outputs.rust_required }}
+          CANX_CI_RUNTIME_RESULT: ${{ needs.runtime-python.result }}
+          CANX_CI_FRONTEND_RESULT: ${{ needs.frontend-typescript.result }}
+          CANX_CI_RUST_RESULT: ${{ needs.desktop-rust.result }}
+        run: python tools/ci/evaluate_gate.py
