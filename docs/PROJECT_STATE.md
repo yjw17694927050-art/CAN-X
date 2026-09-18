@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17)
+> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2 — implementation and self-verification complete, awaiting independent re-acceptance, see §18)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -254,6 +254,17 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
   Adds runtime/canx/safety/ and docs/architecture/SAFETY_ARCHITECTURE.md —
   safety domain, policy, contracts and tests only. It introduces no dangerous
   execution capability. See §17.
+
+AGENT-01 — Multi-Agent Orchestration Foundation
+  Implementation complete · remediation complete (AGENT-01-FIX-1) ·
+  hardening complete (AGENT-01-FIX-2) · self-verification complete
+  First independent acceptance: NOT PASS (P0: 2, P1: 3, P2: 1) — preserved in §18.11
+  Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved in §18.13
+  Awaiting independent re-acceptance (§18.12, §18.14)
+  Adds .agent/ and tools/agent/, docs/engineering/MULTI_AGENT_PROTOCOL.md,
+  docs/ADR/0002-parallel-development-serial-integration.md and
+  INTEGRATION_POLICY.md §17 — engineering tooling only, no product scope change.
+  See §18.
 ```
 
 The `Final Acceptance: PASS / Status: CLOSED` verdicts recorded here are **project-owner /
@@ -789,12 +800,13 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
 
 AGENT-01 — Multi-Agent Orchestration Foundation   (not a numbered phase)
-          Implementation complete
-          Self-verification complete
           First independent acceptance: NOT PASS (P0: 2, P1: 3, P2: 1) — preserved
           in §18.11
           AGENT-01-FIX-1 implementation complete · self-verification complete
-          Awaiting independent re-acceptance (§18.12)
+          Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved
+          in §18.13
+          AGENT-01-FIX-2 implementation complete · self-verification complete
+          Awaiting independent re-acceptance (§18.12, §18.14)
           Level 4 is NOT marked DONE — only an external verdict may do that
           Adds .agent/ + tools/agent/ + docs/engineering/MULTI_AGENT_PROTOCOL.md
           + docs/ADR/0002-parallel-development-serial-integration.md
@@ -1059,10 +1071,11 @@ Safety Foundation (SAFETY-01)                  DONE · CLOSED
                                                acceptance, merged to `main` as
                                                c05debf9, post-merge CI green)
 Level 4  Multi-Agent Orchestration             NOT DONE — AGENT-01 first independent
-                                               acceptance NOT PASS (P0:2 P1:3 P2:1);
-                                               AGENT-01-FIX-1 implemented and
-                                               self-verified, awaiting independent
-                                               re-acceptance (§18.11–§18.12)
+                                               acceptance NOT PASS (P0:2 P1:3 P2:1),
+                                               second independent acceptance NOT PASS
+                                               (P0:2 P1:2 P2:1); AGENT-01-FIX-2
+                                               implemented and self-verified, awaiting
+                                               independent re-acceptance (§18.11–§18.14)
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
@@ -2312,3 +2325,110 @@ development agent.
 
 Level 4 is **not** `DONE`, `Final Acceptance` was **not** written by the
 development agent, and `AGENT-02`, `V0.3-12` and `CD-01` have **not** started.
+
+### 18.13 Second independent acceptance — NOT PASS
+
+The **second** independent review of AGENT-01 did **not** pass either, and its
+verdict is preserved here exactly as the first one was:
+
+```text
+AGENT-01 Re-Acceptance
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-2
+
+P0 = 2
+P1 = 2
+P2 = 1
+```
+
+The first verdict stays unedited above (§18.11) — history is not rewritten. The
+reviewer accepted the architecture in direction and confirmed the FIX-1 findings
+as fixed, then named a narrower set of remaining defects:
+
+```text
+P0-1  the planner's blocking-conflict deferral disappeared after dispatch. It
+      fired only while both tasks were READY, so dispatching the earlier owner
+      (READY -> IN_PROGRESS) released the later task onto the same public-truth
+      surface the deferral existed to serialise.
+P0-2  max_sub_agents capped *new* READY candidates, not the Sub-Agents already
+      running: 3 IN_PROGRESS + 4 READY (max 4) returned 4 new runnable tasks,
+      i.e. 7 effective concurrent agents against a promise of 1 + <= 4.
+P1-1  the evidence collector resolved task.worktree against whatever Git root the
+      caller supplied, so invoking it from the task worktree produced
+      <task-worktree>/.worktrees/<task>, fell back to branch-ref, and could
+      report clean = true while the real worktree held uncommitted work.
+P1-2  ownership used the net tree diff (base vs head). A protected file edited in
+      one commit and restored in a later one left the net diff clean, so the
+      task's own history could touch a protected surface undetected.
+P2    the Main-Agent prompt showed an incomplete check-integration command,
+      omitting --repo and --plan, which the FIX-1 gate requires.
+```
+
+The verdict is external; the development agent did not write it and does not
+dispute it.
+
+### 18.14 Remediation — AGENT-01-FIX-2
+
+A narrow lifecycle-and-evidence hardening: no redesign of the accepted
+architecture, no AGENT-02, no product capability, no Safety change. The ruleset
+is unchanged.
+
+```text
+RED, all six, against the FIX-1 tree (861e9e0)
+  B READY, D READY -> D deferred; B -> IN_PROGRESS -> D runnable       DEFECT
+  3 IN_PROGRESS + 4 READY, max 4 -> runnable len 4 (7 effective)       DEFECT
+  --repo <task worktree> -> source=branch-ref, clean=true (dirty tree) DEFECT
+  modify SPEC.md, restore it before head -> net diff clean, ready=true DEFECT
+  IntegrationContext(include_plan=False) -> ready=true                 DEFECT
+  two commit tokens both prefixing one commit -> ready=true            DEFECT
+```
+
+What changed:
+
+```text
+tools/agent/lifecycle.py      EXECUTION_SLOT_STATUSES / CONFLICT_LEASE_STATUSES /
+                              CONFLICT_REPLAN_STATUSES and their three predicates —
+                              capacity and conflict serialisation stay separate
+                              policies, defined once
+tools/agent/orchestration.py  leases held across status transitions; DONE releases;
+                              FAILED/CANCELLED -> replan_required_by; capacity is
+                              max(0, max_sub_agents - active) with
+                              active + new <= max_sub_agents; the capacity block
+                              reports active / available_slots / selected
+tools/agent/gitcmd.py         history_touched_paths — a per-commit diff-tree union,
+                              both sides of renames/copies, `-m` for merge commits
+tools/agent/evidence.py       net_changed_paths vs history_touched_paths; the task
+                              worktree is resolved against the primary worktree root
+tools/agent/validation.py     ownership and handoff equality use the history set;
+                              an orchestration plan is required for ready; commit
+                              evidence must be a one-to-one bijection; a terminated
+                              conflict owner is exposed as replan_required
+tools/agent/handoff.py        build_handoff derives changed_files from the same
+                              history helper the verifier uses
+tools/agent/worktree.py       primary_worktree()
+.agent/prompts/main-agent.prompt.md   the complete check-integration command, and
+                              the local-gate vs GitHub-Quality-Gate boundary
+```
+
+New tests: `tests/unit/agent_tools/test_orchestration_lifecycle.py`
+(conflict-lease matrix, capacity matrix, slot predicates),
+`tests/unit/agent_tools/test_evidence_hardening.py` (plan-required, one-to-one
+commit evidence, replan visibility),
+`tests/integration/test_agent_worktree_evidence.py` (a real linked worktree, both
+entry points, the dirty-state proof), the transient-edit and rename/delete history
+tests in `tests/integration/test_agent_git_backed_handoff.py`, and the multi-cycle
+serial-integration simulation in
+`tests/integration/test_multi_agent_orchestration_simulation.py`. Every fix was
+rolled back once to confirm its tests turn red — a test that stays green with its
+fix reverted protects nothing.
+
+```text
+AGENT-01-FIX-2 implementation complete
+Self-verification complete
+Awaiting independent re-acceptance
+```
+
+Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are
+**not** written by the development agent. `AGENT-02`, `V0.3-12` and `CD-01` have
+**not** started.

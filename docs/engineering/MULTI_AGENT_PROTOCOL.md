@@ -94,16 +94,27 @@ merge, accept or disable the gate.
 1 Main Agent + up to 4 Sub-Agents
 ```
 
-`.agent/config.json` pins `max_sub_agents: 4`, `AgentConfig.from_dict` refuses
-anything outside `1..4` — and, since FIX-1, `plan()` **enforces** the cap rather
-than merely validating the config: the dispatch wave is cut deterministically
-from the integration order, and the tasks held back only by capacity are reported
-as `capacity_deferred` so the three deferral reasons stay distinguishable:
+`.agent/config.json` pins `max_sub_agents: 4` and `AgentConfig.from_dict` refuses
+anything outside `1..4`. Since FIX-2, `plan()` enforces the cap against the
+Sub-Agents **already running**, not against the number of new candidates:
+
+```text
+active_execution_ids   tasks whose status occupies a Sub-Agent slot
+                       EXECUTION_SLOT_STATUSES == { IN_PROGRESS }
+available_slots        max(0, max_sub_agents - len(active_execution_ids))
+selected_new_dispatch  the first available_slots candidates, in integration order
+invariant              len(active) + len(newly dispatched) <= max_sub_agents
+```
+
+The wave is cut deterministically from the integration order, and four deferral
+reasons stay distinguishable in the machine output
+(`plan().to_dict()` and `TaskPlanEntry.deferral_kind()`):
 
 ```text
 blocked by dependency   the dependency is not DONE
-deferred by conflict    a C2+ conflict with an earlier in-flight task
-deferred by capacity    ready and conflict-free, but past max_sub_agents
+deferred by conflict    an earlier conflicting task still holds the surface
+deferred by capacity    ready and conflict-free, but past the available slots
+requires re-plan        an earlier conflicting owner FAILED / CANCELLED
 ```
 
 "Up to four" is a ceiling, not a target: the Main Agent starts the number of
@@ -161,8 +172,10 @@ DONE           the accepted head reached the integration branch
 `tools/agent/validation.py:evaluate_integration` returns the whole blocker set,
 not just the first, so an integration loop converges instead of ping-ponging.
 It reports `ready` only when it could actually prove every local requirement:
-with no repository or no task set it reports `agent.integration_context_incomplete`
-rather than quietly skipping the check.
+with no repository, no task set **or no orchestration plan** it reports
+`agent.integration_context_incomplete` rather than quietly skipping the check.
+A caller cannot bypass the conflict gate with `include_plan=False` and still
+obtain `ready: true` (FIX-2 §29).
 
 ### 3.2 Local verdict versus platform gate
 
@@ -240,14 +253,36 @@ touches it.
 
 Ownership is decided by **the paths Git says were touched**, not by the list the
 handoff reports. `validate_handoff` ignores the `ownership_compliance` flag a
-handoff reports about itself — a self-assessment is not evidence — and the
-authoritative check runs against `git diff --name-status -M -C <base>..<head>`.
-A touched path that is not covered by `allowed_paths`, or that hits a
-`forbidden_paths` entry, raises `agent.ownership_violation`.
+handoff reports about itself — a self-assessment is not evidence — and, since
+FIX-2, the authoritative set is the task's **history**: the union of every path
+touched by *every* commit in `<base>..<head>`, derived per commit with
+`git diff-tree --root --no-commit-id --name-status -r -m -M -C <commit>`. The
+final net tree diff (`git diff --name-status -M -C base..head`) is collected too
+(`net_changed_paths`), but it is not what ownership is decided on. A touched path
+that is not covered by `allowed_paths`, or that hits a `forbidden_paths` entry,
+raises `agent.ownership_violation`.
 
-This closes a real hole (FIX-1 §35): before it, a Sub-Agent could change
-`SPEC.md`, report only `runtime/canx/foo/a.py`, and the gate would validate the
-reported list against itself and pass.
+This closes two real holes:
+
+- **(FIX-1 §35)** before the gate existed, a Sub-Agent could change `SPEC.md`,
+  report only `runtime/canx/foo/a.py`, and the gate would validate the reported
+  list against itself and pass.
+- **(FIX-2 §21-§25)** before the history set existed, a Sub-Agent could change
+  `SPEC.md` in one commit and restore it byte-for-byte in a later one: the net
+  diff no longer mentioned `SPEC.md`, so a net-diff-only ownership gate passed —
+  while both commits still land on the integration branch under a merge.
+
+```text
+base:  SPEC.md = ORIGINAL
+c1:    SPEC.md = MUTATED            (touches a protected file)
+c2:    SPEC.md = ORIGINAL, + owned work
+head:  net diff = only the owned work        -> net-changed_paths misses SPEC.md
+       history_touched_paths still contains SPEC.md -> agent.ownership_violation
+```
+
+`build_handoff()` derives `changed_files` from the **same** history helper the
+verifier uses, so an honest handoff and the gate agree by construction rather
+than by convention.
 
 ### 4.4 Pattern versus pattern — the `**` hole
 
@@ -426,9 +461,10 @@ actual HEAD             == handoff.head_sha            agent.handoff_invalid
 handoff.base_sha        == task.base_sha               agent.handoff_invalid
 base is an ancestor of head (git merge-base)           agent.base_not_ancestor
 worktree clean                                         agent.git_state_error
-actual touched paths    -> ownership validation        agent.ownership_violation
-handoff.changed_files   == actual touched paths        agent.handoff_evidence_mismatch
-handoff.commits         == actual base..head range     agent.handoff_evidence_mismatch
+actual history paths    -> ownership validation        agent.ownership_violation
+handoff.changed_files   == actual history paths        agent.handoff_evidence_mismatch
+handoff.commits         <=> actual base..head range    agent.handoff_evidence_mismatch
+                        (one-to-one, bijective)
 ```
 
 Three consequences worth stating plainly:
@@ -438,14 +474,31 @@ Three consequences worth stating plainly:
   it. Typing the current `main` into JSON does not make the delivery based on it.
 - **Ancestry is proved, not assumed.** `git merge-base --is-ancestor` decides it;
   two values looking like commit ids proves nothing.
-- **Both sides of a rename or copy count.** Paths come from
-  `git diff --name-status -M -C`, so a protected file renamed into an owned
-  subtree still appears under its old path, and a deleted protected path is still
-  a protected-path modification.
+- **Both sides of a rename or copy count, and so does a reverted edit.** Paths
+  come from the full commit history, so a protected file renamed into an owned
+  subtree still appears under its old path, a deleted protected path is still a
+  protected-path modification, and a transient edit that a later commit reverts
+  is still a touched path.
 
-When the worktree has been cleaned up, evidence falls back to the task *branch
+The commit comparison is **one-to-one** (FIX-2 §30): every reported token must
+resolve to exactly one actual commit — not zero (unknown token), not two
+(ambiguous prefix) — no token may repeat, and the mapping must cover every
+actual commit. Prefix membership plus equal counts is not enough: two tokens that
+both prefix the *same* commit satisfy a membership test while a second real
+commit is never represented.
+
+When no task worktree is registered, evidence falls back to the task *branch
 ref* — still Git, still required to resolve to the claimed head — and the
-fallback is recorded in `evidence.source` rather than hidden.
+fallback is recorded in `evidence.source` rather than hidden. In that case
+`clean` means *"no live task worktree exists to contain uncommitted changes"*,
+**not** "a worktree was inspected and found clean" (FIX-2 §20).
+
+The task worktree itself is located by resolving `task.worktree` against the
+repository's **primary** worktree root (`git worktree list`, main worktree first),
+never against whichever worktree invoked the tool. `--repo` may be the main
+repository root or the task's own worktree; both must find the same registered
+task worktree, and a dirty one must block readiness from either entry point
+(FIX-2 §15-§19).
 
 `build_handoff()` remains the convenient producer and is explicitly **not** a
 trust boundary: the consumer assumes the JSON may have been edited after
@@ -515,10 +568,38 @@ a SAFETY_CRITICAL development task is serialised regardless of overlap
 a task whose ownership touches a safety path is serialised regardless of overlap
 ```
 
-When two ready tasks conflict above the ceiling, exactly one proceeds. The
-deferral rule is deterministic — *the task later in integration order defers to
-the earlier one* — so the verdict is reproducible rather than a judgement call
-made under time pressure.
+When two tasks conflict above the ceiling, the later one waits for the earlier
+one — *the task later in integration order defers to the earlier one* — so the
+verdict is reproducible rather than a judgement call made under time pressure.
+
+Since FIX-2 the wait is a **serialisation lease held across status transitions**,
+not a snapshot of "both happen to be READY". The later task may not become
+runnable while the earlier one's status is in
+`CONFLICT_LEASE_STATUSES = { PLANNED, READY, IN_PROGRESS, HANDOFF_READY, BLOCKED,
+INTEGRATING }`:
+
+```text
+earlier            later     result
+READY              READY     later deferred
+IN_PROGRESS        READY     later deferred   <- dispatching an owner does not release it
+HANDOFF_READY      READY     later deferred   <- handing off does not consume a slot, still a lease
+INTEGRATING        READY     later deferred
+BLOCKED            READY     later deferred
+DONE               READY     later may run   <- only landing releases the surface
+FAILED / CANCELLED READY     later is NOT silently runnable; re-plan required
+```
+
+"Not currently executing" is **not** "the conflict is resolved". A `FAILED` /
+`CANCELLED` owner is deliberately fail-closed: the later task is flagged
+`replan_required_by`, exposed in the plan output as
+`deferral_kind == "replan"` and by `replan_required_ids()`, so the Main Agent
+decides whether the later task becomes the new owner, the contract changes, or a
+new revision is issued. Public-truth ownership is never silently transferred.
+
+Execution capacity and conflict serialisation are **separate predicates**
+(`EXECUTION_SLOT_STATUSES` versus `CONFLICT_LEASE_STATUSES`), so a task can hold
+a lease while consuming no slot — `HANDOFF_READY` and `INTEGRATING` do exactly
+that.
 
 ---
 
@@ -717,3 +798,105 @@ no product capability of any kind
 `simulated multi-task orchestration verified` is the strongest claim this phase
 may make. `four-agent parallel development verified` is not available to it, and
 will not be until AGENT-02 runs against this protocol for real.
+
+---
+
+## 17. Remediation — AGENT-01-FIX-2
+
+The **second** independent acceptance of AGENT-01 returned `NOT PASS`
+(P0 = 2, P1 = 2, P2 = 1) and is recorded, unchanged, in
+`docs/PROJECT_STATE.md` §18.13. FIX-2 is a narrow orchestration-lifecycle and
+evidence-completeness hardening: no redesign of the accepted architecture, no
+AGENT-02, no product capability, no Safety change.
+
+The invariant it restores:
+
+> A planning cycle must reason about work already in flight, not only the tasks
+> that happen to be `READY` at this instant.
+
+### 17.1 The two policies, stated once
+
+```text
+execution slot occupancy   who is currently consuming one of max_sub_agents?
+conflict ownership lease   which earlier task still owns a shared surface?
+```
+
+`tools/agent/lifecycle.py` defines `EXECUTION_SLOT_STATUSES`,
+`CONFLICT_LEASE_STATUSES` and `CONFLICT_REPLAN_STATUSES` in one place, with
+`occupies_sub_agent_slot()`, `holds_conflict_lease()` and
+`requires_conflict_replan()` as the only predicates over them. No other module
+hard-codes a status list.
+
+### 17.2 RED → GREEN (every case reproduced against the tree *before* the fix)
+
+```text
+#1  a C3 waiter escaped the lease when its owner left READY
+    before  B READY, D READY -> D deferred; B -> IN_PROGRESS -> D runnable
+    after   D stays conflict-deferred through IN_PROGRESS / HANDOFF_READY /
+            INTEGRATING; DONE releases it; FAILED / CANCELLED require a re-plan
+
+#2  max_sub_agents counted only new candidates
+    before  3 IN_PROGRESS + 4 READY, max 4 -> 4 runnable, 7 effective agents
+    after   active = 3, available_slots = 1, runnable = 1,
+            active + new <= max_sub_agents always
+
+#3  a task worktree read from the task worktree lost its dirty state
+    before  from the worktree root: source = branch-ref, clean = true (dirty!)
+    after   both entry points: source = worktree, clean = false
+
+#4  a modify/restore of a protected file escaped the net-diff ownership gate
+    before  net diff = the owned work only -> ready = true
+    after   history_touched_paths contains SPEC.md -> agent.ownership_violation
+
+#5  a context without an orchestration plan could skip the conflict gate
+    before  include_plan=False -> ready = true
+    after   agent.integration_context_incomplete, ready = false
+
+#6  duplicate / ambiguous commit evidence passed
+    before  two tokens both prefixing one commit -> ready = true
+    after   one-to-one matching; ambiguous, unknown, duplicate and
+            unrepresented commits are all refused
+```
+
+Each fix was also rolled back and its tests re-run to confirm they turn red — a
+test that stays green with its fix reverted protects nothing.
+
+### 17.3 What was added
+
+```text
+tools/agent/lifecycle.py      EXECUTION_SLOT_STATUSES · CONFLICT_LEASE_STATUSES ·
+                              CONFLICT_REPLAN_STATUSES · holds_conflict_lease ·
+                              occupies_sub_agent_slot · requires_conflict_replan
+tools/agent/orchestration.py  leases held across statuses; capacity counted from
+                              active slots; replan_required_by; capacity block
+                              reports active / available_slots
+tools/agent/gitcmd.py         history_touched_paths (per-commit diff-tree union)
+tools/agent/evidence.py       net_changed_paths vs history_touched_paths;
+                              canonical primary-worktree resolution
+tools/agent/validation.py     ownership + handoff equality on history paths;
+                              orchestration plan required for ready; one-to-one
+                              commit evidence; replan_required in conflict details
+tools/agent/handoff.py        build_handoff derives changed_files from the same
+                              history helper the verifier uses
+tools/agent/worktree.py       primary_worktree()
+```
+
+New tests: `tests/unit/agent_tools/test_orchestration_lifecycle.py`,
+`tests/unit/agent_tools/test_evidence_hardening.py`,
+`tests/integration/test_agent_worktree_evidence.py`, plus the multi-cycle
+lifecycle simulation in
+`tests/integration/test_multi_agent_orchestration_simulation.py`.
+
+### 17.4 What FIX-2 did not touch
+
+```text
+the ruleset            unchanged, still active, still bypass_actors: []
+the required check     unchanged — still exactly "Quality Gate"
+ci.yml                 unchanged
+runtime/canx/safety/   untouched; S1–S25 unchanged
+product surface        none — no UI, endpoint, Tauri command or dependency
+AGENT-02 / V0.3-12 / CD-01   not started
+```
+
+`Final Acceptance` is **not** written by the development agent; the phase remains
+`awaiting independent re-acceptance`.

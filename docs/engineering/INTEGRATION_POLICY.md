@@ -272,19 +272,33 @@ it onto the new head, let CI re-run, and merge only then. This is
 - Every task declares a machine-readable `allowed_paths` surface; anything not
   listed is not editable.
 - Ownership is decided by the **Git change set**, never by the handoff's own
-  `changed_files` list or its `ownership_compliance` flag. A violation is
-  `agent.ownership_violation` and the handoff is rejected — "the change was fine
-  anyway" is not a resolution.
+  `changed_files` list or its `ownership_compliance` flag. Since FIX-2 the
+  authoritative set is the task's **history** — the union of every path touched
+  by every commit in `base..head` — not merely the final net tree diff, so a
+  protected file edited and then restored before the head is still a violation.
+  A violation is `agent.ownership_violation` and the handoff is rejected — "the
+  change was fine anyway" is not a resolution.
 - Protected paths are compared by **pattern overlap**, not string matching, so a
   broad ownership glob (`**`, `**/*.md`, `docs/**`) cannot reach `SPEC.md`,
   `AGENTS.md`, `docs/PROJECT_STATE.md` or `.github/workflows/**` from a Sub-Agent
   task. They are not forbidden; they are **not parallel**.
 - A conflict above C1 between two tasks stops automatic integration
-  (`docs/engineering/MULTI_AGENT_PROTOCOL.md` §8). The Main Agent re-plans.
+  (`docs/engineering/MULTI_AGENT_PROTOCOL.md` §8). Since FIX-2 the wait is a
+  serialisation **lease** held while the earlier task is non-terminal
+  (`READY` / `IN_PROGRESS` / `HANDOFF_READY` / `INTEGRATING` / `BLOCKED`), not a
+  snapshot of "both happen to be READY"; only `DONE` releases it, and a
+  `FAILED` / `CANCELLED` owner requires an explicit re-plan rather than silently
+  handing the surface to the later task.
 - Required tests must all be reported as `passed`; `skipped` and `not_run` are
   honest reports but not integration-passing results.
-- `plan()` enforces `max_sub_agents`; tasks held back only by the cap are
-  reported as capacity-deferred, distinctly from blocked and conflicted.
+- `plan()` enforces `max_sub_agents` against the Sub-Agents **already running**:
+  `available_slots = max(0, max_sub_agents - active)`, and
+  `active + newly dispatched <= max_sub_agents` always holds. Tasks held back
+  only by the cap are reported as capacity-deferred, distinctly from blocked,
+  conflicted and re-plan-required.
+- The local `check-integration` verdict requires the orchestration plan as well
+  as the repository: a context without it fails closed with
+  `agent.integration_context_incomplete` rather than skipping the conflict gate.
 
 ### 17.3 Who checks what
 

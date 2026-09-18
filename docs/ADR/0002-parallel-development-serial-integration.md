@@ -82,6 +82,35 @@ readiness) and reports `github_gate.checked_here = false`; the GitHub Ruleset
 independently requires `Quality Gate`. Merge eligibility needs both. No GitHub
 client was added to the tooling to blur that line.
 
+AGENT-01-FIX-2 extended the same principle from *dispatch time* to *lifecycle
+time*. FIX-1's deferral was a snapshot: it fired only when both tasks in a
+blocking pair happened to be `READY`. That is not the question serial integration
+asks. The question is which task still owns the surface, and the answer must
+survive status transitions:
+
+```text
+B READY, D READY          -> D deferred behind B
+B -> IN_PROGRESS          -> D must STILL be deferred (FIX-1 released it here)
+B -> HANDOFF_READY        -> still deferred; holds no execution slot, still a lease
+B -> INTEGRATING          -> still deferred
+B -> DONE                 -> released; and the base has moved, so D is now stale
+B -> FAILED / CANCELLED   -> NOT silently released; D requires a re-plan
+```
+
+The same reasoning applies to capacity: `max_sub_agents` bounds the *total*
+concurrent Sub-Agents, not "new tasks per planning cycle", so capacity is
+computed as `max(0, max_sub_agents - active)` where `active` counts the tasks
+currently occupying an execution slot. Execution slots and conflict leases are
+deliberately two separate predicates (`tools/agent/lifecycle.py`), because a task
+can hold a lease while consuming no slot — exactly the `HANDOFF_READY` /
+`INTEGRATING` case above.
+
+FIX-2 also aligned ownership with the same "what actually happened" discipline:
+ownership is decided on the union of paths touched by **every commit** in
+`base..head` (`history_touched_paths`), not the final net tree diff. A commit
+that edits a protected file and a later commit that restores it byte-for-byte
+leaves the net diff clean while both commits still land on `main` under a merge.
+
 The rules, in order:
 
 ```text
