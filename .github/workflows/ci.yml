@@ -41,7 +41,10 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # TEMPORARY (evidence probe only, never merged): CI-03's own PR cannot be
+    # docs-only, so the docs-only routing observation is captured on a stacked
+    # pull request against this throwaway branch.
+    branches: [main, ci-03-probe-base]
   push:
     branches: [main]
   workflow_dispatch:
