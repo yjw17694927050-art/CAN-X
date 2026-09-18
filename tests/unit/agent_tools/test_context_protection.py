@@ -111,10 +111,8 @@ def test_a_context_truth_pattern_classifies_at_least_c3(path: str) -> None:
 
 def test_the_pre_existing_public_truth_surface_still_classifies_c3() -> None:
     """Control: the C3 answer above is a real classification, not a constant."""
-    assert (
-        classify_pattern("docs/engineering/MULTI_AGENT_PROTOCOL.md", config=config())
-        is ConflictLevel.C3
-    )
+    level = classify_pattern("docs/engineering/MULTI_AGENT_PROTOCOL.md", config=config())
+    assert level is ConflictLevel.C3
 
 
 # -------------------------------------------- A9: unrelated docs are not promoted
