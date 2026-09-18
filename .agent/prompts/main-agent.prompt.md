@@ -29,7 +29,9 @@ PRD.md / SPEC.md                       (only the sections the work touches)
 
 Load rules and the four context layers are in
 `docs/engineering/AGENT_CONTEXT_GOVERNANCE.md`. Do **not** load `docs/project-state/**`
-history unless the task is an investigation, and do not read `PRD.md` / `SPEC.md` in full.
+history unless the task is an investigation. Do **not** read `PRD.md` / `SPEC.md` in full
+*by default* — read the relevant sections first, and read a whole authority when the task
+scope genuinely spans it.
 
 Do not start from your memory of the repository. Read the canonical documents and
 confirm the current `main` head, the latest `main` CI run and the ruleset state

@@ -85,7 +85,9 @@ docs/CONTEXT_INDEX.md = Router only —— 永远不能覆盖以上四者
 
 关键规则：
 
-- **`PRD.md` / `SPEC.md` 属于 Tier 1，不属于 Tier 0。** 不要每轮全文加载；只读相关章节。
+- **`PRD.md` / `SPEC.md` 属于 Tier 1，不属于 Tier 0。** 默认不要每轮全文加载——先读与 task
+  scope 相关的章节；当任务确实横跨整个 product / technical contract 时，全文读取是允许且
+  必要的。不存在 “never read a full authority” 这种规则。
 - **历史归档（`docs/project-state/`）不是每次任务都必须完整读取的内容。** 完整的历史实现
   日志、RED→GREEN 原始输出、packaging 数字与多轮 FINAL 修复细节都在那里；只在任务确实
   需要某阶段的详细历史或验收证据时才读取对应段落，而不是每次启动都整体加载。

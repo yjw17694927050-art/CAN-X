@@ -148,13 +148,16 @@ Latest CLOSED numbered step:    V0.3-11 — Project Runtime Read Model API Found
 Previous CLOSED numbered step:  V0.3-10 — Read-Only DBC Workspace UI Foundation      PASS · CLOSED
 Current numbered step:          None. No V0.3-12 implementation exists in this tree.
 
-Engineering infrastructure (not numbered product phases) — each independently accepted and CLOSED:
+Closed engineering infrastructure (not numbered product phases) — independently accepted, CLOSED:
   Maintenance CI-01   Continuous Integration Baseline Foundation .............. §14
   Maintenance CI-02   Protected Integration Gate Foundation ................. §15
   SAFETY-01           Safety Architecture & Risk Control Foundation ......... §17  (S1–S25 frozen)
   AGENT-01            Multi-Agent Orchestration Foundation .................. §18
   RELIABILITY-01      Capture / DataSession Finalization Timing ............. §19
-  DOC-GOV-01          Documentation & Agent Context Governance .............. §12 (this task)
+
+Current engineering maintenance task — NOT closed, no acceptance verdict yet:
+  DOC-GOV-01          Documentation & Agent Context Governance .............. §12
+                      Status: AWAITING INDEPENDENT ACCEPTANCE
 ```
 
 Closed-phase ledger — accepted heads, merges and post-merge CI, kept for traceability (full
@@ -389,7 +392,7 @@ policy is `AGENTS.md` §2, with routing in `docs/CONTEXT_INDEX.md` and layer def
 Once a phase is formally accepted: `working phase section → Final Acceptance: PASS → detail archived
 / acceptance report finalized → PROJECT_STATE.md keeps only a concise summary + a reference`. Long
 implementation logs, raw test stdout, RED→GREEN dumps and multi-round FINAL detail for CLOSED phases
-must **not** permanently accumulate here. DOC-GOV-01 enforced this for the SAFETY-01 / AGENT-01 /
+must **not** permanently accumulate here. DOC-GOV-01 applied this to the SAFETY-01 / AGENT-01 /
 RELIABILITY-01 sections that had accumulated; their text moved verbatim into `docs/project-state/`,
 it was not deleted (§13).
 
@@ -416,7 +419,10 @@ Awaiting independent acceptance:
 
 Immediate next engineering task:
   AGENT-02 — real 1 Main Agent + up to 4 Sub-Agent pilot
-  Status: NOT STARTED. Its reliability prerequisite (RELIABILITY-01) is CLEARED.
+  Status: NOT STARTED. Reliability prerequisite (RELIABILITY-01): CLEARED.
+  OPEN prerequisite — AGENT-CONTEXT-PROTECTION: docs/CONTEXT_INDEX.md and
+  docs/engineering/AGENT_CONTEXT_GOVERNANCE.md are not yet in .agent/config.json
+  protected_paths / public_truth_paths. MUST be closed before the AGENT-02 pilot.
   Read first when it starts: docs/engineering/MULTI_AGENT_PROTOCOL.md,
   docs/ADR/0002-parallel-development-serial-integration.md, docs/engineering/INTEGRATION_POLICY.md.
 

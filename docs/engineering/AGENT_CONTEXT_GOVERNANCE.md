@@ -45,8 +45,10 @@ Loaded **by task class**, relevant sections first. This is `PRD.md`, `SPEC.md`, 
 `docs/architecture/**`, `docs/engineering/**` and any domain-specific authority named by the router.
 
 **`PRD.md` and `SPEC.md` are L1, not L0.** They are the product intent and the technical contract,
-and a task must read the parts that bear on it — but "read PRD and SPEC" does not mean "read both in
-full on every task".
+and a task reads the parts that bear on it. "Read PRD and SPEC" does not mean "read both in full on
+every task" — but reading a whole authority **is** allowed, and is necessary, when the task genuinely
+spans it. There is no "never read a full authority" rule; the standard is *sufficient*,
+*authoritative*, *task-relevant*.
 
 ### L2 — Evidence / acceptance context
 
@@ -64,7 +66,8 @@ reconstruction.
 ```text
 1. Load L0 (bootstrap).
 2. Classify the task (see docs/CONTEXT_INDEX.md).
-3. Load that class's L1 authority — the relevant sections, not whole files.
+3. Load that class's L1 authority — the relevant sections first; load a whole authority when the
+   task scope genuinely spans it.
 4. Load L2 evidence only if the task requires evidence.
 5. Load L3 history only if the task requires an investigation.
 ```

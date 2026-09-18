@@ -22,7 +22,8 @@ Then classify the task below and load its additional authority (Tier 1). Load **
 
 **More context is not automatically more correct.** Load what is *sufficient*, *authoritative* and
 *task-relevant* — not everything that is merely related. `PRD.md` and `SPEC.md` are **not** part of
-the mandatory bootstrap; they are task authority.
+the mandatory bootstrap; they are task authority — read the relevant sections, and read the whole
+document when the task scope genuinely spans the whole authority.
 
 ## How to use this section
 

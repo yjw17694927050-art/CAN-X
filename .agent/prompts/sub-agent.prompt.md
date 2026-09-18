@@ -37,7 +37,8 @@ The full contract is on disk. Read it; do not work from this summary.
   ```text
   Tier 0 (bootstrap):  AGENTS.md · docs/PROJECT_STATE.md · docs/CONTEXT_INDEX.md
   Tier 1 (your scope): the authority sections your contract's surface touches
-                       (PRD / SPEC relevant sections · the relevant ADR / engineering doc)
+                       (PRD / SPEC relevant sections · the relevant ADR / engineering doc);
+                       read a whole authority when your contract genuinely spans it
   Tier 2 / Tier 3:     acceptance evidence or history only if your task requires it
   ```
 
