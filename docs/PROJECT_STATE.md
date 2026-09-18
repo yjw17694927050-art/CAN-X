@@ -1917,3 +1917,52 @@ green, in a separate docs-only change.
 Scope of this closeout: documentation only. It adds no product code, no agent
 code and no capability. AGENT-01 has **not** started, V0.3-12 has **not** started,
 and CD-01 has **not** started — each waits on its own explicit task brief.
+
+#### Post-closeout observation — a main CI flake (recorded, not repaired)
+
+The closeout itself (this document's change, merged as `6dd29842`) produced the
+first post-merge `main` CI run that was **not** green on its first attempt:
+
+```text
+run 35296791223   event push   branch main   head 6dd29842
+  attempt 1   FAILURE   Runtime / Python · Quality Gate
+              tests/unit/api/test_capture_project_target.py::
+              test_a_project_capture_reports_the_data_session_it_created
+              AssertionError: DataSessionState.FAILED is not COMPLETED
+              1 failed, 2227 passed, 6 skipped in 272.08s
+  attempt 2   SUCCESS   2228 passed, 6 skipped in 154.79s
+                        ruff All checks passed · mypy Success (80 files)
+```
+
+Recorded rather than smoothed over, and **not repaired here**, because it is not
+a SAFETY-01 regression and this task was not authorised to change it:
+
+```text
+the merge 6dd29842 changed exactly one file vs c05debf9: docs/PROJECT_STATE.md
+the failing test's file was last touched by 025e1ad, a pre-existing main commit
+the same code passed twice: run 35295673078 (main @ c05debf9, 182.87s) and
+  run 35296298635 (closeout head 5cad067) — both green on their first attempt
+20 consecutive local runs of that file: 20 × 7 passed, 0 failures
+```
+
+The test starts a 2 kHz capture, sleeps 0.1 s, stops it, and then requires the
+persisted session to be `COMPLETED`. That is a *timing budget*, and attempt 1 ran
+48% slower than attempt 2 on the same code — the signature of a contended runner.
+It is the same class of CI-only failure §14 already records once: `fc98f8e`
+("size the recorder drain budget for this module's segment churn") sized the same
+kind of budget for `tests/integration/test_project_backed_capture.py`. This is a
+second instance of that class, in a sibling file.
+
+```text
+repair attempted here        NO — no test was skipped, deleted, loosened or edited
+closure impact                NONE on the evidence: SAFETY-01's own post-merge CI
+                              (run 35295673078, head c05debf9) was green on its
+                              first and only attempt, and `main` is green now
+owner / reviewer decision     OPEN — whether to give this budget more headroom is
+                              a separate task, and a latent race in capture
+                              finalization cannot be ruled out from one sample
+```
+
+Flagged rather than fixed, and flagged rather than hidden: a test that fails only
+on a slow runner is exactly the kind of thing that becomes "we do not know why CI
+is red" six months later.
