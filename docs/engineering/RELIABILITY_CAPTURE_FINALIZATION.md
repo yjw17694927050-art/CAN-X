@@ -16,9 +16,15 @@ RELIABILITY-01-FIX-1  the sibling the first remediation did not cover, exposed b
 RELIABILITY-01-FIX-2  the test harness itself: two budgets instead of one,
                       a teardown that owns every gate, no executor thread spent
                       on waiting, and failures that explain themselves
+RELIABILITY-01-CLOSE-FINAL
+                      protected integration, post-merge verification and closure
 ```
 
 Each increment extends the previous one; nothing earlier is reverted.
+
+Status: **Final Acceptance: PASS · Status: CLOSED** — external independent
+acceptance on the accepted head `07a95f675527cb14c742edc93f108f5c1260ef06`
+(P0: 0, P1: 0; the P2 PR-metadata finding was resolved before the merge).
 
 ## Symptom
 
@@ -485,6 +491,59 @@ session <id> is <state>, not COMPLETED
 
 No `sleep`, retry, `xfail`, `skip` or `continue-on-error` was added anywhere, and
 no failure-semantics budget was widened.
+
+## Protected integration and closure
+
+The accepted head was intact when the protected integration ran:
+
+```text
+accepted head              07a95f675527cb14c742edc93f108f5c1260ef06
+PR #10                     OPEN, not draft, head 07a95f675527cb14c742edc93f108f5c1260ef06
+PR base                    main @ 831930ee6a2b728837087c560ff9b4b9af37c61a
+Quality Gate on PR head    SUCCESS (run 35341733910)
+merge method               merge commit — no admin bypass, no force push, ruleset untouched
+merge commit               d22e989910ae896d40f59e718a502993126dd055
+merged at                  2026-09-18T13:14:05Z
+```
+
+The same-SHA stability gate the increment was accepted against:
+
+```text
+35341733910  pull_request       Runtime=success Frontend=success Rust=success Quality Gate=success
+35342314866  workflow_dispatch  Runtime=success Frontend=success Rust=success Quality Gate=success
+35342873157  workflow_dispatch  Runtime=success Frontend=success Rust=success Quality Gate=success
+```
+
+Post-merge `main` CI — the hard gate, and the exact place this whole record
+started, since the original failure was itself a post-merge run:
+
+```text
+run                     35349031072
+event / attempt         push / attempt 1
+main SHA                d22e989910ae896d40f59e718a502993126dd055
+Runtime / Python        success   pytest 2599 passed, 6 skipped in 289.83 s
+                                  ruff  All checks passed
+                                  mypy  Success: no issues found in 95 source files
+Frontend / TypeScript   success   12 test files, 162 tests passed
+Desktop System / Rust   success   31 tests passed (28 + 0 + 3 + 0)
+Quality Gate            success
+```
+
+The six skips are the known packaged-runtime smoke tests (`canx-runtime.exe` not
+staged in that job), unchanged from every earlier run.
+
+### What the closure does and does not establish
+
+```text
+establishes   the project-owned test instability was hardened
+              the accepted SHA met the pre-declared 3x same-SHA stability gate
+              the protected merge produced a green post-merge main CI
+does not      establish that hosted-runner scheduling variance is gone
+              establish that the failure class cannot recur at some lower rate
+```
+
+Residual hosted-runner scheduling variance remains an environment uncertainty,
+not a property this repository controls.
 
 ## Remaining uncertainty
 
