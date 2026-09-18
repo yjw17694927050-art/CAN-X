@@ -173,16 +173,11 @@ def remote_identity(cwd: Path, remote: str = "origin") -> str | None:
 # -- change-set derivation ------------------------------------------------------
 
 
-def diff_name_status(
-    cwd: Path, base: str, head: str
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """``git diff --name-status -M -C base..head`` as ``(status, paths)`` records.
+def _parse_name_status(output: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Parse ``--name-status`` output into ``(status, paths)`` records.
 
-    Rename and copy records carry two paths. Both sides are preserved: a
-    protected file renamed into an owned subtree must still appear under its old
-    path, and a deleted protected path is still a protected-path modification.
+    Rename and copy records carry two paths; both sides are preserved.
     """
-    output = git(["diff", "--name-status", "-M", "-C", f"{base}..{head}"], cwd=cwd).stdout
     records: list[tuple[str, tuple[str, ...]]] = []
     for line in output.splitlines():
         if not line.strip():
@@ -195,12 +190,73 @@ def diff_name_status(
     return tuple(records)
 
 
+def diff_name_status(
+    cwd: Path, base: str, head: str
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """``git diff --name-status -M -C base..head`` as ``(status, paths)`` records.
+
+    Rename and copy records carry two paths. Both sides are preserved: a
+    protected file renamed into an owned subtree must still appear under its old
+    path, and a deleted protected path is still a protected-path modification.
+
+    This is the **net** tree delta: ``base`` tree versus ``head`` tree. It does
+    not, on its own, prove what the branch history ever touched - see
+    :func:`history_touched_paths`.
+    """
+    output = git(["diff", "--name-status", "-M", "-C", f"{base}..{head}"], cwd=cwd).stdout
+    return _parse_name_status(output)
+
+
+def commit_change_records(
+    cwd: Path, commit: str
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Every path one commit touched, both sides of renames/copies included.
+
+    ``--root`` covers a root commit, ``-r`` recurses, and ``-m`` shows a merge
+    commit against each parent so no parent-side change is lost. A temporary edit
+    that a later commit reverts is visible here even though it is invisible in
+    the net diff (AGENT-01-FIX-2 §23).
+    """
+    output = git(
+        [
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            "-m",
+            "-M",
+            "-C",
+            commit,
+        ],
+        cwd=cwd,
+    ).stdout
+    return _parse_name_status(output)
+
+
 def touched_paths(cwd: Path, base: str, head: str) -> tuple[str, ...]:
-    """Every path the range touches, de-duplicated, both sides of R/C included."""
+    """Every path the range touches *in its final tree*, de-duplicated."""
     seen: dict[str, None] = {}
     for _status, paths in diff_name_status(cwd, base, head):
         for path in paths:
             seen.setdefault(path, None)
+    return tuple(seen)
+
+
+def history_touched_paths(cwd: Path, base: str, head: str) -> tuple[str, ...]:
+    """Every path touched by *any* commit in ``base..head``, de-duplicated.
+
+    Ownership must answer "what did this task ever touch?", not merely "what
+    differs in the final tree?". A commit that edits a protected file and a
+    later commit that restores it byte-for-byte leaves the net diff clean while
+    still having modified that file in history - and both commits can later land
+    on the integration branch under a merge (AGENT-01-FIX-2 §21-§23).
+    """
+    seen: dict[str, None] = {}
+    for commit in commit_shas(cwd, base, head):
+        for _status, paths in commit_change_records(cwd, commit):
+            for path in paths:
+                seen.setdefault(path, None)
     return tuple(seen)
 
 

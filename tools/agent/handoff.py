@@ -13,7 +13,13 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from tools.agent.contracts import HandoffContract, TaskContract, TestResult
-from tools.agent.gitcmd import current_branch, git_lines, repository_root, resolve_revision
+from tools.agent.gitcmd import (
+    current_branch,
+    git_lines,
+    history_touched_paths,
+    repository_root,
+    resolve_revision,
+)
 from tools.agent.validation import ownership_violations
 
 HANDOFF_JSON_SUFFIX = ".json"
@@ -38,14 +44,17 @@ def build_handoff(
 
     ``ownership_compliance`` is computed, never accepted as input: the field is a
     derived fact, not a claim the agent gets to make about itself (§20).
+
+    ``changed_files`` means **every path the task history touched** - the union
+    across every commit in ``base..head`` - not merely the final PR net diff. It
+    is derived by the same helper the verifier uses, so an honest handoff and the
+    gate agree by construction (AGENT-01-FIX-2 §22, §26).
     """
     root = repository_root(repo)
     branch = current_branch(root)
     head_sha = resolve_revision(revision, cwd=root)
     base_sha = task.base_sha
-    changed_files = tuple(
-        git_lines(["diff", "--name-only", f"{base_sha}..{head_sha}"], cwd=root)
-    )
+    changed_files = history_touched_paths(root, base_sha, head_sha)
     commits = git_lines(["log", "--oneline", f"{base_sha}..{head_sha}"], cwd=root)
     return HandoffContract(
         task_id=task.task_id,

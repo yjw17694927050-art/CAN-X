@@ -425,7 +425,11 @@ def verify_repository_evidence(
             )
         )
     # Ownership is decided by Git-derived paths, never by handoff.changed_files.
-    offending = ownership_violations(task, evidence.changed_paths)
+    # The authoritative set is the *historical* one: every path any commit in
+    # base..head touched, not only the net tree delta. Otherwise a task could
+    # edit a protected file and restore it in a later commit and escape the gate
+    # while both commits still land on the integration branch (FIX-2 §21-§22).
+    offending = ownership_violations(task, evidence.history_touched_paths)
     if offending:
         blockers.append(
             OwnershipViolationError(
@@ -436,11 +440,11 @@ def verify_repository_evidence(
     reported = tuple(
         sorted(normalize_repo_path(item, field="changed_files") for item in handoff.changed_files)
     )
-    actual = tuple(sorted(evidence.changed_paths))
+    actual = tuple(sorted(evidence.history_touched_paths))
     if reported != actual:
         blockers.append(
             HandoffEvidenceMismatchError(
-                "handoff.changed_files does not match the repository's own change set",
+                "handoff.changed_files does not match every path the task history touched",
                 details={
                     "reported": list(reported),
                     "actual": list(actual),

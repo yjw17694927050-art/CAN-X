@@ -35,7 +35,8 @@ def evidence_for(task: TaskContract, handoff, changed: tuple[str, ...]) -> Repos
         head_sha=handoff.head_sha,
         base_is_ancestor=True,
         clean=True,
-        changed_paths=changed,
+        net_changed_paths=changed,
+        history_touched_paths=changed,
         commits=(FULL_SHA,),
         diff_records=(("M", changed),),
     )

@@ -16,6 +16,7 @@ from tools.agent.config import AgentConfig, load_config
 from tools.agent.contracts import HandoffContract, RiskClass, TaskContract, TestResult
 from tools.agent.errors import AgentToolingError
 from tools.agent.evidence import SOURCE_BRANCH_REF, SOURCE_WORKTREE, collect_repository_evidence
+from tools.agent.handoff import build_handoff
 from tools.agent.lifecycle import TaskStatus
 from tools.agent.validation import (
     IntegrationContext,
@@ -277,11 +278,11 @@ def test_both_sides_of_a_rename_are_in_the_ownership_surface(tmp_path: Path) -> 
     task = task_for(repo, base)
     evidence = collect_repository_evidence(repo.root, task)
 
-    assert "SPEC.md" in evidence.changed_paths
-    assert "runtime/canx/foo/spec-copy.md" in evidence.changed_paths
+    assert "SPEC.md" in evidence.history_touched_paths
+    assert "runtime/canx/foo/spec-copy.md" in evidence.history_touched_paths
     blockers = verify_repository_evidence(
         handoff_for(task, head_sha=head, commits=repo.short_commits(base, head),
-                    changed_files=tuple(evidence.changed_paths)),
+                    changed_files=tuple(evidence.history_touched_paths)),
         task,
         evidence,
     )
@@ -299,13 +300,13 @@ def test_a_deleted_protected_file_is_still_a_violation(tmp_path: Path) -> None:
 
     task = task_for(repo, base)
     evidence = collect_repository_evidence(repo.root, task)
-    assert "SPEC.md" in evidence.changed_paths
+    assert "SPEC.md" in evidence.history_touched_paths
     blockers = verify_repository_evidence(
         handoff_for(
             task,
             head_sha=head,
             commits=repo.short_commits(base, head),
-            changed_files=tuple(evidence.changed_paths),
+            changed_files=tuple(evidence.history_touched_paths),
         ),
         task,
         evidence,
@@ -352,8 +353,8 @@ def test_the_evidence_carries_no_handoff_input(tmp_path: Path) -> None:
     task = task_for(repo, base)
     evidence = collect_repository_evidence(repo.root, task)
     payload = evidence.to_dict()
-    assert payload["changed_paths"] == sorted(payload["changed_paths"]) or set(
-        payload["changed_paths"]
+    assert payload["history_touched_paths"] == sorted(payload["history_touched_paths"]) or set(
+        payload["history_touched_paths"]
     ) == {"runtime/canx/foo/a.py", "SPEC.md"}
     assert "handoff" not in payload
 
@@ -374,3 +375,134 @@ def test_verification_never_raises_on_a_dishonest_handoff(
     blockers = verify_repository_evidence(lying, task, evidence)
     assert blockers, "a dishonest handoff must produce at least one blocker"
     assert all(isinstance(item, error_type) for item in blockers)
+
+
+# ------------------------------- P1-2: ownership is what the history ever touched
+
+
+def _transient_history(
+    tmp_path: Path, *, shape: str
+) -> tuple[SandboxRepository, str, str, tuple[str, ...]]:
+    """A real branch whose ``SPEC.md`` edit is undone before head.
+
+    ``net_changed_paths`` is only the owned delivery; ``SPEC.md`` reappears in
+    ``history_touched_paths`` because a commit in the range really touched it.
+    """
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    repo.branch(TASK_BRANCH)
+    if shape == "modify":
+        repo.write("SPEC.md", "MUTATED\n")
+    elif shape == "rename":
+        repo.rename("SPEC.md", "SPEC.md.bak")
+    elif shape == "delete":
+        (repo.root / "SPEC.md").unlink()
+    else:  # pragma: no cover - guarded by the parametrisation
+        raise AssertionError(shape)
+    repo.commit(f"{shape} SPEC.md")
+    repo.write("SPEC.md", "frozen\n")
+    leftover = repo.root / "SPEC.md.bak"
+    if leftover.exists():
+        leftover.unlink()
+    repo.write("runtime/canx/foo/a.py", "a = 2\n")
+    head = repo.commit("restore SPEC.md and deliver the owned change")
+    return repo, base, head, repo.short_commits(base, head)
+
+
+@pytest.mark.parametrize("shape", ["modify", "rename", "delete"])
+def test_a_transient_protected_edit_escapes_the_net_diff_but_not_ownership(
+    tmp_path: Path, shape: str
+) -> None:
+    """RED -> GREEN: modify/rename/delete SPEC.md, then restore it before head.
+
+    The net tree diff no longer mentions ``SPEC.md``, so a net-diff-only
+    ownership gate passed. Both commits still land on the integration branch
+    under a merge, so ownership must inspect the history (FIX-2 §21-§25). The
+    assertion is on the *evidence* layer, so it does not ride on the handoff's
+    own reported list: even a handoff that reports only the net paths is caught.
+    """
+    repo, base, head, commits = _transient_history(tmp_path, shape=shape)
+    task = task_for(repo, base)
+
+    evidence = collect_repository_evidence(repo.root, task)
+    assert evidence.net_changed_paths == ("runtime/canx/foo/a.py",)
+    assert "SPEC.md" in evidence.history_touched_paths
+
+    net_only = handoff_for(
+        task,
+        head_sha=head,
+        commits=commits,
+        changed_files=tuple(evidence.net_changed_paths),
+    )
+    blockers = verify_repository_evidence(net_only, task, evidence)
+    codes = {blocker.code for blocker in blockers}
+    assert "agent.ownership_violation" in codes, blockers
+    ownership = next(blocker for blocker in blockers if blocker.code == "agent.ownership_violation")
+    assert "SPEC.md" in ownership.details["offending"]
+
+    readiness = evaluate_integration(
+        net_only,
+        task,
+        config(),
+        IntegrationContext.build((task,), config(), base),
+        repository=repo.root,
+    )
+    assert not readiness.ready
+    assert "agent.ownership_violation" in readiness.blockers
+
+
+def test_a_net_diff_only_handoff_is_rejected_as_an_evidence_mismatch(tmp_path: Path) -> None:
+    """A handoff describing only the final tree is not a faithful history report."""
+    repo, base, head, commits = _transient_history(tmp_path, shape="modify")
+    task = task_for(repo, base)
+    net_only = handoff_for(
+        task,
+        head_sha=head,
+        commits=commits,
+        changed_files=("runtime/canx/foo/a.py",),
+    )
+    readiness = evaluate_integration(
+        net_only,
+        task,
+        config(),
+        IntegrationContext.build((task,), config(), base),
+        repository=repo.root,
+    )
+    assert "agent.handoff_evidence_mismatch" in readiness.blockers
+
+
+def test_a_rename_away_and_back_is_recorded_on_both_sides(tmp_path: Path) -> None:
+    repo, base, _head, _commits = _transient_history(tmp_path, shape="rename")
+    task = task_for(repo, base)
+    evidence = collect_repository_evidence(repo.root, task)
+    assert {"SPEC.md", "SPEC.md.bak"} <= set(evidence.history_touched_paths)
+
+
+def test_build_handoff_uses_the_same_touched_path_definition_as_the_gate(
+    tmp_path: Path,
+) -> None:
+    """Producer and consumer must not disagree about ``changed_files`` (§26)."""
+    repo, base, _head, _commits = _transient_history(tmp_path, shape="modify")
+    task = task_for(repo, base, allowed_paths=("runtime/canx/foo/**", "SPEC.md"), owner="main")
+
+    handoff = build_handoff(
+        repo.root,
+        task,
+        agent="main",
+        tests=(TestResult(name="unit", command="python -m pytest -q", result="passed"),),
+        ready_for_integration=True,
+    )
+    evidence = collect_repository_evidence(repo.root, task)
+    assert tuple(sorted(handoff.changed_files)) == tuple(
+        sorted(evidence.history_touched_paths)
+    )
+
+    readiness = evaluate_integration(
+        handoff,
+        task,
+        config(),
+        IntegrationContext.build((task,), config(), base),
+        repository=repo.root,
+    )
+    assert "agent.handoff_evidence_mismatch" not in readiness.blockers
+    assert readiness.ready, readiness.details

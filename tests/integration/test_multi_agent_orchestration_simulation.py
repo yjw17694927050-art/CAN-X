@@ -327,7 +327,8 @@ def _synthetic_evidence(task: TaskContract, handoff: HandoffContract, changed: t
         head_sha=handoff.head_sha,
         base_is_ancestor=True,
         clean=True,
-        changed_paths=changed,
+        net_changed_paths=changed,
+        history_touched_paths=changed,
         commits=(handoff.commits[0].split()[0] + "0" * 33,),
         diff_records=(("M", changed),),
     )
@@ -380,7 +381,7 @@ def test_a_real_git_diff_overrides_a_handoff_that_hides_a_path(delivered_repo) -
     assert "agent.ownership_violation" in readiness.blockers
     assert "agent.handoff_evidence_mismatch" in readiness.blockers
     assert readiness.evidence is not None
-    assert "SPEC.md" in readiness.evidence.changed_paths
+    assert "SPEC.md" in readiness.evidence.history_touched_paths
 
 
 def test_the_same_delivery_without_the_extra_path_is_ready(tmp_path: Path) -> None:
@@ -394,14 +395,14 @@ def test_the_same_delivery_without_the_extra_path_is_ready(tmp_path: Path) -> No
                    status=TaskStatus.HANDOFF_READY)
 
     evidence = collect_repository_evidence(repo.root, task)
-    honest = _handoff(task, head_sha=head, changed_files=tuple(evidence.changed_paths))
+    honest = _handoff(task, head_sha=head, changed_files=tuple(evidence.history_touched_paths))
 
     readiness = evaluate_integration(
         honest, task, _config(), _context((task,), base), repository=repo.root
     )
 
     assert readiness.ready, readiness.details
-    assert evidence.changed_paths == ("runtime/canx/alpha/source.py",)
+    assert evidence.history_touched_paths == ("runtime/canx/alpha/source.py",)
 
 
 def _git_oneline(repo: SandboxRepository, base: str, head: str) -> tuple[str, ...]:

@@ -49,7 +49,8 @@ def _evidence(task: TaskContract, handoff: object, changed: tuple[str, ...]) -> 
         head_sha=handoff.head_sha,  # type: ignore[attr-defined]
         base_is_ancestor=True,
         clean=True,
-        changed_paths=changed,
+        net_changed_paths=changed,
+        history_touched_paths=changed,
         commits=(HEAD_SHA,),
         diff_records=(("M", changed),),
     )

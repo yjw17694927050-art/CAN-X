@@ -29,6 +29,7 @@ from tools.agent.gitcmd import (
     contains,
     diff_name_status,
     git_lines,
+    history_touched_paths,
     resolve_revision,
     touched_paths,
 )
@@ -51,7 +52,12 @@ class RepositoryEvidence:
     head_sha: str
     base_is_ancestor: bool
     clean: bool
-    changed_paths: tuple[str, ...]
+    #: Net tree delta: ``base`` tree versus ``head`` tree. Informational.
+    net_changed_paths: tuple[str, ...]
+    #: Union of every path touched by every commit in ``base..head``. This is the
+    #: authoritative ownership surface: a transient edit that a later commit
+    #: reverts is invisible in the net diff but must still be refused.
+    history_touched_paths: tuple[str, ...]
     commits: tuple[str, ...]
     diff_records: tuple[tuple[str, tuple[str, ...]], ...]
 
@@ -65,7 +71,8 @@ class RepositoryEvidence:
             "head_sha": self.head_sha,
             "base_is_ancestor": self.base_is_ancestor,
             "clean": self.clean,
-            "changed_paths": list(self.changed_paths),
+            "net_changed_paths": list(self.net_changed_paths),
+            "history_touched_paths": list(self.history_touched_paths),
             "commits": list(self.commits),
             "diff_records": [[status, list(paths)] for status, paths in self.diff_records],
         }
@@ -110,7 +117,8 @@ def collect_repository_evidence(repo: Path, task: TaskContract) -> RepositoryEvi
         head_sha=head_sha,
         base_is_ancestor=contains(probe, base_sha, head_sha),
         clean=clean,
-        changed_paths=touched_paths(probe, base_sha, head_sha),
+        net_changed_paths=touched_paths(probe, base_sha, head_sha),
+        history_touched_paths=history_touched_paths(probe, base_sha, head_sha),
         commits=commit_shas(probe, base_sha, head_sha),
         diff_records=records,
     )
