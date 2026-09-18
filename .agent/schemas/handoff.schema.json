@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yjw17694927050-art/CAN-X/.agent/schemas/handoff.schema.json",
+  "title": "CAN-X agent handoff",
+  "description": "What a Sub-Agent reports once its task is implementation-complete. Facts, decisions and evidence only: no private reasoning, no chain-of-thought, and no command that anyone auto-executes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "agent",
+    "branch",
+    "base_sha",
+    "head_sha",
+    "commits",
+    "changed_files",
+    "ownership_compliance",
+    "tests",
+    "dependencies",
+    "ready_for_integration"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "agent": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$"
+    },
+    "branch": { "type": "string", "minLength": 1 },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Must differ from base_sha: a handoff with no commit is not a delivery."
+    },
+    "commits": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Short sha plus subject, one per commit on the task branch."
+    },
+    "changed_files": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Repository-relative paths. Every entry must fall inside the task's allowed_paths; this is re-derived, not taken on trust."
+    },
+    "ownership_compliance": {
+      "type": "boolean",
+      "description": "The agent's own claim. The Main Agent re-derives it from changed_files."
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "command", "result"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Evidence string only. Handoff commands are never executed automatically."
+          },
+          "result": { "enum": ["passed", "failed", "skipped", "not_run"] }
+        }
+      }
+    },
+    "lint": { "type": ["string", "null"] },
+    "typecheck": { "type": ["string", "null"] },
+    "ci": { "type": ["string", "null"] },
+    "dependencies": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "known_issues": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "deferred_items": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "ready_for_integration": {
+      "type": "boolean",
+      "description": "True only when the implementation is complete, the required tests are reported and none failed."
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "max_sub_agents": 4,
+  "default_branch": "main",
+  "repository": "yjw17694927050-art/CAN-X",
+  "branch_prefix": "agent/",
+  "worktrees_dir": ".worktrees",
+  "main_agent_ids": ["main"],
+  "protected_paths": [
+    "AGENTS.md",
+    "PRD.md",
+    "SPEC.md",
+    "docs/PROJECT_STATE.md",
+    "pyproject.toml",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "apps/desktop/src-tauri/Cargo.toml",
+    "apps/desktop/src-tauri/Cargo.lock",
+    ".github/workflows/**",
+    ".agent/config.json",
+    ".agent/schemas/**",
+    "runtime/canx/safety/policy.py"
+  ],
+  "public_truth_paths": [
+    ".agent/schemas/**",
+    "runtime/canx/domain/**",
+    "runtime/canx/api/**",
+    "runtime/canx/safety/**",
+    "runtime/canx/agent/tools.py",
+    "docs/engineering/INTEGRATION_POLICY.md",
+    "docs/engineering/MULTI_AGENT_PROTOCOL.md"
+  ],
+  "safety_paths": [
+    "runtime/canx/safety/**",
+    "docs/architecture/SAFETY_ARCHITECTURE.md"
+  ]
+}

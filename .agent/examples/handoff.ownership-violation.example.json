@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "task_id": "AGENT-02-B",
+  "agent": "sub-b",
+  "branch": "agent/AGENT-02-B-handoff-validator",
+  "base_sha": "81f9c4131513c19d859fceac704d9b74449041f2",
+  "head_sha": "5f3a1c9e4b2d7a6f8e0c1b2a3d4e5f60718293a4",
+  "commits": [
+    "5f3a1c9 fix(agent): re-derive ownership compliance in validate_handoff"
+  ],
+  "changed_files": [
+    "tools/agent/validation.py",
+    "tests/unit/agent_tools/test_validation.py",
+    "SPEC.md"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "unit",
+      "command": "python -m pytest tests/unit/agent_tools -q",
+      "result": "passed"
+    }
+  ],
+  "lint": "All checks passed!",
+  "typecheck": "Success: no issues found",
+  "ci": "Quality Gate: success",
+  "dependencies": [],
+  "known_issues": [],
+  "deferred_items": [],
+  "ready_for_integration": true
+}

@@ -787,6 +787,15 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Final independent acceptance: PASS (P0: 0, P1: 0, P2: 0) — merged to `main`
           (c05debf9) with post-merge `main` CI green — preserved in §17
           Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
+
+AGENT-01 — Multi-Agent Orchestration Foundation   (not a numbered phase)
+          Implementation complete
+          Self-verification complete
+          Awaiting independent acceptance (§18)
+          Level 4 is NOT marked DONE — only an external verdict may do that
+          Adds .agent/ + tools/agent/ + docs/engineering/MULTI_AGENT_PROTOCOL.md
+          + docs/ADR/0002-parallel-development-serial-integration.md
+          + INTEGRATION_POLICY.md §17 + one ci.yml mypy-scope line
 ```
 
 V0.3-11 is CLOSED. It added one read-only Runtime endpoint —
@@ -830,6 +839,16 @@ of vetoing the stop (invariant S25). It adds **no**
 dangerous capability: no TX, no replay send, no
 injection, no diagnostic request, no ECU mutation, no new endpoint and no new UI control. Its own
 verdict is external as well; §17 records what was implemented and what remains unverified.
+
+AGENT-01 is not a numbered product phase either. It is engineering infrastructure: no product
+behaviour, no schema, no API contract, no dependency and no runtime code changes. It adds `.agent/`
+(contracts, schemas, examples, prompt templates), `tools/agent/` (the standard-library-only
+enforcement tooling), `docs/engineering/MULTI_AGENT_PROTOCOL.md`,
+`docs/ADR/0002-parallel-development-serial-integration.md`, a §17 in
+`docs/engineering/INTEGRATION_POLICY.md`, two extending lint/type config lines
+(`pyproject.toml`, `.github/workflows/ci.yml`) and `scripts/agent.cmd`. Its own verdict is external
+too — the development agent did not write `Final Acceptance: PASS` for it, and Level 4 is **not**
+`DONE`. §18 records what was implemented, what was verified and what remains unverified.
 
 ---
 
@@ -1036,7 +1055,9 @@ Safety Foundation (SAFETY-01)                  DONE · CLOSED
                                                (Final Acceptance: PASS — independent
                                                acceptance, merged to `main` as
                                                c05debf9, post-merge CI green)
-Level 4  Multi-Agent Orchestration             NOT STARTED
+Level 4  Multi-Agent Orchestration             NOT DONE — AGENT-01 implemented and
+                                               self-verified, awaiting independent
+                                               acceptance (§18)
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
@@ -1045,9 +1066,12 @@ project owner / independent reviewer's CI-02 result (P0: 0, P1: 0, P2: 2 non-blo
 not a conclusion this document reached on its own. The Safety Foundation row reads `DONE · CLOSED`
 because its own independent acceptance returned PASS *and* the accepted tree then reached `main`
 through the protected workflow with a green post-merge CI run (§17.15) — the row records work that
-was accepted and integrated, it is not a conclusion this document reached on its own. Level 4 and
-Level 5 remain `NOT STARTED`, and this record says what the tree contains, not that anything beyond
-SAFETY-01 has been accepted.
+was accepted and integrated, it is not a conclusion this document reached on its own.
+
+The Level 4 row records something weaker, and deliberately so. AGENT-01's implementation and
+self-verification are complete (§18), but no external verdict on it exists yet, so Level 4 is
+**not** `DONE`, and `Level 5` remains `NOT STARTED`. This record says what the tree contains, not
+that anything beyond SAFETY-01 has been accepted.
 
 ---
 
@@ -1966,3 +1990,217 @@ owner / reviewer decision     OPEN — whether to give this budget more headroom
 Flagged rather than fixed, and flagged rather than hidden: a test that fails only
 on a slow runner is exactly the kind of thing that becomes "we do not know why CI
 is red" six months later.
+
+---
+
+## 18. Multi-Agent Orchestration Foundation (AGENT-01)
+
+AGENT-01 is the foundation that had to exist **before** CAN-X runs more than one
+agent. It is not a numbered product phase, and it adds no product capability.
+
+### 18.1 The question it answers
+
+> How can CAN-X safely parallelise engineering work without losing ownership,
+> contract integrity, test evidence, integration safety, or independent
+> acceptance?
+
+The answer is stated in `docs/engineering/MULTI_AGENT_PROTOCOL.md` and enforced by
+`tools/agent/`: **parallel development, serial protected integration, clear
+machine-checkable ownership, machine-verifiable handoff, and a protected CI gate**.
+
+```text
+no clear ownership             → no parallelism
+no stable contract             → no parallelism
+a high probability of conflict → serial
+shared core truth              → Main Agent only
+```
+
+This is not "how to call four AI agents at once". AGENT-01 spawns no agent, adds
+no provider SDK, and names no model anywhere in its contracts.
+
+### 18.2 What was added
+
+```text
+.agent/
+  README.md                     how to use the contracts
+  config.json                   parallelism cap, path classes, branch prefix
+  schemas/task.schema.json      task interchange contract (JSON Schema 2020-12)
+  schemas/handoff.schema.json   handoff interchange contract
+  examples/                     one valid task · one valid handoff ·
+                                one ownership violation · one four-task plan
+  prompts/                      Main-Agent and Sub-Agent prompt templates
+  handoffs/README.md            where produced handoffs land
+
+tools/
+  agent/                        errors · config · paths · contracts · lifecycle ·
+                                graph · conflicts · validation · gitcmd ·
+                                worktree · handoff · orchestration · cli
+scripts/agent.cmd               the Windows entry point
+
+docs/engineering/MULTI_AGENT_PROTOCOL.md
+docs/ADR/0002-parallel-development-serial-integration.md
+docs/engineering/INTEGRATION_POLICY.md            §17 added
+
+tests/unit/agent_tools/                           6 files, 169 tests
+tests/integration/test_agent_worktree_lifecycle.py   18 tests
+tests/integration/test_multi_agent_orchestration_simulation.py  13 tests
+```
+
+Two existing files changed, and one deliberately not:
+
+```text
+pyproject.toml             pytest pythonpath and mypy_path also resolve tools/agent
+.github/workflows/ci.yml   mypy now type-checks runtime AND tools/agent
+.gitignore                 unchanged — .worktrees/ was already ignored
+```
+
+The `tools/agent/` package is engineering tooling, not product: it is not
+imported by `canx` and is not packaged into the wheel (`pyproject.toml` packages
+only `runtime/canx`). It is standard library only — no new dependency was added.
+
+### 18.3 The required design decision
+
+> How does CAN-X prevent individually-green but jointly-broken parallel PRs?
+
+Answered in `docs/ADR/0002-parallel-development-serial-integration.md`: **no merge
+queue**. Development is parallel; integration is not. The Main Agent merges one PR
+at a time, and every handoff must be based on the current integration head, which
+`tools/agent/validation.py:check_base` enforces as a returned error code
+(`agent.base_stale`) rather than an instruction in a prompt.
+
+The ADR evaluates the three alternatives (enable the ruleset's strict up-to-date
+flag, a long-lived integration branch, a merge queue) and records enabling
+`strict_required_status_checks_policy` as the recommended platform-level backstop
+— to be applied as its own deliberate, verified configuration change, not folded
+into this one. The ruleset is **unchanged** by AGENT-01.
+
+### 18.4 RED → GREEN evidence
+
+Two orchestration contracts were pinned by a test that fails before the gate
+exists and passes after it.
+
+```text
+#1  changed file outside allowed_paths
+    before   a handoff could claim ownership_compliance: true and change SPEC.md
+             while its task owned runtime/canx/foo/**; validate_handoff accepted it
+             RED    4 failed, 153 passed   (tests/unit/agent_tools, 157 collected;
+                    test_validation.py: DID NOT RAISE OwnershipViolationError)
+    after   validate_handoff re-derives compliance from changed_files and raises
+             agent.ownership_violation
+             GREEN  2 failed, 155 passed  (the ownership tests pass; the stale-base
+                    test is still red because that gate is not in yet)
+
+#2  stale base
+    before   check_base validated the shape of the two shas and returned; a handoff
+             built on an obsolete main was integrated as if it were current
+             RED    test_validation.py: DID NOT RAISE BaseStaleError
+    after   check_base refuses any base_sha that is not the current integration head
+             GREEN  157 passed  (tests/unit/agent_tools, at that point)
+```
+
+The two `GREEN` counts differ because the examples/schema suite was added after
+both gates landed; the final count for that directory is 169.
+
+Both gates were then rolled back one final time to confirm the tests are not
+vacuous — with the two checks removed, `tests/unit/agent_tools/test_validation.py`
+returns `4 failed, 44 passed`; restored, it is green. A test that stays green
+with its fix reverted protects nothing.
+
+### 18.5 Simulated orchestration
+
+`tests/integration/test_multi_agent_orchestration_simulation.py` runs the §74
+scenario end to end against the contracts:
+
+```text
+A  independent                                  → RUNNABLE
+B  independent, freezes a public-truth contract → RUNNABLE
+C  depends on A                                 → BLOCKED
+D  races B on that same public-truth path       → DEFERRED, B~D classified C3
+
+A's handoff with an unowned file                → REJECTED (agent.ownership_violation)
+A's clean handoff on the current head           → ACCEPTED
+A integrated                                    → C becomes RUNNABLE
+B integrated                                    → D's deferral is released
+a handoff built before the head moved           → REJECTED (agent.base_stale)
+```
+
+The scenario also verifies the serial-integration rule directly: after A
+integrates, B's handoff on the old base is refused, and the same work rebased onto
+the new head is accepted.
+
+**This is `protocol/tooling verified in simulation`.** It is not
+`four-agent parallel development verified` — no agent was spawned, and no product
+pilot was run. That is AGENT-02.
+
+### 18.6 Verification (local, this tree)
+
+```text
+pytest        2433 passed, 1 skipped in 157.50s   (2434 collected; baseline
+              before AGENT-01 was 2234 collected — the delta is the 200 new tests)
+              the 1 skip is tests/unit/dbc/test_dbc_asset.py:274, "this environment
+              cannot create a directory link" — pre-existing, none added
+ruff          All checks passed!  (runtime tests tools)
+mypy          Success: no issues found in 94 source files  (runtime tools/agent)
+frontend      eslint --max-warnings 0 clean · tsc -b clean · 162 tests passed
+              (12 files) · vite build ok
+rust          cargo fmt --check clean · clippy --all-targets --all-features
+              --locked -D warnings clean · 31 tests passed
+```
+
+Frontend and Rust are unchanged by AGENT-01; they were run as a regression check.
+The packaged-runtime smoke tests skip locally only when no `canx-runtime.exe` is
+staged — on this tree it is staged, so they ran.
+
+### 18.7 What was deliberately NOT added
+
+```text
+no agent runtime, no provider SDK, no model name in any contract
+no message broker, scheduler, database queue, daemon or dashboard
+no FastAPI product endpoint, no Tauri command, no React UI
+no new dependency — tools/agent is standard library only
+no real four-agent pilot
+```
+
+### 18.8 Safety
+
+`runtime/canx/safety/**` is untouched; S1–S25 are unchanged; no dangerous
+capability was added. What AGENT-01 does add is a classification: a task whose
+ownership surface reaches a safety path, or whose `risk_class` is
+`SAFETY_CRITICAL`, is marked `serial_review_required` and may never be integrated
+in parallel with another task. `RiskClass` (development risk) is a different type
+from the Runtime's `canx.safety.risk.RiskLevel` (vehicle-operation risk) and the
+two are never conflated.
+
+### 18.9 Known limitations and NOT VERIFIED
+
+- **Simulation only.** No real multi-agent pilot has run. The protocol has been
+  exercised by tests, not by four concurrent agents against a live repository.
+- **The ruleset's strict up-to-date flag is still `false`.** The parallel-case
+  integration rule is enforced by the protocol and `check_base`, not by the
+  platform. `docs/ADR/0002-*` records this as an open follow-up.
+- **Windows only.** Every number above is from this Windows tree; CI runs on
+  `windows-latest`. macOS and Linux remain `NOT VERIFIED`.
+- **No merge queue.** Deliberate; see §18.3.
+- **`worktree remove` needs a gitignored worktrees directory.** Documented as a
+  precondition, not worked around.
+
+### 18.10 Deferred items
+
+```text
+enabling strict_required_status_checks_policy on ruleset 23600372, with its
+  negative case verified — its own change (ADR 0002, alternative A)
+the reliable handling of the capture/finalization timing flake before AGENT-02
+  (see §17.15, carried forward unchanged and not repaired here)
+the real 1 Main + up to 4 Sub-Agent pilot — AGENT-02
+```
+
+### 18.11 Acceptance
+
+```text
+Implementation complete
+Self-verification complete
+Awaiting independent acceptance
+```
+
+Level 4 is **not** `DONE`, `Final Acceptance` was **not** written by the
+development agent, and `AGENT-02`, `V0.3-12` and `CD-01` have **not** started.

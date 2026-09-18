@@ -115,6 +115,9 @@ fix immediately — and to revert if it cannot be fixed promptly.
 - The ruleset does **not** require the branch to be strictly up to date with
   `main`, so an otherwise-green PR is not force-rebased on every unrelated `main`
   commit. A green `Quality Gate` on the PR head is the bar.
+- That is the rule for a single contributor. Once work is parallel (one Main Agent
+  plus Sub-Agents), the integration precondition is stricter: the PR must be based
+  on the current integration head. See §17.
 - Stale/unwanted PRs and their branches are closed and deleted, not left open.
 
 ## 10. Force push and branch deletion
@@ -220,9 +223,81 @@ integrate" — never "accepted". Acceptance stays external
   Safety Architecture & Risk Control. This policy deliberately introduces nothing
   that would let an agent bypass safety verification; no path-specific safety gate
   is added here.
-- **Multi-agent.** CAN-X will move to one main agent plus up to four sub-agents.
+- **Multi-agent.** CAN-X is moving to one Main Agent plus up to four Sub-Agents.
   This policy already guarantees that any number of parallel agent PRs cannot
-  bypass `main`'s required gate. Task orchestration itself is out of scope here.
+  bypass `main`'s required gate. The orchestration protocol itself is AGENT-01,
+  and it is now in force — see §17 and
+  `docs/engineering/MULTI_AGENT_PROTOCOL.md`.
 - **Delivery.** A later CD phase will build and publish artifacts from a trusted
   `main`. This policy makes `main` trustworthy enough to be that source; it adds
   no build, release, signing or updater capability.
+
+---
+
+## 17. Multi-agent integration (AGENT-01)
+
+AGENT-01 adds the orchestration protocol: one Main Agent coordinating up to four
+Sub-Agents. The protocol is stated in
+`docs/engineering/MULTI_AGENT_PROTOCOL.md`, enforced by `tools/agent/`, and the
+integration decision is recorded in
+`docs/ADR/0002-parallel-development-serial-integration.md`.
+
+**This policy is unchanged as the mechanism.** The ruleset, the required
+`Quality Gate`, the PR-only path, the no-bypass configuration and the
+`Local Verification ≠ GitHub CI ≠ Protected Merge ≠ Independent Acceptance`
+boundary all still hold exactly as §2–§15 state them. AGENT-01 adds obligations
+*on top*, for the parallel case only.
+
+### 17.1 Parallel development, serial integration
+
+```text
+development  may be parallel      up to 4 Sub-Agents, isolated by branch + worktree
+integration  is not parallel      the Main Agent merges one PR at a time
+```
+
+Two PRs that are each green on their own base are not evidence that their
+combination is green. The integration precondition is therefore stricter than
+§9's single-contributor rule:
+
+> **A PR is merged only when it is based on the current integration head and its
+> `Quality Gate` is green on that head.**
+
+If the base moves between the green run and the merge, the PR is stale: update
+it onto the new head, let CI re-run, and merge only then. This is
+`tools/agent/validation.py:check_base`, which refuses a stale handoff with
+`agent.base_stale` — a returned error code, not an instruction in a prompt.
+
+### 17.2 Ownership before merge
+
+- Every task declares a machine-readable `allowed_paths` surface; anything not
+  listed is not editable.
+- A handoff's ownership compliance is **re-derived from `changed_files`**, never
+  taken from the flag the handoff reports about itself. A violation is
+  `agent.ownership_violation` and the handoff is rejected — "the change was fine
+  anyway" is not a resolution.
+- Protected and high-contention paths (`AGENTS.md`, `PRD.md`, `SPEC.md`,
+  `docs/PROJECT_STATE.md`, manifests, lockfiles, `.github/workflows/**`, the
+  AGENT-01 schemas, the central safety policy) are Main-Agent-only. They are not
+  forbidden; they are **not parallel**.
+- A conflict above C1 between two tasks stops automatic integration
+  (`docs/engineering/MULTI_AGENT_PROTOCOL.md` §8). The Main Agent re-plans.
+
+### 17.3 What AGENT-01 did not touch
+
+```text
+the ruleset            unchanged, still active, still bypass_actors: []
+the required check     unchanged — still exactly "Quality Gate"
+ci.yml                 one line: mypy now also covers tools/agent (no weakening)
+tests                  none skipped, deleted or loosened
+runtime/canx/safety/   untouched; S1–S25 unchanged
+```
+
+### 17.4 Recorded gap
+
+`strict_required_status_checks_policy` on ruleset `main-protected-integration`
+(id `23600372`) is still `false`. The AGENT-01 rule above is enforced by the
+protocol and the tooling, not by the platform. The ADR records turning the
+platform flag on as a deliberate follow-up on its own change, together with the
+negative case that must be verified. Until that happens, integration safety in
+the parallel case rests on the Main Agent honouring §17.1 — which is exactly the
+kind of reliance on discipline that `check_base` exists to reduce.

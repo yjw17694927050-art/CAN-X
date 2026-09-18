@@ -73,8 +73,11 @@ jobs:
       - name: ruff
         run: python -m ruff check runtime tests tools
 
+      # `tools/agent` is the AGENT-01 orchestration tooling. It is engineering
+      # tooling, not shipped product, but it is still type-checked here so it
+      # cannot rot outside the gate the rest of the repository is held to.
       - name: mypy
-        run: python -m mypy runtime
+        run: python -m mypy runtime tools/agent
 
   frontend-typescript:
     name: Frontend / TypeScript
