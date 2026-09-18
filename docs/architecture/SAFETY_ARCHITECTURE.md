@@ -1495,8 +1495,11 @@ GREEN  every one refused at construction, and again by the event itself
 `S1–S14` was still the stated invariant range in places, the acceptance history
 did not record the second `NOT PASS`, and the tree's test counts were not the
 tree's test counts. Reconciled in this document, `AGENTS.md` §16, `SPEC.md` §32 and
-`docs/PROJECT_STATE.md` §17 — with the first *and* second independent verdicts kept
-rather than replaced.
+`docs/PROJECT_STATE.md` §17 — and the full acceptance history, with the first *and*
+second independent verdicts kept rather than replaced, is preserved verbatim in
+`docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md` §17 (the
+`docs/PROJECT_STATE.md` §17 entry is the summary; DOC-GOV-01 moved the narrative, it
+did not delete it).
 
 ### What the remediation did not change
 

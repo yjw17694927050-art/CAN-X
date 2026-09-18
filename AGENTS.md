@@ -41,35 +41,57 @@ CAN-Space 已冻结。
 
 ---
 
-# 2. Mandatory First Read
+# 2. Mandatory First Read — Context Tiers
 
-开始任何开发任务前，按顺序阅读：
+开始任何开发任务前，按顺序读取。
+
+## Tier 0 — Bootstrap（每个任务、每次启动，必读）
 
 ```text
-1. AGENTS.md                 执行规则（必读）
-2. PRD.md                    产品目标与范围（必读；读相关章节）
-3. SPEC.md                   技术架构与强制边界（必读；读相关章节）
-4. docs/PROJECT_STATE.md     当前项目状态（必读——高密度 current-state 文件）
+1. AGENTS.md                 执行规则（本文件）
+2. docs/PROJECT_STATE.md     当前项目状态（compact current-state snapshot）
+3. docs/CONTEXT_INDEX.md     Context Router —— 本任务该加载哪些 authority
 ```
 
-`docs/PROJECT_STATE.md` 自 2026-09-17 起是**当前状态**文件，不再是历史日志。
-它回答“CAN-X 现在是什么状态”，是每次 Agent 启动的 mandatory context。
+`docs/PROJECT_STATE.md` 回答“CAN-X 现在是什么状态”，不再是历史日志。
+详细历史在 `docs/project-state/`；分阶段验收证据在 `docs/acceptance/`。
 
-按任务相关性，再读取：
+## Tier 1 — Task Authority（按任务 scope 加载**相关章节**，不要求全文）
 
 ```text
-docs/ADR/*                  涉及对应模块时必须读取
+PRD.md                      产品目标与范围 —— 只读与本任务相关的章节
+SPEC.md                     技术架构与强制边界 —— 只读与本任务相关的章节
+docs/ADR/*                  涉及对应模块时读取
+docs/architecture/*         涉及对应领域时读取
+docs/engineering/*          涉及对应流程时读取
 docs/acceptance/*           需要某阶段验收证据时读取
-docs/REUSE_LEDGER.md        第一次实际复用 legacy code 时创建并读取
-docs/architecture/SAFETY_ARCHITECTURE.md
-                            涉及危险操作时必须读取——见 §16
 docs/project-state/*        需要历史细节时才读取（**不是**每次任务的 mandatory read）
+docs/REUSE_LEDGER.md        第一次实际复用 legacy code 时创建并读取
 ```
 
-关键规则：**历史归档（`docs/project-state/`）不是每次任务都必须完整读取的内容。**
-完整的历史实现日志、RED→GREEN 原始输出、packaging 数字与多轮 FINAL 修复细节已归档到
-`docs/project-state/`（见该目录 `README.md`）；只有在任务确实需要某阶段的详细历史或
-验收证据时才读取对应的归档段落，而不是每次启动都整体加载。
+`docs/CONTEXT_INDEX.md` 给出每类任务的 Mandatory bootstrap + additional authority。
+四层上下文（bootstrap / task / evidence / historical）与加载顺序见
+`docs/engineering/AGENT_CONTEXT_GOVERNANCE.md`。
+
+## Authority 顺序（不因分层而改变）
+
+```text
+PRD.md                = Product Intent
+SPEC.md               = Technical Architecture / Contract
+AGENTS.md             = Execution Rules
+docs/PROJECT_STATE.md = Current State
+docs/CONTEXT_INDEX.md = Router only —— 永远不能覆盖以上四者
+```
+
+关键规则：
+
+- **`PRD.md` / `SPEC.md` 属于 Tier 1，不属于 Tier 0。** 不要每轮全文加载；只读相关章节。
+- **历史归档（`docs/project-state/`）不是每次任务都必须完整读取的内容。** 完整的历史实现
+  日志、RED→GREEN 原始输出、packaging 数字与多轮 FINAL 修复细节都在那里；只在任务确实
+  需要某阶段的详细历史或验收证据时才读取对应段落，而不是每次启动都整体加载。
+- **摘要永远不能替代 authority。** `PROJECT_STATE` §3 的安全摘要是导航，不替代
+  `docs/architecture/SAFETY_ARCHITECTURE.md`；涉及危险操作时仍须读该文件（见 §16）。
+- **更多上下文 ≠ 更正确。** 上下文应 sufficient、authoritative、task-relevant。
 
 ---
 

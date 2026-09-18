@@ -72,8 +72,24 @@ plus the phase-specific reports already in the repository (for example
 Historical phase records may be migrated into this directory later, on demand, when a
 concrete task requires it — not as a speculative bulk rewrite.
 
+## Maintenance-phase narratives
+
+The engineering-infrastructure phases are not numbered product phases and keep their evidence
+elsewhere, not here:
+
+```text
+SAFETY-01 · AGENT-01   docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md §17 / §18
+                       (verbatim review + remediation history) and their own authorities —
+                       docs/architecture/SAFETY_ARCHITECTURE.md §24–§27,
+                       docs/engineering/MULTI_AGENT_PROTOCOL.md §17–§19
+RELIABILITY-01         docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md
+CI-01 · CI-02          .github/workflows/ci.yml and docs/engineering/INTEGRATION_POLICY.md
+```
+
 ## Related
 
 - `docs/PROJECT_STATE.md` — compact current state (mandatory startup read)
+- `docs/CONTEXT_INDEX.md` — which authority a given task class must load
+- `docs/engineering/AGENT_CONTEXT_GOVERNANCE.md` — the four context layers and the load order
 - `docs/project-state/README.md` — the lossless history archive
 - `docs/ADR/` — architecture decision records

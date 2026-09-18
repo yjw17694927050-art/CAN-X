@@ -758,7 +758,9 @@ A green gate means "safe to integrate". It has never meant "accepted", and no
 agent may write `Final Acceptance: PASS` for its own work. The AGENT-01 phase
 was subsequently accepted externally (`PASS`, P0 = P1 = P2 = 0), merged through
 the protected PR workflow, and passed post-merge `main` CI. Its acceptance
-history remains in `docs/PROJECT_STATE.md` §18.11–§18.21; the real AGENT-02
+history remains in
+`docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md` §18.11–§18.21 (the
+`docs/PROJECT_STATE.md` §18 entry is the summary); the real AGENT-02
 pilot has not started.
 
 ---
@@ -873,7 +875,7 @@ real.
 
 The **second** independent acceptance of AGENT-01 returned `NOT PASS`
 (P0 = 2, P1 = 2, P2 = 1) and is recorded, unchanged, in
-`docs/PROJECT_STATE.md` §18.13. FIX-2 is a narrow orchestration-lifecycle and
+`docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md` §18.13. FIX-2 is a narrow orchestration-lifecycle and
 evidence-completeness hardening: no redesign of the accepted architecture, no
 AGENT-02, no product capability, no Safety change.
 
@@ -976,7 +978,8 @@ AGENT-02 / V0.3-12 / CD-01   not started
 ## 18. Remediation — AGENT-01-FIX-3
 
 The **third** independent acceptance returned `NOT PASS` with **no P0**
-(P1 = 2, P2 = 1) and is recorded, unchanged, in `docs/PROJECT_STATE.md` §18.15.
+(P1 = 2, P2 = 1) and is recorded, unchanged, in
+`docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md` §18.15.
 The architecture is substantially accepted; FIX-3 is the narrow evidence
 identity-binding remediation before the final re-acceptance.
 
