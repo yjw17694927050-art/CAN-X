@@ -2,8 +2,10 @@
 
 > **Document**: `docs/engineering/CI_TIERED_QUALITY_GATE.md`
 > **Scope**: How CI decides which validation jobs a change requires.
-> **Status**: AWAITING INDEPENDENT RE-ACCEPTANCE (CI-03-FIX-1 — cross-domain
-> dependency and fail-closed hardening).
+> **Status**: Final Acceptance: PASS · Status: CLOSED (external / independent
+> reviewer). Accepted head `6edac0982c78a6e2cc1c17d63f4937269db552fd`, PR #16,
+> merge `11d362efeb78d369b0ab5a5dbb6f2350186cc0a9`; post-merge FULL main CI run
+> `35370751537` attempt 1 (`classification: full`, all jobs SUCCESS).
 > **Related**: `docs/engineering/INTEGRATION_POLICY.md` (the protected-integration
 > policy this sits under), `.github/workflows/ci.yml` (the workflow),
 > `tools/ci/classify_changes.py` (the classifier), `tools/ci/evaluate_gate.py`
