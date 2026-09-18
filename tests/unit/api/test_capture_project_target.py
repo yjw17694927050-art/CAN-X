@@ -7,6 +7,7 @@ make the runtime silently pick one of two recording targets.
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 from canx.api.app import create_app
@@ -28,6 +29,33 @@ CLEANUP_TIMEOUT_SECONDS = 6.0
 
 def project(tmp_path: Path) -> ProjectHandle:
     return ProjectService().create(tmp_path / "vehicle.canx", display_name="Vehicle A")
+
+
+def completion_diagnostics(service: RuntimeService, stored: Any) -> str:
+    """Why a session is not ``COMPLETED``, in the runtime's own words.
+
+    A bare ``FAILED != COMPLETED`` in a CI log says nothing about which stage
+    consumed the budget, so the success assertion below reports the durable
+    state, the runtime's capture state, the failure code and context behind it,
+    and whether a finalization is still outstanding.
+    """
+    failure = service.failure
+    code = failure.code if failure is not None else None
+    message = failure.message if failure is not None else None
+    context = dict(failure.context) if failure is not None else None
+    return (
+        f"session {stored.session_id} is {stored.state}, not COMPLETED "
+        f"[capture_state={service.capture_state} failure={code} "
+        f"message={message!r} context={context} "
+        f"finalization_pending={service.finalization_pending}]"
+    )
+
+
+def assert_completed(service: RuntimeService, stored: Any) -> None:
+    """Assert a session reached ``COMPLETED``, or say exactly why it did not."""
+    if stored.state is DataSessionState.COMPLETED:
+        return
+    raise AssertionError(completion_diagnostics(service, stored))
 
 
 async def test_a_project_capture_reports_the_data_session_it_created(tmp_path: Path) -> None:
@@ -59,7 +87,7 @@ async def test_a_project_capture_reports_the_data_session_it_created(tmp_path: P
         session_id = body["data_session_id"]
         assert session_id is not None
         stored = DataSessionService(handle.root).get_session(session_id)
-        assert stored.state is DataSessionState.COMPLETED
+        assert_completed(service, stored)
         assert stored.stream_id == body["stream_id"]
         assert stored.frame_count > 0
         assert stored.segment_count > 0

@@ -8,6 +8,7 @@ degrades capture without stopping it or claiming a completed recording.
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 from canx.data.model import DataSessionState
@@ -21,9 +22,56 @@ from canx.runtime.service import CaptureSessionState, RuntimeService
 
 CAPTURE_CONFIG = VirtualAdapterConfig(rate_hz=2_000, seed=3)
 
+#: Cleanup budget for the pathological segment thresholds below.
+#:
+#: ``RuntimeService.recorder_cleanup_timeout_seconds`` defaults to 1 s - a drain
+#: budget sized for realistic segment sizes. A 16-frame segment threshold makes
+#: these captures deliberately pathological, and a 2 kHz / 0.1 s capture then
+#: produces ~12 segments and ~190 frames at stop. Measured on this host the
+#: stop-path drain for that workload is 0.10 s median but 0.75 s at worst with no
+#: contention, and 0.91 s median under eight overlapping captures - barely 1.1x
+#: headroom against the production default, which a slower or more contended CI
+#: runner crosses. The recorder then fails the session closed with
+#: ``recorder.cleanup_timeout``, which is exactly what ADR 0001 requires: under
+#: pressure it refuses to claim COMPLETED rather than silently dropping frames.
+#:
+#: The success-path tests below therefore state the budget their own workload
+#: needs, instead of inheriting a production default that assumes normal segment
+#: sizes. No assertion is relaxed and no workload is changed. The 64-frame tests
+#: need no override: the same probe measures their drain at <= 0.07 s, some 15x
+#: inside the default.
+CLEANUP_TIMEOUT_SECONDS = 6.0
+
 
 def project(tmp_path: Path, *, name: str = "vehicle.canx") -> ProjectHandle:
     return ProjectService().create(tmp_path / name, display_name="Vehicle A")
+
+
+def completion_diagnostics(service: RuntimeService, stored: Any) -> str:
+    """Why a session is not ``COMPLETED``, in the runtime's own words.
+
+    A bare ``FAILED != COMPLETED`` in a CI log says nothing about which stage
+    consumed the budget, so a success assertion reports the durable state, the
+    runtime's capture state, the failure code and context behind it, and whether
+    a finalization is still outstanding.
+    """
+    failure = service.failure
+    code = failure.code if failure is not None else None
+    message = failure.message if failure is not None else None
+    context = dict(failure.context) if failure is not None else None
+    return (
+        f"session {stored.session_id} is {stored.state}, not COMPLETED "
+        f"[capture_state={service.capture_state} failure={code} "
+        f"message={message!r} context={context} "
+        f"finalization_pending={service.finalization_pending}]"
+    )
+
+
+def assert_completed(service: RuntimeService, stored: Any) -> None:
+    """Assert a session reached ``COMPLETED``, or say exactly why it did not."""
+    if stored.state is DataSessionState.COMPLETED:
+        return
+    raise AssertionError(completion_diagnostics(service, stored))
 
 
 def sessions(root: Path) -> tuple:
@@ -38,7 +86,10 @@ async def test_a_project_capture_creates_one_data_session_bound_to_the_stream(
     tmp_path: Path,
 ) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
 
         stream_id = await service.start_capture(
             CAPTURE_CONFIG, batch_size=10, project_path=handle.root
@@ -49,7 +100,7 @@ async def test_a_project_capture_creates_one_data_session_bound_to_the_stream(
 
         assert session_id is not None
         stored = DataSessionService(handle.root).get_session(session_id)
-        assert stored.state is DataSessionState.COMPLETED
+        assert_completed(service, stored)
         assert stored.stream_id == stream_id
         assert stored.project_id == handle.project_id
         assert stored.frame_count > 0
@@ -81,7 +132,7 @@ async def test_a_project_capture_does_not_depend_on_a_stream_client(tmp_path: Pa
         metrics = service.metrics_snapshot()
         assert session_id is not None
         stored = DataSessionService(handle.root).get_session(session_id)
-        assert stored.state is DataSessionState.COMPLETED
+        assert_completed(service, stored)
         assert stored.frame_count == metrics.captured_frames == metrics.recorded_frames
         assert metrics.dropped_frames == 0
         assert metrics.sequence_gaps == 0
@@ -166,7 +217,10 @@ async def test_a_startup_failure_after_the_session_was_created_leaves_it_failed(
             return None
 
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         monkeypatch.setattr(service_module, "VirtualAdapter", BrokenAdapter)
 
         with pytest.raises(OSError):
@@ -192,15 +246,20 @@ async def test_a_startup_failure_after_the_session_was_created_leaves_it_failed(
         await service.start_capture(CAPTURE_CONFIG, batch_size=10, project_path=handle.root)
         assert service.capture_state is CaptureSessionState.RUNNING
         await service.stop_capture()
-        assert [session.state for session in sessions(handle.root)] == [
-            DataSessionState.FAILED,
-            DataSessionState.COMPLETED,
-        ]
+        recovered = sessions(handle.root)
+        expected_states = [DataSessionState.FAILED, DataSessionState.COMPLETED]
+        assert [session.state for session in recovered] == expected_states, (
+            "the recovery capture did not complete: "
+            f"{completion_diagnostics(service, recovered[-1])}"
+        )
 
 
 async def test_repeated_project_captures_create_independent_sessions(tmp_path: Path) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         session_ids: list[str | None] = []
         for _ in range(2):
             await service.start_capture(
@@ -214,12 +273,16 @@ async def test_repeated_project_captures_create_independent_sessions(tmp_path: P
         assert session_ids[0] != session_ids[1]
         recorded = sessions(handle.root)
         assert {session.session_id for session in recorded} == set(session_ids)
-        assert all(session.state is DataSessionState.COMPLETED for session in recorded)
+        for session in recorded:
+            assert_completed(service, session)
 
 
 async def test_stopping_a_project_capture_twice_is_safe(tmp_path: Path) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         await service.start_capture(CAPTURE_CONFIG, batch_size=10, project_path=handle.root)
         session_id = service.data_session_id
         await asyncio.sleep(0.05)
@@ -229,7 +292,7 @@ async def test_stopping_a_project_capture_twice_is_safe(tmp_path: Path) -> None:
 
         assert session_id is not None
         stored = DataSessionService(handle.root).get_session(session_id)
-        assert stored.state is DataSessionState.COMPLETED
+        assert_completed(service, stored)
         assert service.has_session is False
 
 
