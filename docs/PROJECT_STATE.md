@@ -2382,7 +2382,14 @@ RED, all six, against the FIX-1 tree (861e9e0)
   modify SPEC.md, restore it before head -> net diff clean, ready=true DEFECT
   IntegrationContext(include_plan=False) -> ready=true                 DEFECT
   two commit tokens both prefixing one commit -> ready=true            DEFECT
+  over-dispatched: 5 IN_PROGRESS, max 4 -> sum 5 > 4 with no signal    DEFECT
+  no registered worktree, leftover dirty dir at the declared path
+    -> source=branch-ref, clean=true                                   DEFECT
 ```
+
+(The last two were found by an adversarial self-review of the finished change
+set, reproduced against the tree, and fixed here — the FIX-2 pass is not only the
+reviewer's list.)
 
 What changed:
 
@@ -2393,9 +2400,10 @@ tools/agent/lifecycle.py      EXECUTION_SLOT_STATUSES / CONFLICT_LEASE_STATUSES 
                               policies, defined once
 tools/agent/orchestration.py  leases held across status transitions; DONE releases;
                               FAILED/CANCELLED -> replan_required_by; capacity is
-                              max(0, max_sub_agents - active) with
-                              active + new <= max_sub_agents; the capacity block
-                              reports active / available_slots / selected
+                              max(0, max_sub_agents - active) and the planner adds
+                              at most the free slots; the capacity block reports
+                              active / active_over_capacity / available_slots /
+                              selected
 tools/agent/gitcmd.py         history_touched_paths — a per-commit diff-tree union,
                               both sides of renames/copies, `-m` for merge commits
 tools/agent/evidence.py       net_changed_paths vs history_touched_paths; the task
@@ -2422,6 +2430,14 @@ serial-integration simulation in
 `tests/integration/test_multi_agent_orchestration_simulation.py`. Every fix was
 rolled back once to confirm its tests turn red — a test that stays green with its
 fix reverted protects nothing.
+
+One thing FIX-2 deliberately did **not** change, recorded so a later reviewer
+does not have to rediscover it: `check-integration` does not pass
+`expected_remote` to `validate_repository`, so the local *read-only* gate does not
+verify the repository's origin identity. The identity check lives on the write
+path (`worktree create`). Wiring it into `check-integration` would fail every
+remote-less test fixture and is not part of FIX-2; the platform gate and the
+protected PR workflow remain the boundary that matters.
 
 ```text
 AGENT-01-FIX-2 implementation complete
