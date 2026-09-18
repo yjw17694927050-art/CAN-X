@@ -756,8 +756,10 @@ Local Verification   ≠   GitHub CI   ≠   Protected Merge   ≠   Independent
 
 A green gate means "safe to integrate". It has never meant "accepted", and no
 agent may write `Final Acceptance: PASS` for its own work. The AGENT-01 phase
-ends at `awaiting independent acceptance`; Level 4 stays `NOT STARTED` until an
-external verdict says otherwise.
+was subsequently accepted externally (`PASS`, P0 = P1 = P2 = 0), merged through
+the protected PR workflow, and passed post-merge `main` CI. Its acceptance
+history remains in `docs/PROJECT_STATE.md` §18.11–§18.21; the real AGENT-02
+pilot has not started.
 
 ---
 
@@ -860,9 +862,10 @@ no real four-agent product pilot — that is AGENT-02
 no product capability of any kind
 ```
 
-`simulated multi-task orchestration verified` is the strongest claim this phase
-may make. `four-agent parallel development verified` is not available to it, and
-will not be until AGENT-02 runs against this protocol for real.
+`simulated multi-task orchestration verified` is the strongest claim the
+AGENT-01 foundation may make. `four-agent parallel development verified` is not
+available to it, and will not be until AGENT-02 runs against this protocol for
+real.
 
 ---
 
@@ -1032,3 +1035,16 @@ AGENT-02 / V0.3-12 / CD-01     not started
 
 `Final Acceptance` is **not** written by the development agent; the phase remains
 `awaiting independent final re-acceptance`.
+
+---
+
+## 19. Closeout — external acceptance and protected integration
+
+AGENT-01-FIX-4 was independently accepted externally on
+`2eab62bfc53867f44996dafc08c32b84fabea7fd` with `P0 = 0`, `P1 = 0`, `P2 = 0`.
+The protected integration then merged PR #7 into `main` as merge commit
+`951e20272211d2fd3934f4c67063985d64229d7a`. Post-merge `main` CI run
+`35315019912` succeeded on its first attempt; the six skips were the known
+packaged-runtime smoke tests. AGENT-01 is therefore `Final Acceptance: PASS`,
+`Status: CLOSED` in the external record, while AGENT-02, V0.3-12 and CD-01 remain
+not started.

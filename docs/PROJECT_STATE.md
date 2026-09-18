@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 0), remediated by AGENT-01-FIX-4 — implementation and self-verification complete, awaiting independent re-acceptance, see §18)
+> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 0), remediated by AGENT-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0) on accepted head `2eab62bfc53867f44996dafc08c32b84fabea7fd`, merged to `main` as `951e20272211d2fd3934f4c67063985d64229d7a` through protected PR #7, with post-merge `main` CI run `35315019912` green — Final Acceptance: PASS, Status: CLOSED, see §18)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -264,7 +264,12 @@ AGENT-01 — Multi-Agent Orchestration Foundation
   Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved in §18.13
   Third independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1) — preserved in §18.15
   Fourth independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 0) — preserved in §18.18
-  Awaiting independent re-acceptance (§18.12, §18.14, §18.16, §18.19)
+  Final independent acceptance: PASS (P0: 0, P1: 0, P2: 0) — external
+  independent acceptance on accepted head `2eab62bfc53867f44996dafc08c32b84fabea7fd`
+  Protected merge: PR #7 merged to `main` as `951e20272211d2fd3934f4c67063985d64229d7a`
+  Post-merge `main` CI: run `35315019912` SUCCESS — `2598 passed, 6 skipped` in
+  Runtime / Python; Frontend / TypeScript, Desktop System / Rust and Quality Gate green
+  Final Acceptance: PASS · Status: CLOSED
   Adds .agent/ and tools/agent/, docs/engineering/MULTI_AGENT_PROTOCOL.md,
   docs/ADR/0002-parallel-development-serial-integration.md and
   INTEGRATION_POLICY.md §17 — engineering tooling only, no product scope change.
@@ -813,8 +818,16 @@ AGENT-01 — Multi-Agent Orchestration Foundation   (not a numbered phase)
           Third independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1) — preserved
           in §18.15
           AGENT-01-FIX-3 implementation complete · self-verification complete
-          Awaiting independent final re-acceptance (§18.12, §18.14, §18.16)
-          Level 4 is NOT marked DONE — only an external verdict may do that
+          Fourth independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 0) — preserved
+          in §18.18
+          AGENT-01-FIX-4 implementation complete · self-verification complete
+          Final independent acceptance: PASS (P0: 0, P1: 0, P2: 0) — external
+          independent acceptance on accepted head `2eab62bfc53867f44996dafc08c32b84fabea7fd`
+          Protected merge: PR #7 merged to `main` as
+          `951e20272211d2fd3934f4c67063985d64229d7a`
+          Post-merge `main` CI: run `35315019912` SUCCESS
+          Final Acceptance: PASS · Status: CLOSED
+          AGENT-02, V0.3-12 and CD-01 remain NOT STARTED
           Adds .agent/ + tools/agent/ + docs/engineering/MULTI_AGENT_PROTOCOL.md
           + docs/ADR/0002-parallel-development-serial-integration.md
           + INTEGRATION_POLICY.md §17 + one ci.yml mypy-scope line
@@ -869,8 +882,10 @@ enforcement tooling), `docs/engineering/MULTI_AGENT_PROTOCOL.md`,
 `docs/ADR/0002-parallel-development-serial-integration.md`, a §17 in
 `docs/engineering/INTEGRATION_POLICY.md`, two extending lint/type config lines
 (`pyproject.toml`, `.github/workflows/ci.yml`) and `scripts/agent.cmd`. Its own verdict is external
-too — the development agent did not write `Final Acceptance: PASS` for it, and Level 4 is **not**
-`DONE`. §18 records what was implemented, what was verified and what remains unverified.
+too — the development agent did not write `Final Acceptance: PASS` for it. AGENT-01 is now
+externally accepted and closed; the real AGENT-02 1 Main + 4 Sub-Agent pilot remains unstarted,
+so Level 4 is not considered fully validated. §18 records what was implemented, what was verified
+and what remains unverified.
 
 ---
 
@@ -1077,13 +1092,12 @@ Safety Foundation (SAFETY-01)                  DONE · CLOSED
                                                (Final Acceptance: PASS — independent
                                                acceptance, merged to `main` as
                                                c05debf9, post-merge CI green)
-Level 4  Multi-Agent Orchestration             NOT DONE — AGENT-01 first independent
-                                               acceptance NOT PASS (P0:2 P1:3 P2:1),
-                                               second NOT PASS (P0:2 P1:2 P2:1),
-                                               third NOT PASS (P0:0 P1:2 P2:1);
-                                               AGENT-01-FIX-3 implemented and
-                                               self-verified, awaiting independent
-                                               final re-acceptance (§18.11–§18.16)
+Level 4  Multi-Agent Orchestration             FOUNDATION CLOSED — AGENT-01 external
+                                               Final Acceptance: PASS (P0: 0, P1: 0,
+                                               P2: 0), accepted head 2eab62b, merged
+                                               to `main` as 951e202, post-merge CI
+                                               run 35315019912 green; real AGENT-02
+                                               1 Main + 4 Sub-Agent pilot NOT STARTED
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
@@ -1094,10 +1108,10 @@ because its own independent acceptance returned PASS *and* the accepted tree the
 through the protected workflow with a green post-merge CI run (§17.15) — the row records work that
 was accepted and integrated, it is not a conclusion this document reached on its own.
 
-The Level 4 row records something weaker, and deliberately so. AGENT-01's implementation and
-self-verification are complete (§18), but no external verdict on it exists yet, so Level 4 is
-**not** `DONE`, and `Level 5` remains `NOT STARTED`. This record says what the tree contains, not
-that anything beyond SAFETY-01 has been accepted.
+The Level 4 row now records the external outcome for the AGENT-01 foundation: it is accepted,
+merged and closed. It does **not** claim that the full level is validated: the AGENT-02 real
+1 Main + 4 Sub-Agent pilot has not started, so the maturity level remains short of the real
+parallel-development proof. `Level 5` remains `NOT STARTED`.
 
 ---
 
@@ -2699,6 +2713,67 @@ Self-verification complete
 Awaiting independent re-acceptance
 ```
 
-Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are
-**not** written by the development agent. `AGENT-02`, `V0.3-12` and `CD-01` have
-**not** started.
+At the time of the FIX-4 handoff, no external verdict existed. The later external
+acceptance and protected closeout are recorded below in §18.21; this handoff
+history is preserved unchanged.
+
+### 18.21 Independent acceptance and protected closeout
+
+The final independent acceptance result was supplied externally by the
+project owner / independent reviewer:
+
+```text
+AGENT-01 — Multi-Agent Orchestration Foundation
+
+Final Acceptance: PASS
+Status: APPROVED FOR MERGE
+
+P0 = 0
+P1 = 0
+P2 = 0
+
+Accepted head:
+2eab62bfc53867f44996dafc08c32b84fabea7fd
+```
+
+The accepted head was intact when the protected integration ran:
+
+```text
+pre-merge main             81f9c4131513c19d859fceac704d9b74449041f2
+PR #7                      OPEN, not draft, head 2eab62bfc53867f44996dafc08c32b84fabea7fd
+PR base                    main @ 81f9c4131513c19d859fceac704d9b74449041f2
+Quality Gate on PR head    SUCCESS
+merge method               merge commit
+merge commit               951e20272211d2fd3934f4c67063985d64229d7a
+merged at                  2026-09-18T06:28:18Z
+post-merge main CI run     35315019912
+post-merge result         SUCCESS on attempt 1
+```
+
+The post-merge `Runtime / Python` job reported `2598 passed, 6 skipped` in
+`189.62s`; all six skips were the known packaged-runtime smoke tests because
+`canx-runtime.exe` was not staged. Ruff and mypy also passed. Frontend /
+TypeScript, Desktop System / Rust and the Quality Gate all reported `success`.
+The capture/finalization timing flake did not fire in this run, but it remains
+an AGENT-02 entry prerequisite because the underlying reliability question was
+not repaired here.
+
+The ruleset remained unchanged: `main-protected-integration` active, required
+check `Quality Gate`, `bypass_actors: []`, `current_user_can_bypass: never`,
+and `strict_required_status_checks_policy: false`.
+
+```text
+AGENT-01 — Multi-Agent Orchestration Foundation
+
+Final Acceptance: PASS
+Status: CLOSED
+Acceptance source: external / independent reviewer
+
+Accepted PR head: 2eab62bfc53867f44996dafc08c32b84fabea7fd
+Merge commit:     951e20272211d2fd3934f4c67063985d64229d7a
+Post-merge CI:    35315019912 — SUCCESS
+
+AGENT-02 started: NO
+V0.3-12 started:  NO
+CD-01 started:    NO
+```
