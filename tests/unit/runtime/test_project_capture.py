@@ -7,7 +7,6 @@ degrades capture without stopping it or claiming a completed recording.
 """
 
 import asyncio
-import time
 from pathlib import Path
 
 import pytest
@@ -357,41 +356,3 @@ async def test_a_project_that_cannot_open_a_session_is_a_structured_error(
         assert service.data_session_id is None
         assert service.capture_state is CaptureSessionState.FAILED
         assert DataSessionService(handle.root).list_sessions() == ()
-
-
-# ---------------------------------------------------------------- TEMPORARY
-# CI diagnostics: REMOVED before handoff. Not part of the delivered fix.
-#
-# Local reproduction of the post-merge CI failure was not achievable on this
-# host (16-core, 2-core-pinned, and CPU-oversubscribed runs all stay far inside
-# the budget), so the only way to size the budget on evidence rather than a
-# guess is to measure on the runner that actually fails. This test deliberately
-# fails so its numbers reach the CI log.
-async def test_zzz_temporary_ci_stop_path_diagnostics(tmp_path: Path) -> None:
-    import os
-
-    rows: list[str] = []
-    for index in range(5):
-        with project(tmp_path, name=f"diag-{index}.canx") as handle:
-            service = RuntimeService(
-                project_max_frames_per_segment=16,
-                recorder_cleanup_timeout_seconds=6.0,
-            )
-            await service.start_capture(CAPTURE_CONFIG, batch_size=10, project_path=handle.root)
-            session_id = service.data_session_id
-            sleep_started = time.perf_counter()
-            await asyncio.sleep(0.1)
-            sleep_actual = time.perf_counter() - sleep_started
-            stop_started = time.perf_counter()
-            await service.stop_capture()
-            drain = time.perf_counter() - stop_started
-            data = DataSessionService(handle.root)
-            stored = data.get_session(session_id)
-            segments = data.list_segments(session_id)
-            failure = service.failure.code if service.failure is not None else "none"
-            rows.append(
-                f"[{index}] sleep={sleep_actual:.3f}s drain={drain:.3f}s "
-                f"segments={len(segments)} frames={stored.frame_count} "
-                f"state={stored.state.value} failure={failure}"
-            )
-    assert False, f"TEMPORARY-CI-DIAGNOSTICS cpus={os.cpu_count()} :: " + " || ".join(rows)

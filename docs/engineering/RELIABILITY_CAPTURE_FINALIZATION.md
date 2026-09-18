@@ -216,6 +216,55 @@ experiment produced 0 failures in 114 runs without the extra load.
 This is a *local* reproduction of the terminal state the CI run reported. It is
 recorded as such, not as a claim about the specific CI attempt's internals.
 
+### Measured on the CI runner itself
+
+Local reproduction of the *budget* path was possible under emulated contention,
+but the post-merge CI failure could not be reproduced locally at all (16-core,
+2-core-pinned and CPU-oversubscribed runs alike). The FIX-1 branch therefore
+carried a one-off diagnostic test that ran the same workload on the runner and
+reported its timings into the CI log. Runner: `cpus=4`.
+
+```text
+[0] sleep=0.104s drain=0.253s segments=12 frames=186 state=completed failure=none
+[1] sleep=0.100s drain=0.301s segments=13 frames=199 state=completed failure=none
+[2] sleep=0.100s drain=0.280s segments=12 frames=185 state=completed failure=none
+[3] sleep=0.100s drain=0.308s segments=13 frames=196 state=completed failure=none
+[4] sleep=0.101s drain=0.237s segments=12 frames=191 state=completed failure=none
+```
+
+Two things follow, and both matter for reading the CI history honestly:
+
+- On the runner this workload's drain is **0.24-0.31 s** (locally 0.09-0.13 s),
+  so a 6 s budget carries roughly 20x headroom and the 1 s production default
+  roughly 3x. The `sleep` is not stretched and the segment/frame counts match
+  local runs: the workload behaves identically on the runner.
+- The same run reported `1 failed, 2598 passed, 6 skipped` — the single failure
+  being the diagnostic itself. Nothing else in the suite failed.
+
+The diagnostic was removed in the following commit and was never part of the fix.
+
+### CI attempts on the FIX-1 head
+
+```text
+attempt 1       5 failed, 2593 passed, 6 skipped in 362.63 s
+                test_recorder_cleanup_timeout.py :: 4 tests
+                  ("the finalization worker never entered its blocking phase" at a
+                   15 s wait, "never finished its flush", two FAILED != COMPLETED)
+                test_capture_project_target.py   :: 1 test (carries a 6 s budget)
+attempt 2       1 failed, 2597 passed, 6 skipped in 268.88 s
+                test_project_capture.py::test_repeated_project_captures_create_independent_sessions
+diagnostic run  1 failed, 2598 passed, 6 skipped in 228.01 s  (the diagnostic only)
+```
+
+Attempts 1 and 2 failed on **different tests, with different counts**, and the
+third run passed everything except the deliberate diagnostic. Together with the
+runner measurement above, the remaining intermittent failures are not explained
+by the cleanup budget: a 15 s thread-wait expiring, and a session turning FAILED
+while its own drain measures 0.3 s, point at runner resource starvation rather
+than at a deadline that is too small. That is a separate defect class from the
+one this increment repairs, and it is recorded here as an open observation rather
+than claimed fixed.
+
 ### Deterministic causal control
 
 The causal path was also proved deterministically, independent of contention, by
@@ -335,8 +384,15 @@ in the pull request's check rollup rather than being asserted here.
   terminal state under controlled contention, and the deterministic code that
   this budget-expiry path produces.
 - Local contention is emulated with busy processes on a 16-vCPU host, not a real
-  2-vCPU CI runner. It reproduces the *class* of the failure (2 of 114 loaded
-  runs) rather than the runner's exact timing distribution.
+  CI runner. It reproduces the *class* of the budget failure (2 of 114 loaded
+  runs) rather than the runner's exact timing distribution. The runner was
+  separately measured (above): its drain for this workload is 0.24-0.31 s.
+- The two red attempts on the FIX-1 head failed on different tests with different
+  counts, and include a failure whose own wait window is 15 s. With the runner
+  drain measured at ~0.3 s, those failures cannot be attributed to the cleanup
+  budget. They are recorded as an **open** runner-starvation observation; no
+  claim is made that this increment fixes them, and no assertion, wait window or
+  failure-semantics budget in the affected tests was changed to make them pass.
 - The reproduction rate is low by nature; a green repetition is not evidence that
   the historical CI failure did not occur. The historical run remains evidence.
 
