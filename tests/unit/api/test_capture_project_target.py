@@ -16,6 +16,15 @@ from canx.project.service import ProjectHandle, ProjectService
 from canx.runtime.service import RuntimeService
 from httpx import ASGITransport, AsyncClient
 
+# These tests deliberately use a 16-frame segment threshold to prove the
+# project-backed path creates multiple durable segments. That is pathological
+# compared with the production default, whose 1s recorder cleanup budget assumes
+# realistic segment sizes. Under a contended CI runner the final drain can
+# exceed that budget; ADR 0001 then correctly marks the session FAILED instead
+# of presenting an incomplete recording as COMPLETED. State the budget this
+# workload needs, while keeping the completion assertions unchanged.
+CLEANUP_TIMEOUT_SECONDS = 6.0
+
 
 def project(tmp_path: Path) -> ProjectHandle:
     return ProjectService().create(tmp_path / "vehicle.canx", display_name="Vehicle A")
@@ -23,7 +32,10 @@ def project(tmp_path: Path) -> ProjectHandle:
 
 async def test_a_project_capture_reports_the_data_session_it_created(tmp_path: Path) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         app = create_app(runtime_service=service)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
@@ -62,7 +74,12 @@ async def test_a_healthy_stop_reports_no_pending_finalization(tmp_path: Path) ->
     the settled capture state right after.
     """
     with project(tmp_path) as handle:
-        app = create_app(runtime_service=RuntimeService(project_max_frames_per_segment=16))
+        app = create_app(
+            runtime_service=RuntimeService(
+                project_max_frames_per_segment=16,
+                recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+            )
+        )
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as client:
