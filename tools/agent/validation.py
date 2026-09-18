@@ -50,7 +50,7 @@ from tools.agent.errors import (
 )
 from tools.agent.evidence import RepositoryEvidence, collect_repository_evidence
 from tools.agent.graph import TaskGraph
-from tools.agent.lifecycle import TaskStatus
+from tools.agent.lifecycle import TaskStatus, requires_conflict_replan
 from tools.agent.orchestration import OrchestrationPlan, plan
 from tools.agent.paths import (
     is_within,
@@ -472,19 +472,43 @@ def _commit_evidence_blocker(
     Only enforced for a handoff that claims readiness - a half-finished handoff
     may legitimately describe a range it is still extending. What is never
     allowed is *claiming* integration-ready while the commit set says otherwise.
+
+    The match is one-to-one. Prefix membership plus equal counts is not enough:
+    two different tokens that both prefix the *same* commit satisfy a
+    membership test while a second real commit is never represented
+    (AGENT-01-FIX-2 §30). Every token must therefore resolve to exactly one
+    actual commit - not zero (unknown), not two (ambiguous) - and the mapping
+    must be a bijection.
     """
     if not handoff.ready_for_integration:
         return None
-    reported = tuple(_commit_token(item).lower() for item in handoff.commits if item.strip())
-    actual = tuple(sha.lower() for sha in evidence.commits)
-    matched = all(
-        any(sha.startswith(token) for sha in actual) for token in reported
-    )
-    if matched and len(reported) == len(actual):
+    reported = [
+        token for item in handoff.commits if (token := _commit_token(item).lower())
+    ]
+    actual = [sha.lower() for sha in evidence.commits]
+    reason: str | None = None
+    if len(set(reported)) != len(reported):
+        reason = "a reported commit token is a duplicate"
+    matched: dict[str, str] = {}
+    if reason is None:
+        for token in reported:
+            hits = [sha for sha in actual if sha.startswith(token)]
+            if not hits:
+                reason = "a reported commit token matches no actual commit"
+                break
+            if len(hits) > 1:
+                reason = "a reported commit token is an ambiguous prefix"
+                break
+            matched[token] = hits[0]
+    if reason is None and len(set(matched.values())) != len(reported):
+        reason = "two reported tokens resolve to the same commit"
+    if reason is None and set(matched.values()) != set(actual):
+        reason = "not every actual commit is represented"
+    if reason is None:
         return None
     return HandoffEvidenceMismatchError(
-        "handoff.commits does not match the repository's own commit range",
-        details={"reported": list(reported), "actual": list(actual)},
+        f"handoff.commits does not match the repository's own commit range: {reason}",
+        details={"reported": reported, "actual": actual, "reason": reason},
     )
 
 
@@ -521,6 +545,13 @@ class IntegrationContext:
         *,
         include_plan: bool = True,
     ) -> IntegrationContext:
+        """Build a full context.
+
+        ``include_plan=False`` exists for lower-level diagnostics only. It omits
+        the orchestration plan, which makes ``evaluate_integration`` fail closed
+        with ``agent.integration_context_incomplete``: a caller may not disable
+        conflict checking and still obtain ``ready: true`` (AGENT-01-FIX-2 §29).
+        """
         graph = TaskGraph.build(tasks)
         return cls(
             integration_head_sha=integration_head_sha,
@@ -625,11 +656,20 @@ def _conflict_blocker(task: TaskContract, context: IntegrationContext) -> AgentT
             waiting_on.append(other)
     if not waiting_on:
         return None
+    # A conflicting owner that terminated without integrating is not a silent
+    # release: the later task still may not integrate, and the verdict names the
+    # dead owner so the Main Agent knows to re-plan rather than wait
+    # (AGENT-01-FIX-2 §11-§12).
+    replan_required_by = sorted(
+        other for other in waiting_on if requires_conflict_replan(statuses[other])
+    )
     return ConflictRejectedError(
         "a blocking conflict with an in-flight task is not resolved yet",
         details={
             "task_id": task.task_id,
             "waiting_on": sorted(waiting_on),
+            "replan_required": bool(replan_required_by),
+            "replan_required_by": replan_required_by,
             "conflicts": [
                 conflict.to_dict()
                 for conflict in orchestration.blocking_conflicts()
@@ -703,6 +743,19 @@ def evaluate_integration(
         dependency_blocker = _dependency_blocker(task, context)
     if dependency_blocker is not None:
         _record(blockers, details, dependency_blocker)
+
+    # The conflict gate cannot be proven without the orchestration plan. A
+    # context built with ``include_plan=False`` is a diagnostics convenience and
+    # must never yield ``ready: true`` (AGENT-01-FIX-2 §29).
+    if context.orchestration is None:
+        _record(
+            blockers,
+            details,
+            IntegrationContextIncompleteError(
+                "the orchestration plan is required to prove the conflict gate",
+                details={"task_id": task.task_id},
+            ),
+        )
 
     conflict_blocker = _conflict_blocker(task, context)
     if conflict_blocker is not None:
