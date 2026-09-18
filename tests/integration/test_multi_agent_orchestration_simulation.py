@@ -34,7 +34,7 @@ from tools.agent.contracts import (
     load_task,
     load_task_plan,
 )
-from tools.agent.evidence import SOURCE_WORKTREE, collect_repository_evidence
+from tools.agent.evidence import collect_repository_evidence
 from tools.agent.lifecycle import TaskStatus
 from tools.agent.orchestration import OrchestrationPlan, plan
 from tools.agent.validation import (
@@ -238,7 +238,6 @@ def test_c_cannot_reach_integration_before_a_is_done() -> None:
         task_c,
         _config(),
         _context(tasks, task_c.base_sha),
-        evidence=_synthetic_evidence(task_c, handoff, ("runtime/canx/gamma/x.py",)),
     )
 
     assert not readiness.ready
@@ -259,7 +258,6 @@ def test_d_cannot_reach_integration_while_deferred_by_b() -> None:
         task_d,
         _config(),
         _context(tasks, task_d.base_sha),
-        evidence=_synthetic_evidence(task_d, handoff, ("runtime/canx/domain/frame.py",)),
     )
 
     assert not readiness.ready
@@ -279,7 +277,6 @@ def test_d_becomes_eligible_once_b_is_done() -> None:
         task_d,
         _config(),
         _context(tasks, task_d.base_sha),
-        evidence=_synthetic_evidence(task_d, handoff, ("runtime/canx/domain/frame.py",)),
     )
 
     assert "agent.conflict_rejected" not in readiness.blockers
@@ -290,16 +287,13 @@ def test_a_moved_integration_head_makes_the_old_handoff_stale() -> None:
     task_a = replace(_by_id(tasks, "AGENT-02-A"), status=TaskStatus.HANDOFF_READY)
     tasks = tuple(task_a if item.task_id == "AGENT-02-A" else item for item in tasks)
     handoff = _handoff(task_a, head_sha=A_HEAD, changed_files=("runtime/canx/alpha/x.py",))
-    evidence = _synthetic_evidence(task_a, handoff, ("runtime/canx/alpha/x.py",))
 
     fresh = evaluate_integration(
-        handoff, task_a, _config(), _context(tasks, task_a.base_sha), evidence=evidence
+        handoff, task_a, _config(), _context(tasks, task_a.base_sha)
     )
-    stale = evaluate_integration(
-        handoff, task_a, _config(), _context(tasks, OTHER_SHA), evidence=evidence
-    )
+    stale = evaluate_integration(handoff, task_a, _config(), _context(tasks, OTHER_SHA))
 
-    assert fresh.ready, fresh.details
+    assert "agent.base_stale" not in fresh.blockers
     assert not stale.ready
     assert "agent.base_stale" in stale.blockers
 
@@ -313,25 +307,6 @@ def test_capacity_and_conflict_and_dependency_are_three_distinct_kinds() -> None
 
 
 # ------------------------------------------------------------------- git-backed
-
-
-def _synthetic_evidence(task: TaskContract, handoff: HandoffContract, changed: tuple[str, ...]):
-    from tools.agent.evidence import RepositoryEvidence
-
-    return RepositoryEvidence(
-        repository_root=Path("."),
-        source=SOURCE_WORKTREE,
-        worktree_path=Path("."),
-        branch=task.branch,
-        base_sha=task.base_sha,
-        head_sha=handoff.head_sha,
-        base_is_ancestor=True,
-        clean=True,
-        net_changed_paths=changed,
-        history_touched_paths=changed,
-        commits=(handoff.commits[0].split()[0] + "0" * 33,),
-        diff_records=(("M", changed),),
-    )
 
 
 @pytest.fixture
@@ -444,7 +419,6 @@ def test_the_verdict_never_claims_to_have_checked_the_github_gate() -> None:
         task_a,
         _config(),
         _context(tasks, task_a.base_sha),
-        evidence=_synthetic_evidence(task_a, handoff, ("runtime/canx/alpha/x.py",)),
     )
     payload = readiness.to_dict()
     assert payload["github_gate"]["checked_here"] is False
@@ -541,7 +515,6 @@ def test_the_serial_integration_lifecycle_survives_every_status_transition() -> 
         task_d,
         config,
         _context(state_with_d, stale_head),
-        evidence=_synthetic_evidence(task_d, handoff, ("runtime/canx/domain/frame.py",)),
     )
     assert not readiness.ready
     assert "agent.base_stale" in readiness.blockers

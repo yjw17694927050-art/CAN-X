@@ -6,6 +6,12 @@ Two holes are pinned here (AGENT-01-FIX-2 §29-§30):
   report ``ready: true``;
 * prefix membership plus equal counts let two tokens that both prefix the same
   commit hide a second, unrepresented commit.
+
+The evidence comparison is a pure function, so it is exercised through
+``verify_repository_evidence`` with a hand-built evidence value. The *final*
+verdict is deliberately not reachable that way any more: since AGENT-01-FIX-4
+only a real repository can produce ``ready: true``, and that path lives in
+``tests/integration/test_agent_final_authority.py``.
 """
 
 from __future__ import annotations
@@ -14,9 +20,14 @@ from pathlib import Path
 
 from agent_tools_support import BASE_SHA, HEAD_SHA, config, make_handoff, make_task
 
+from tools.agent.errors import AgentToolingError
 from tools.agent.evidence import SOURCE_WORKTREE, RepositoryEvidence
 from tools.agent.lifecycle import TaskStatus
-from tools.agent.validation import IntegrationContext, evaluate_integration
+from tools.agent.validation import (
+    IntegrationContext,
+    evaluate_integration,
+    verify_repository_evidence,
+)
 
 CHANGED = ("runtime/canx/foo/a.py",)
 DOMAIN = ("runtime/canx/domain/**",)
@@ -61,26 +72,28 @@ def _evidence(task, *, commits: tuple[str, ...], changed: tuple[str, ...] = CHAN
     )
 
 
-def _ready(task, *, repository_evidence, tasks=None):
-    return evaluate_integration(
-        _handoff(task, commits=(f"{HEAD_SHA[:7]} work",)),
-        task,
-        config(),
-        IntegrationContext.build(tasks or (task,), config(), BASE_SHA),
-        evidence=repository_evidence,
+def _compare(
+    task,
+    *,
+    repository_evidence: RepositoryEvidence,
+    commits: tuple[str, ...] = (f"{HEAD_SHA[:7]} work",),
+    changed: tuple[str, ...] = CHANGED,
+) -> tuple[AgentToolingError, ...]:
+    """The pure handoff-versus-evidence comparison, with no Git involved."""
+    return verify_repository_evidence(
+        _handoff(task, commits=commits, changed=changed), task, repository_evidence
     )
 
 
-def _commit_reason(readiness) -> str:
+def _commit_reason(blockers: tuple[AgentToolingError, ...]) -> str:
     return next(
-        item["details"]["reason"]
-        for item in readiness.details
-        if item["code"] == "agent.handoff_evidence_mismatch"
+        str(blocker.details["reason"])
+        for blocker in blockers
+        if blocker.code == "agent.handoff_evidence_mismatch"
     )
 
 
 # ------------------------------------------- §29 the plan is required to be ready
-
 
 def test_a_context_without_an_orchestration_plan_can_never_be_ready() -> None:
     """RED -> GREEN: ``include_plan=False`` used to skip the conflict gate."""
@@ -90,16 +103,9 @@ def test_a_context_without_an_orchestration_plan_can_never_be_ready() -> None:
         task,
         config(),
         IntegrationContext.build((task,), config(), BASE_SHA, include_plan=False),
-        evidence=_evidence(task, commits=(HEAD_SHA,)),
     )
     assert not readiness.ready
     assert "agent.integration_context_incomplete" in readiness.blockers
-
-
-def test_the_same_context_with_the_plan_is_ready() -> None:
-    task = _task()
-    readiness = _ready(task, repository_evidence=_evidence(task, commits=(HEAD_SHA,)))
-    assert readiness.ready, readiness.details
 
 
 # ------------------------------------------------- §30 one-to-one commit evidence
@@ -107,15 +113,12 @@ def test_the_same_context_with_the_plan_is_ready() -> None:
 
 def test_a_duplicate_commit_token_is_rejected() -> None:
     task = _task()
-    readiness = evaluate_integration(
-        _handoff(task, commits=(f"{HEAD_SHA[:7]} first", f"{HEAD_SHA[:7]} again")),
+    blockers = _compare(
         task,
-        config(),
-        IntegrationContext.build((task,), config(), BASE_SHA),
-        evidence=_evidence(task, commits=(HEAD_SHA,)),
+        repository_evidence=_evidence(task, commits=(HEAD_SHA,)),
+        commits=(f"{HEAD_SHA[:7]} first", f"{HEAD_SHA[:7]} again"),
     )
-    assert not readiness.ready
-    assert "duplicate" in _commit_reason(readiness)
+    assert "duplicate" in _commit_reason(blockers)
 
 
 def test_two_tokens_mapping_to_one_commit_cannot_hide_another() -> None:
@@ -123,72 +126,58 @@ def test_two_tokens_mapping_to_one_commit_cannot_hide_another() -> None:
     first = "abc111" + "0" * 34
     second = "def222" + "0" * 34
     task = _task()
-    readiness = evaluate_integration(
-        _handoff(task, commits=(f"{first[:4]} first", f"{first[:6]} second")),
+    blockers = _compare(
         task,
-        config(),
-        IntegrationContext.build((task,), config(), BASE_SHA),
-        evidence=_evidence(task, commits=(first, second)),
+        repository_evidence=_evidence(task, commits=(first, second)),
+        commits=(f"{first[:4]} first", f"{first[:6]} second"),
     )
-    assert not readiness.ready
-    assert "resolve to the same commit" in _commit_reason(readiness)
+    assert "resolve to the same commit" in _commit_reason(blockers)
 
 
 def test_an_ambiguous_commit_prefix_is_rejected() -> None:
     first = "abc111" + "0" * 34
     second = "abc112" + "0" * 34
     task = _task()
-    readiness = evaluate_integration(
-        _handoff(task, commits=("abc11 work",)),
+    blockers = _compare(
         task,
-        config(),
-        IntegrationContext.build((task,), config(), BASE_SHA),
-        evidence=_evidence(task, commits=(first, second)),
+        repository_evidence=_evidence(task, commits=(first, second)),
+        commits=("abc11 work",),
     )
-    assert not readiness.ready
-    assert "ambiguous" in _commit_reason(readiness)
+    assert "ambiguous" in _commit_reason(blockers)
 
 
 def test_an_unknown_commit_token_is_rejected() -> None:
     task = _task()
-    readiness = evaluate_integration(
-        _handoff(task, commits=("deadbee no such commit",)),
+    blockers = _compare(
         task,
-        config(),
-        IntegrationContext.build((task,), config(), BASE_SHA),
-        evidence=_evidence(task, commits=("abc111" + "0" * 34,)),
+        repository_evidence=_evidence(task, commits=("abc111" + "0" * 34,)),
+        commits=("deadbee no such commit",),
     )
-    assert not readiness.ready
-    assert "matches no actual commit" in _commit_reason(readiness)
+    assert "matches no actual commit" in _commit_reason(blockers)
 
 
 def test_an_unrepresented_commit_is_rejected() -> None:
     first = "abc111" + "0" * 34
     second = "def222" + "0" * 34
     task = _task()
-    readiness = evaluate_integration(
-        _handoff(task, commits=(f"{first[:7]} only",)),
+    blockers = _compare(
         task,
-        config(),
-        IntegrationContext.build((task,), config(), BASE_SHA),
-        evidence=_evidence(task, commits=(first, second)),
+        repository_evidence=_evidence(task, commits=(first, second)),
+        commits=(f"{first[:7]} only",),
     )
-    assert not readiness.ready
-    assert "not every actual commit is represented" in _commit_reason(readiness)
+    assert "not every actual commit is represented" in _commit_reason(blockers)
 
 
 def test_a_bijective_commit_set_is_accepted() -> None:
     first = "abc111" + "0" * 34
     second = "def222" + "0" * 34
     task = _task()
-    readiness = evaluate_integration(
-        _handoff(task, commits=(f"{first[:7]} one", f"{second[:7]} two")),
+    blockers = _compare(
         task,
-        config(),
-        IntegrationContext.build((task,), config(), BASE_SHA),
-        evidence=_evidence(task, commits=(first, second)),
+        repository_evidence=_evidence(task, commits=(first, second)),
+        commits=(f"{first[:7]} one", f"{second[:7]} two"),
     )
-    assert readiness.ready, readiness.details
+    assert blockers == ()
 
 
 # --------------------------------- §12 a dead conflict owner is a visible re-plan
@@ -213,7 +202,6 @@ def test_a_terminated_conflict_owner_is_visible_as_a_replan_requirement() -> Non
         waiter,
         config(),
         IntegrationContext.build((owner, waiter), config(), BASE_SHA),
-        evidence=_evidence(waiter, commits=(HEAD_SHA,), changed=DOMAIN_CHANGED),
     )
     assert not readiness.ready
     conflict = next(

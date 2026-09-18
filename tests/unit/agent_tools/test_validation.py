@@ -31,6 +31,7 @@ from tools.agent.validation import (
     ownership_violations,
     validate_handoff,
     validate_task,
+    verify_repository_evidence,
 )
 
 
@@ -39,7 +40,12 @@ def _context(tasks: tuple[TaskContract, ...], integration_head: str) -> Integrat
 
 
 def _evidence(task: TaskContract, handoff: object, changed: tuple[str, ...]) -> RepositoryEvidence:
-    """Consistent Git-backed evidence, without touching a repository."""
+    """Git-shaped evidence for the *pure comparison* only.
+
+    It is an input to ``verify_repository_evidence``, never an authority the
+    final gate accepts: ``evaluate_integration`` has no parameter for it and
+    always collects from a real repository (AGENT-01-FIX-4 §3-§5, §33).
+    """
     return RepositoryEvidence(
         repository_root=Path("."),
         source=SOURCE_WORKTREE,
@@ -310,19 +316,21 @@ def test_integration_readiness_collects_every_blocker_not_just_the_first() -> No
     assert {"agent.ownership_violation", "agent.base_stale"} <= set(readiness.blockers)
 
 
-def test_integration_readiness_is_green_for_a_clean_handoff_with_full_evidence() -> None:
+def test_a_consistent_handoff_produces_no_evidence_blockers() -> None:
+    """The evidence comparison itself, without Git.
+
+    ``ready: true`` is no longer obtainable from a hand-built dataclass: the
+    final verdict requires a real repository, so it is exercised over real
+    temporary Git repositories in
+    ``tests/integration/test_agent_final_authority.py``. What stays
+    unit-testable is the pure comparison (AGENT-01-FIX-4 §5, §33).
+    """
     task = _ready_task(allowed_paths=("runtime/canx/foo/**",), status="HANDOFF_READY")
     handoff = make_handoff(base_sha=BASE_SHA, changed_files=("runtime/canx/foo/a.py",))
-    readiness = evaluate_integration(
-        handoff,
-        task,
-        config(),
-        _context((task,), BASE_SHA),
-        evidence=_evidence(task, handoff, ("runtime/canx/foo/a.py",)),
+    blockers = verify_repository_evidence(
+        handoff, task, _evidence(task, handoff, ("runtime/canx/foo/a.py",))
     )
-    assert readiness.ready, readiness.details
-    assert readiness.blockers == ()
-    assert readiness.to_dict()["task_id"] == "AGENT-02-B"
+    assert blockers == ()
 
 
 def test_integration_readiness_reports_a_handoff_that_does_not_claim_readiness() -> None:
@@ -330,13 +338,7 @@ def test_integration_readiness_reports_a_handoff_that_does_not_claim_readiness()
     handoff = make_handoff(
         base_sha=BASE_SHA, changed_files=("runtime/canx/foo/a.py",), ready_for_integration=False
     )
-    readiness = evaluate_integration(
-        handoff,
-        task,
-        config(),
-        _context((task,), BASE_SHA),
-        evidence=_evidence(task, handoff, ("runtime/canx/foo/a.py",)),
-    )
+    readiness = evaluate_integration(handoff, task, config(), _context((task,), BASE_SHA))
     assert not readiness.ready
     assert "agent.handoff_invalid" in readiness.blockers
 

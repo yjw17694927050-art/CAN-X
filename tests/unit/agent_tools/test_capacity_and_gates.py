@@ -4,6 +4,11 @@ The plan claims "1 Main Agent + up to 4 Sub-Agents"; the cap has to be enforced 
 ``plan()``, not merely validated in the config. And the local integration verdict
 has to be able to say *no* for dependency, conflict and status reasons - while
 never pretending to check the GitHub Quality Gate.
+
+Every test here reads a *refusal*, so none of them needs a repository. The
+positive half - a clean delivery that really comes back locally ready, and a
+verdict that disclaims the GitHub gate - needs real Git and lives in
+``tests/integration/test_agent_final_authority.py`` (AGENT-01-FIX-4 §5, §33).
 """
 
 from __future__ import annotations
@@ -14,32 +19,13 @@ from agent_tools_support import BASE_SHA, config, make_handoff, make_task
 
 from tools.agent.config import AgentConfig
 from tools.agent.contracts import TaskContract
-from tools.agent.evidence import SOURCE_WORKTREE, RepositoryEvidence
 from tools.agent.lifecycle import TaskStatus
 from tools.agent.orchestration import plan
 from tools.agent.validation import IntegrationContext, evaluate_integration
 
-#: Full commit id the hand-built evidence will vouch for.
+#: The commit id the handoffs in this file report.
 FULL_SHA = "abcdef0123456789abcdef0123456789abcdef01"
 PREFIX = FULL_SHA[:7]
-
-
-def evidence_for(task: TaskContract, handoff, changed: tuple[str, ...]) -> RepositoryEvidence:
-    """Consistent Git-backed evidence without touching a repository."""
-    return RepositoryEvidence(
-        repository_root=Path("."),
-        source=SOURCE_WORKTREE,
-        worktree_path=Path(".worktrees/agent-02-b"),
-        branch=task.branch,
-        base_sha=task.base_sha,
-        head_sha=handoff.head_sha,
-        base_is_ancestor=True,
-        clean=True,
-        net_changed_paths=changed,
-        history_touched_paths=changed,
-        commits=(FULL_SHA,),
-        diff_records=(("M", changed),),
-    )
 
 
 def _independent(task_id: str, letter: str) -> TaskContract:
@@ -157,17 +143,6 @@ def _ready_task(**overrides: object) -> TaskContract:
     return make_task(**values)
 
 
-def test_a_clean_handoff_with_full_evidence_is_locally_ready() -> None:
-    task = _ready_task()
-    handoff = _handoff_for(task, ("runtime/canx/foo/a.py",))
-    readiness = evaluate_integration(
-        handoff, task, config(), _context((task,)),
-        evidence=evidence_for(task, handoff, ("runtime/canx/foo/a.py",)),
-    )
-    assert readiness.ready, readiness.details
-    assert readiness.to_dict()["github_gate"]["checked_here"] is False
-
-
 def test_without_a_repository_the_gate_refuses_to_claim_ready() -> None:
     task = _ready_task()
     handoff = _handoff_for(task, ("runtime/canx/foo/a.py",))
@@ -180,10 +155,7 @@ def test_without_the_task_set_the_gate_refuses_to_claim_ready() -> None:
     task = _ready_task()
     handoff = _handoff_for(task, ("runtime/canx/foo/a.py",))
     context = IntegrationContext(integration_head_sha=BASE_SHA)
-    readiness = evaluate_integration(
-        handoff, task, config(), context,
-        evidence=evidence_for(task, handoff, ("runtime/canx/foo/a.py",)),
-    )
+    readiness = evaluate_integration(handoff, task, config(), context)
     assert not readiness.ready
     assert "agent.integration_context_incomplete" in readiness.blockers
 
@@ -198,10 +170,7 @@ def test_a_dependent_task_cannot_integrate_before_its_dependency_is_done() -> No
         dependencies=("AGENT-02-A",),
     )
     handoff = _handoff_for(dependent, ("runtime/canx/foo/a.py",))
-    readiness = evaluate_integration(
-        handoff, dependent, config(), _context((alpha, dependent)),
-        evidence=evidence_for(dependent, handoff, ("runtime/canx/foo/a.py",)),
-    )
+    readiness = evaluate_integration(handoff, dependent, config(), _context((alpha, dependent)))
     assert not readiness.ready
     assert "agent.dependency_blocked" in readiness.blockers
 
@@ -221,10 +190,7 @@ def test_a_dependent_task_becomes_eligible_once_the_dependency_is_done() -> None
         dependencies=("AGENT-02-A",),
     )
     handoff = _handoff_for(dependent, ("runtime/canx/foo/a.py",))
-    readiness = evaluate_integration(
-        handoff, dependent, config(), _context((alpha, dependent)),
-        evidence=evidence_for(dependent, handoff, ("runtime/canx/foo/a.py",)),
-    )
+    readiness = evaluate_integration(handoff, dependent, config(), _context((alpha, dependent)))
     assert "agent.dependency_blocked" not in readiness.blockers
 
 
@@ -243,10 +209,7 @@ def test_an_unsatisfiable_dependency_says_replan() -> None:
         dependencies=("AGENT-02-A",),
     )
     handoff = _handoff_for(dependent, ("runtime/canx/foo/a.py",))
-    readiness = evaluate_integration(
-        handoff, dependent, config(), _context((alpha, dependent)),
-        evidence=evidence_for(dependent, handoff, ("runtime/canx/foo/a.py",)),
-    )
+    readiness = evaluate_integration(handoff, dependent, config(), _context((alpha, dependent)))
     blocked = next(item for item in readiness.details if item["code"] == "agent.dependency_blocked")
     assert blocked["details"]["next"] == "re-plan the DAG"
 
@@ -267,10 +230,7 @@ def test_a_task_deferred_by_a_blocking_conflict_cannot_integrate() -> None:
         allowed_paths=("runtime/canx/domain/**",),
     )
     handoff = _handoff_for(delta, ("runtime/canx/domain/frame.py",))
-    readiness = evaluate_integration(
-        handoff, delta, config(), _context((beta, delta)),
-        evidence=evidence_for(delta, handoff, ("runtime/canx/domain/frame.py",)),
-    )
+    readiness = evaluate_integration(handoff, delta, config(), _context((beta, delta)))
     assert not readiness.ready
     assert "agent.conflict_rejected" in readiness.blockers
 
@@ -290,20 +250,14 @@ def test_the_conflict_is_released_once_the_producer_lands() -> None:
         allowed_paths=("runtime/canx/domain/**",),
     )
     handoff = _handoff_for(delta, ("runtime/canx/domain/frame.py",))
-    readiness = evaluate_integration(
-        handoff, delta, config(), _context((beta, delta)),
-        evidence=evidence_for(delta, handoff, ("runtime/canx/domain/frame.py",)),
-    )
+    readiness = evaluate_integration(handoff, delta, config(), _context((beta, delta)))
     assert "agent.conflict_rejected" not in readiness.blockers
 
 
 def test_a_task_that_is_not_handoff_ready_cannot_integrate() -> None:
     task = _ready_task(status=TaskStatus.IN_PROGRESS)
     handoff = _handoff_for(task, ("runtime/canx/foo/a.py",))
-    readiness = evaluate_integration(
-        handoff, task, config(), _context((task,)),
-        evidence=evidence_for(task, handoff, ("runtime/canx/foo/a.py",)),
-    )
+    readiness = evaluate_integration(handoff, task, config(), _context((task,)))
     assert not readiness.ready
     assert "agent.task_invalid" in readiness.blockers
 
@@ -312,10 +266,7 @@ def test_the_task_being_integrated_must_be_in_the_supplied_task_set() -> None:
     task = _ready_task()
     other = _independent("AGENT-02-A", "A")
     handoff = _handoff_for(task, ("runtime/canx/foo/a.py",))
-    readiness = evaluate_integration(
-        handoff, task, config(), _context((other,)),
-        evidence=evidence_for(task, handoff, ("runtime/canx/foo/a.py",)),
-    )
+    readiness = evaluate_integration(handoff, task, config(), _context((other,)))
     assert "agent.integration_context_incomplete" in readiness.blockers
 
 
