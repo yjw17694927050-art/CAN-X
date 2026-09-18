@@ -103,7 +103,11 @@ active_execution_ids   tasks whose status occupies a Sub-Agent slot
                        EXECUTION_SLOT_STATUSES == { IN_PROGRESS }
 available_slots        max(0, max_sub_agents - len(active_execution_ids))
 selected_new_dispatch  the first available_slots candidates, in integration order
-invariant              len(active) + len(newly dispatched) <= max_sub_agents
+invariant              the planner adds at most available_slots, so
+                       len(active) + len(newly dispatched)
+                          <= max(max_sub_agents, len(active))
+                       and an already over-dispatched set is reported as
+                       capacity.active_over_capacity rather than hidden
 ```
 
 The wave is cut deterministically from the integration order, and four deferral
@@ -837,8 +841,9 @@ hard-codes a status list.
 
 #2  max_sub_agents counted only new candidates
     before  3 IN_PROGRESS + 4 READY, max 4 -> 4 runnable, 7 effective agents
-    after   active = 3, available_slots = 1, runnable = 1,
-            active + new <= max_sub_agents always
+    after   active = 3, available_slots = 1, runnable = 1; the planner adds at
+            most the free slots, and an over-dispatched set is reported as
+            capacity.active_over_capacity
 
 #3  a task worktree read from the task worktree lost its dirty state
     before  from the worktree root: source = branch-ref, clean = true (dirty!)
@@ -869,7 +874,8 @@ tools/agent/lifecycle.py      EXECUTION_SLOT_STATUSES · CONFLICT_LEASE_STATUSES
                               occupies_sub_agent_slot · requires_conflict_replan
 tools/agent/orchestration.py  leases held across statuses; capacity counted from
                               active slots; replan_required_by; capacity block
-                              reports active / available_slots
+                              reports active / active_over_capacity /
+                              available_slots / selected
 tools/agent/gitcmd.py         history_touched_paths (per-commit diff-tree union)
 tools/agent/evidence.py       net_changed_paths vs history_touched_paths;
                               canonical primary-worktree resolution

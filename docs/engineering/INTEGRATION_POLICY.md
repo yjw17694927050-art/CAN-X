@@ -292,10 +292,11 @@ it onto the new head, let CI re-run, and merge only then. This is
 - Required tests must all be reported as `passed`; `skipped` and `not_run` are
   honest reports but not integration-passing results.
 - `plan()` enforces `max_sub_agents` against the Sub-Agents **already running**:
-  `available_slots = max(0, max_sub_agents - active)`, and
-  `active + newly dispatched <= max_sub_agents` always holds. Tasks held back
-  only by the cap are reported as capacity-deferred, distinctly from blocked,
-  conflicted and re-plan-required.
+  `available_slots = max(0, max_sub_agents - active)`, and the planner adds at
+  most `available_slots`, so it never increases an over-subscription. An
+  already over-dispatched set is reported as `capacity.active_over_capacity`
+  rather than rounded away. Tasks held back only by the cap are reported as
+  capacity-deferred, distinctly from blocked, conflicted and re-plan-required.
 - The local `check-integration` verdict requires the orchestration plan as well
   as the repository: a context without it fails closed with
   `agent.integration_context_incomplete` rather than skipping the conflict gate.
