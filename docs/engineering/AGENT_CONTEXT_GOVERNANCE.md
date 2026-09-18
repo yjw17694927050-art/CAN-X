@@ -3,6 +3,9 @@
 > **Document**: `docs/engineering/AGENT_CONTEXT_GOVERNANCE.md`
 > **Scope**: How much context an agent loads, in what order, and why.
 > **Status**: in force from DOC-GOV-01 (2026-09-18).
+> **Closure**: DOC-GOV-01 externally accepted and integrated — accepted head
+> `38914b6a2ac7f422c0d11e131170d80d73dd4f12`, PR #13 merged to `main` as
+> `e183c53fdb1dc07a784b76ef5c1e45f07bb88c0e`, post-merge `main` CI run `35361083707` green.
 > **Related**: `AGENTS.md` §2 (the rule), `docs/CONTEXT_INDEX.md` (the router),
 > `docs/PROJECT_STATE.md` §11 (compaction rule).
 

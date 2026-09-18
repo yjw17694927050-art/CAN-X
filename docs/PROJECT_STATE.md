@@ -2,7 +2,8 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (DOC-GOV-01 — Documentation & Agent Context Governance)
+> **Updated**: 2026-09-18 (DOC-GOV-01 — Documentation & Agent Context Governance — externally
+> accepted and integrated; Final Acceptance: PASS · Status: CLOSED)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -154,10 +155,8 @@ Closed engineering infrastructure (not numbered product phases) — independentl
   SAFETY-01           Safety Architecture & Risk Control Foundation ......... §17  (S1–S25 frozen)
   AGENT-01            Multi-Agent Orchestration Foundation .................. §18
   RELIABILITY-01      Capture / DataSession Finalization Timing ............. §19
-
-Current engineering maintenance task — NOT closed, no acceptance verdict yet:
   DOC-GOV-01          Documentation & Agent Context Governance .............. §12
-                      Status: AWAITING INDEPENDENT ACCEPTANCE
+                      PASS · CLOSED (independent re-acceptance, head 38914b6 → main e183c53)
 ```
 
 Closed-phase ledger — accepted heads, merges and post-merge CI, kept for traceability (full
@@ -172,6 +171,7 @@ CI-02           PASS · CLOSED (independent)    ruleset main-protected-integrati
 SAFETY-01       PASS · CLOSED (independent)    main c05debf9; post-merge main CI 35295673078 green
 AGENT-01        PASS · CLOSED (independent)    head 2eab62b; PR #7 → main 951e202; post-merge CI 35315019912
 RELIABILITY-01  PASS · CLOSED (independent)    head 07a95f6; PR #10 → main d22e989; post-merge CI 35349031072
+DOC-GOV-01      PASS · CLOSED (independent)    head 38914b6; PR #13 → main e183c53; post-merge CI 35361083707
 ```
 
 The `Final Acceptance: PASS` / `Status: CLOSED` verdicts here are **project-owner / independent
@@ -408,26 +408,26 @@ this document it must attribute it, and must not present its own conclusion as t
 ## 12. Immediate Next Action
 
 ```text
-Awaiting independent acceptance:
-  DOC-GOV-01 — Documentation & Agent Context Governance
-  Status: AWAITING INDEPENDENT ACCEPTANCE
-  Documentation / developer-infrastructure only: no product code, no runtime behaviour, no safety
-  behaviour, no schema, no API, no dependency, no CI-semantics change.
-  Deliverables: docs/CONTEXT_INDEX.md (router), docs/engineering/AGENT_CONTEXT_GOVERNANCE.md
-  (layered-context authority), a compaction of this file, an AGENTS.md §2 context-policy update,
-  synchronized Main-Agent / Sub-Agent prompts, and a lossless history archive.
+Just CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
+  Final Acceptance: PASS · Status: CLOSED   (external / independent reviewer)
+  Accepted head 38914b6a2ac7f422c0d11e131170d80d73dd4f12 · PR #13
+  Merged to `main` as e183c53fdb1dc07a784b76ef5c1e45f07bb88c0e (merge commit, protected
+  workflow, no bypass) · post-merge `main` CI run 35361083707 — SUCCESS on attempt 1.
+  Docs-only: no product code, runtime, safety, schema, API, dependency or CI-semantics change.
 
-Immediate next engineering task:
-  AGENT-02 — real 1 Main Agent + up to 4 Sub-Agent pilot
-  Status: NOT STARTED. Reliability prerequisite (RELIABILITY-01): CLEARED.
-  OPEN prerequisite — AGENT-CONTEXT-PROTECTION: docs/CONTEXT_INDEX.md and
-  docs/engineering/AGENT_CONTEXT_GOVERNANCE.md are not yet in .agent/config.json
-  protected_paths / public_truth_paths. MUST be closed before the AGENT-02 pilot.
+Next prerequisite task — AGENT-CONTEXT-PROTECTION (Context Governance Protected Truth Surface)
+  Status: NOT STARTED · REQUIRED BEFORE AGENT-02
+  docs/CONTEXT_INDEX.md and docs/engineering/AGENT_CONTEXT_GOVERNANCE.md are not yet in
+  .agent/config.json protected_paths / public_truth_paths. That change belongs to the AGENT-01
+  enforcement surface and needs its own design, tests and acceptance.
+
+Immediate next engineering task — AGENT-02, real 1 Main Agent + up to 4 Sub-Agent pilot
+  Status: NOT STARTED · BLOCKED BY AGENT-CONTEXT-PROTECTION (RELIABILITY-01: CLEARED)
   Read first when it starts: docs/engineering/MULTI_AGENT_PROTOCOL.md,
   docs/ADR/0002-parallel-development-serial-integration.md, docs/engineering/INTEGRATION_POLICY.md.
 
-NOT STARTED: AGENT-02 · V0.3-12 · CD-01. Closing a phase does not begin the next one; the next
-numbered phase must arrive as its own explicit task brief.
+NOT STARTED: AGENT-CONTEXT-PROTECTION · AGENT-02 · V0.3-12 · CD-01.
+Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
 ```
 
 ---
