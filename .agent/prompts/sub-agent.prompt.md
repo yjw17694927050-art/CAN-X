@@ -32,8 +32,19 @@ The full contract is on disk. Read it; do not work from this summary.
 - Work **only** in your own worktree, on **only** your own branch.
 - Confirm you are in the right place:
   `python -m tools.agent.cli worktree validate --path <.worktrees/slug> --branch <your branch>`
-- Re-read the canonical documents that bear on your change. Do not work from
-  memory of the repository; the tree moves.
+- Load your own context — and only your own:
+
+  ```text
+  Tier 0 (bootstrap):  AGENTS.md · docs/PROJECT_STATE.md · docs/CONTEXT_INDEX.md
+  Tier 1 (your scope): the authority sections your contract's surface touches
+                       (PRD / SPEC relevant sections · the relevant ADR / engineering doc);
+                       read a whole authority when your contract genuinely spans it
+  Tier 2 / Tier 3:     acceptance evidence or history only if your task requires it
+  ```
+
+  Do not inherit the Main Agent's history context, and do not work from memory of the
+  repository; the tree moves. The load rules are in
+  `docs/engineering/AGENT_CONTEXT_GOVERNANCE.md`.
 
 ## Your scope
 
