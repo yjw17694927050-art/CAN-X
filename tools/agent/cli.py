@@ -30,6 +30,7 @@ from tools.agent.errors import DEFAULT_EXIT_CODE, AgentToolingError
 from tools.agent.gitcmd import is_git_repository, repository_root
 from tools.agent.orchestration import plan
 from tools.agent.validation import (
+    IntegrationContext,
     evaluate_integration,
     validate_handoff,
     validate_task,
@@ -83,6 +84,22 @@ def _build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--task", type=Path, required=True)
     check_parser.add_argument("--handoff", type=Path, required=True)
     check_parser.add_argument("--integration-head", type=str, required=True)
+    # The local gate proves only what it can actually check. Without a repository
+    # there is no Git-backed evidence, and without the task set there is no
+    # dependency or conflict verdict - both are reported as blockers rather than
+    # silently skipped (FIX-1 §8-§10, §24-§26).
+    check_parser.add_argument(
+        "--repo",
+        type=Path,
+        default=None,
+        help="task worktree (preferred) or repository root; required to prove Git-backed evidence",
+    )
+    check_parser.add_argument(
+        "--plan",
+        type=Path,
+        default=None,
+        help="plan file for the task set; required to prove dependency and conflict gates",
+    )
 
     plan_parser = sub.add_parser("plan", help="compute the orchestration plan for a task set")
     plan_parser.add_argument("--file", type=Path, required=True)
@@ -127,7 +144,16 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "check-integration":
         task = load_task(args.task)
         handoff = load_handoff(args.handoff)
-        readiness = evaluate_integration(handoff, task, config, args.integration_head)
+        if args.plan is not None:
+            tasks = load_task_plan(args.plan)
+            for item in tasks:
+                validate_task(item, config)
+            context = IntegrationContext.build(tasks, config, args.integration_head)
+        else:
+            context = IntegrationContext(integration_head_sha=args.integration_head)
+        readiness = evaluate_integration(
+            handoff, task, config, context, repository=args.repo
+        )
         _emit(readiness.to_dict())
         return 0 if readiness.ready else 3
 

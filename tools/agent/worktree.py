@@ -28,6 +28,7 @@ from tools.agent.errors import (
     WorktreeDirtyError,
 )
 from tools.agent.gitcmd import (
+    canonical_repository,
     contains,
     current_branch,
     git,
@@ -113,7 +114,13 @@ def list_worktrees(repo: Path) -> tuple[WorktreeRecord, ...]:
 
 
 def validate_repository(repo: Path, *, expected_remote: str | None = None) -> Path:
-    """Confirm ``repo`` is the repository the tooling is allowed to touch."""
+    """Confirm ``repo`` is the repository the tooling is allowed to touch.
+
+    ``expected_remote`` is a canonical ``owner/repo`` identity. The origin URL is
+    canonicalised and compared exactly: a substring test would accept
+    ``github.com/evil/owner-repo-copy.git`` as ``owner/repo`` (FIX-1 §31-33).
+    Any origin shape the canonicaliser does not recognise fails closed.
+    """
     if not repo.exists():
         raise GitStateError("repository path does not exist", details={"repo": str(repo)})
     if not is_git_repository(repo):
@@ -126,10 +133,17 @@ def validate_repository(repo: Path, *, expected_remote: str | None = None) -> Pa
                 "repository has no 'origin' remote",
                 details={"repo": str(root), "expected_remote": expected_remote},
             )
-        if expected_remote not in url:
+        expected = canonical_repository(expected_remote) or expected_remote
+        actual = canonical_repository(url)
+        if actual is None:
+            raise GitStateError(
+                "repository origin is not a supported GitHub remote shape",
+                details={"repo": str(root), "origin": url, "expected_remote": expected},
+            )
+        if actual != expected:
             raise GitStateError(
                 "repository origin does not match the configured repository",
-                details={"repo": str(root), "origin": url, "expected_remote": expected_remote},
+                details={"repo": str(root), "origin": actual, "expected_remote": expected},
             )
     return root
 

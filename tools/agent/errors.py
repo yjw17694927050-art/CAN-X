@@ -30,6 +30,9 @@ EXIT_CODES: Final[dict[str, int]] = {
     "agent.branch_invalid": 2,
     "agent.branch_mismatch": 3,
     "agent.base_stale": 3,
+    "agent.base_not_ancestor": 3,
+    "agent.handoff_evidence_mismatch": 3,
+    "agent.integration_context_incomplete": 3,
     "agent.ownership_violation": 3,
     "agent.protected_path_conflict": 3,
     "agent.conflict_rejected": 3,
@@ -114,6 +117,38 @@ class BaseStaleError(AgentToolingError):
     """The handoff is based on a commit that is not the current integration head."""
 
     code = "agent.base_stale"
+
+
+class BaseNotAncestorError(AgentToolingError):
+    """The task base is not an ancestor of the delivered head.
+
+    A handoff may not claim a base its history does not actually descend from:
+    the relationship is proved with ``git merge-base --is-ancestor``, never
+    inferred from two values merely looking like commit ids.
+    """
+
+    code = "agent.base_not_ancestor"
+
+
+class HandoffEvidenceMismatchError(AgentToolingError):
+    """The handoff's reported facts disagree with the repository's own facts.
+
+    ``changed_files`` and ``commits`` are claims; the Git-derived lists are the
+    evidence. A disagreement is not a formatting nit - it means the handoff is
+    not a faithful report of what happened on the branch.
+    """
+
+    code = "agent.handoff_evidence_mismatch"
+
+
+class IntegrationContextIncompleteError(AgentToolingError):
+    """The local integration gate was asked to decide without enough evidence.
+
+    The gate reports ready only when it can actually prove every requirement.
+    "No repository supplied" is therefore a blocker, not a pass.
+    """
+
+    code = "agent.integration_context_incomplete"
 
 
 class OwnershipViolationError(AgentToolingError):

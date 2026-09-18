@@ -94,9 +94,20 @@ merge, accept or disable the gate.
 1 Main Agent + up to 4 Sub-Agents
 ```
 
-`.agent/config.json` pins `max_sub_agents: 4` and `AgentConfig.from_dict` refuses
-anything outside `1..4`. "Up to four" is a ceiling, not a target: the Main Agent
-starts the number of Sub-Agents the DAG actually justifies.
+`.agent/config.json` pins `max_sub_agents: 4`, `AgentConfig.from_dict` refuses
+anything outside `1..4` — and, since FIX-1, `plan()` **enforces** the cap rather
+than merely validating the config: the dispatch wave is cut deterministically
+from the integration order, and the tasks held back only by capacity are reported
+as `capacity_deferred` so the three deferral reasons stay distinguishable:
+
+```text
+blocked by dependency   the dependency is not DONE
+deferred by conflict    a C2+ conflict with an earlier in-flight task
+deferred by capacity    ready and conflict-free, but past max_sub_agents
+```
+
+"Up to four" is a ceiling, not a target: the Main Agent starts the number of
+Sub-Agents the DAG actually justifies.
 
 ---
 
@@ -139,15 +150,37 @@ edge that is not in it raises `agent.task_invalid`.
 ### 3.1 Exit criteria
 
 ```text
-HANDOFF_READY  implementation complete · required tests reported · ownership valid
+HANDOFF_READY  implementation complete · required tests all PASS · ownership valid
                branch matches the contract · handoff schema valid
-INTEGRATING    dependencies satisfied · base is the current integration head
-               Quality Gate green on that head · no blocking conflict
+INTEGRATING    dependencies satisfied · no blocking conflict · task is HANDOFF_READY
+               base is the current integration head · Git-backed evidence valid
+               Quality Gate green on that head (GitHub, not this tooling)
 DONE           the accepted head reached the integration branch
 ```
 
 `tools/agent/validation.py:evaluate_integration` returns the whole blocker set,
 not just the first, so an integration loop converges instead of ping-ponging.
+It reports `ready` only when it could actually prove every local requirement:
+with no repository or no task set it reports `agent.integration_context_incomplete`
+rather than quietly skipping the check.
+
+### 3.2 Local verdict versus platform gate
+
+The two halves answer different questions and neither claims the other's job:
+
+```text
+local IntegrationReadiness   handoff schema · Git-backed evidence · ownership
+                             base/current-head · dependency completion
+                             conflict/deferral state · task readiness
+GitHub Ruleset               Quality Gate green · protected PR workflow
+merge eligibility            local READY
+                             AND platform Quality Gate success on this head
+                             AND base still current immediately before merge
+```
+
+`check-integration` does **not** verify the GitHub Quality Gate — `to_dict()`
+says so explicitly (`github_gate.checked_here = false`). The ruleset requires it
+independently; this tooling does not embed a GitHub client.
 
 ---
 
@@ -205,17 +238,49 @@ touches it.
 
 ### 4.3 Ownership enforcement
 
-`validate_handoff` re-derives compliance from `changed_files` and **ignores the
-`ownership_compliance` flag a handoff reports about itself**. A self-assessment
-is not evidence. A changed path that is not covered by `allowed_paths`, or that
-hits a `forbidden_paths` entry, raises `agent.ownership_violation`; the handoff
-is rejected, not "fixed up and merged anyway".
+Ownership is decided by **the paths Git says were touched**, not by the list the
+handoff reports. `validate_handoff` ignores the `ownership_compliance` flag a
+handoff reports about itself — a self-assessment is not evidence — and the
+authoritative check runs against `git diff --name-status -M -C <base>..<head>`.
+A touched path that is not covered by `allowed_paths`, or that hits a
+`forbidden_paths` entry, raises `agent.ownership_violation`.
+
+This closes a real hole (FIX-1 §35): before it, a Sub-Agent could change
+`SPEC.md`, report only `runtime/canx/foo/a.py`, and the gate would validate the
+reported list against itself and pass.
+
+### 4.4 Pattern versus pattern — the `**` hole
+
+There are two different questions, and they need two different functions:
+
+```text
+a concrete file     vs an ownership pattern     matches_pattern / matching_pattern
+an ownership pattern vs a protected pattern     patterns_overlap / overlapping_pattern
+```
+
+Using the first for the second is how a task owning `**` looked as though it
+never touched `SPEC.md`: `SPEC.md` does not match the *literal text* `**`.
+Protected ownership is therefore checked with overlap semantics — *can this
+ownership surface reach a protected path?* — and a Sub-Agent task whose surface
+can reach one is refused with `agent.protected_path_conflict`.
+
+```text
+allowed_paths = ["**"]                       owner = sub-a   -> REFUSED
+allowed_paths = ["**/*.md"]                  owner = sub-a   -> REFUSED
+allowed_paths = ["docs/**"]                  owner = sub-a   -> REFUSED
+allowed_paths = ["runtime/canx/alpha/**"]    owner = sub-a   -> accepted
+allowed_paths = ["**"]                       owner = main    -> accepted
+```
+
+The fix is correct overlap semantics, **not** banning globs: a genuinely
+disjoint surface is still accepted.
 
 **RED → GREEN #1 (`test_a_handoff_that_changes_a_file_outside_allowed_paths_is_refused`).**
-Before this gate existed, a handoff could claim `ownership_compliance: true` and
-change `SPEC.md` while its task owned only `runtime/canx/foo/**`. The validator
-accepted it (RED: `DID NOT RAISE OwnershipViolationError`). With the gate wired
-in, the same input is refused (GREEN).
+Before a handoff's ownership was re-derived at all, one could claim
+`ownership_compliance: true` and change `SPEC.md` while its task owned only
+`runtime/canx/foo/**`. The validator accepted it (RED: `DID NOT RAISE
+OwnershipViolationError`). With the gate wired in, the same input is refused
+(GREEN).
 
 ---
 
@@ -339,7 +404,64 @@ a handoff file.**
 first-class answer — "we did not run it" must be reportable as itself, never
 smuggled in as a pass.
 
-### 7.2 Validation
+### 7.2 Git-backed verification (FIX-1)
+
+A handoff is a **report format**. Git repository state is the **authority**. The
+Main Agent's verifier independently compares the two:
+
+```text
+TaskContract            what is permitted
+real worktree / branch  the strongest local source of truth
+real base..head history what actually happened
+real changed paths      the authority for ownership
+local IntegrationReadiness  the verdict
+```
+
+`tools/agent/evidence.py` collects, and
+`tools/agent/validation.py:verify_repository_evidence` compares:
+
+```text
+actual worktree branch  == task.branch                 agent.branch_mismatch
+actual HEAD             == handoff.head_sha            agent.handoff_invalid
+handoff.base_sha        == task.base_sha               agent.handoff_invalid
+base is an ancestor of head (git merge-base)           agent.base_not_ancestor
+worktree clean                                         agent.git_state_error
+actual touched paths    -> ownership validation        agent.ownership_violation
+handoff.changed_files   == actual touched paths        agent.handoff_evidence_mismatch
+handoff.commits         == actual base..head range     agent.handoff_evidence_mismatch
+```
+
+Three consequences worth stating plainly:
+
+- **A handoff cannot invent a base.** `handoff.base_sha` must equal
+  `task.base_sha`; a legitimate rebase updates the *task contract* and re-issues
+  it. Typing the current `main` into JSON does not make the delivery based on it.
+- **Ancestry is proved, not assumed.** `git merge-base --is-ancestor` decides it;
+  two values looking like commit ids proves nothing.
+- **Both sides of a rename or copy count.** Paths come from
+  `git diff --name-status -M -C`, so a protected file renamed into an owned
+  subtree still appears under its old path, and a deleted protected path is still
+  a protected-path modification.
+
+When the worktree has been cleaned up, evidence falls back to the task *branch
+ref* — still Git, still required to resolve to the claimed head — and the
+fallback is recorded in `evidence.source` rather than hidden.
+
+`build_handoff()` remains the convenient producer and is explicitly **not** a
+trust boundary: the consumer assumes the JSON may have been edited after
+generation. The same principle the Safety kernel already uses — a caller's
+report is not authority — applies here.
+
+### 7.3 Required tests
+
+For `ready_for_integration == true`, **every** name in `task.required_tests` must
+be present exactly once and reported as `passed`. `failed`, `skipped` and
+`not_run` remain valid *reports* — a handoff that is honest about a test it did
+not run is more useful than one that lies — but none of them is an
+integration-passing result for a required test. Duplicate test names are refused
+outright, so a passing copy cannot shadow a failing one.
+
+### 7.4 Validation
 
 `validate_handoff` refuses:
 
@@ -448,14 +570,16 @@ deliberate, verified configuration change (§12).
 
 ```text
 handoff schema valid
-ownership re-derived and valid
-base is the current integration head
-dependencies satisfied
-CI green on that head
-no conflict above C1 with another in-flight task
-no public-contract drift
-required tests present
+ownership re-derived from the Git change set and valid
+Git-backed evidence valid (branch, head, base, ancestry, clean worktree)
+handoff.base_sha == task.base_sha and == the current integration head
+dependencies satisfied (every dependency DONE)
+no blocking conflict with an in-flight task
+task status is HANDOFF_READY
+every required test reported as passed
 known limitations disclosed
+GitHub Quality Gate green on this head          <- the platform, not this tooling
+base still current immediately before the merge <- re-checked at merge time
 ```
 
 ---

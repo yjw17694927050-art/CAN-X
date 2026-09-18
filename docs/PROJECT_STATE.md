@@ -791,7 +791,10 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
 AGENT-01 — Multi-Agent Orchestration Foundation   (not a numbered phase)
           Implementation complete
           Self-verification complete
-          Awaiting independent acceptance (§18)
+          First independent acceptance: NOT PASS (P0: 2, P1: 3, P2: 1) — preserved
+          in §18.11
+          AGENT-01-FIX-1 implementation complete · self-verification complete
+          Awaiting independent re-acceptance (§18.12)
           Level 4 is NOT marked DONE — only an external verdict may do that
           Adds .agent/ + tools/agent/ + docs/engineering/MULTI_AGENT_PROTOCOL.md
           + docs/ADR/0002-parallel-development-serial-integration.md
@@ -1055,9 +1058,11 @@ Safety Foundation (SAFETY-01)                  DONE · CLOSED
                                                (Final Acceptance: PASS — independent
                                                acceptance, merged to `main` as
                                                c05debf9, post-merge CI green)
-Level 4  Multi-Agent Orchestration             NOT DONE — AGENT-01 implemented and
+Level 4  Multi-Agent Orchestration             NOT DONE — AGENT-01 first independent
+                                               acceptance NOT PASS (P0:2 P1:3 P2:1);
+                                               AGENT-01-FIX-1 implemented and
                                                self-verified, awaiting independent
-                                               acceptance (§18)
+                                               re-acceptance (§18.11–§18.12)
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
@@ -2194,13 +2199,116 @@ the reliable handling of the capture/finalization timing flake before AGENT-02
 the real 1 Main + up to 4 Sub-Agent pilot — AGENT-02
 ```
 
-### 18.11 Acceptance
+### 18.11 First independent acceptance — NOT PASS
+
+The first independent review of AGENT-01 did **not** pass, and the verdict is
+preserved here rather than smoothed over:
+
+```text
+Independent acceptance source:
+Project owner / independent reviewer
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-1
+
+P0 = 2
+P1 = 3
+P2 = 1
+```
+
+The reviewer's framing was explicit, and correct: the architecture was accepted
+in direction, but **several claimed machine gates still trusted agent-supplied
+metadata instead of independently deriving repository facts**. That is a fair
+reading of the tree at `5b7e1d6`:
+
+```text
+P0-1  protected paths could be bypassed by a broad ownership glob. `**` or
+      `docs/**` was accepted for a Sub-Agent because the check asked whether the
+      *literal text* of the glob is a protected file name, not whether the glob
+      can *reach* one.
+P0-2  handoff facts were self-reported. `check-integration` trusted
+      `changed_files`, `base_sha` and `head_sha` from the JSON, so a lying
+      handoff could omit a changed `SPEC.md`, or invent the current `main` as its
+      base, and still come back ready.
+P1-1  a required test reported `skipped` or `not_run` still allowed readiness.
+P1-2  `plan()` did not use `max_sub_agents`; five independent tasks all came
+      back runnable.
+P1-3  the local gate did not check dependencies, conflict deferral or task
+      status, yet READY_FOR_INTEGRATION is documented as requiring them.
+P2    repository identity was a substring test, so
+      `github.com/evil/<owner>/<repo>-copy.git` passed as `<owner>/<repo>`.
+```
+
+Every one of those was reproduced against `5b7e1d6` before any fix was written
+(the RED record is summarised in §18.12). The verdict is external; the
+development agent did not write it and does not dispute it.
+
+### 18.12 Remediation — AGENT-01-FIX-1
+
+A narrow remediation: no redesign of the accepted architecture, no AGENT-02, no
+product capability, no Safety change.
+
+```text
+RED, all seven, against 5b7e1d6
+  validate_task(allowed_paths=("**",), owner=sub-a)          ACCEPTED
+  validate_task(allowed_paths=("**/*.md",), owner=sub-a)     ACCEPTED
+  validate_task(allowed_paths=("docs/**",), owner=sub-a)     ACCEPTED
+  lying handoff omitting a changed SPEC.md                   ready=True
+  handoff inventing the current main as its base             ready=True
+  handoff inventing a head_sha                               ready=True
+  ready handoff with an uncommitted worktree                 ready=True
+  required 'integration' reported not_run / skipped          ACCEPTED
+  two test records named 'unit', both passed                 ACCEPTED
+  five independent tasks, max_sub_agents=4                   runnable len=5
+  dependent C ready while A is READY                         ready=True
+  deferred-by-conflict D                                     ready=True
+  origin github.com/evil/<owner>/<repo>-copy.git             accepted
+```
+
+What changed:
+
+```text
+tools/agent/paths.py       overlapping_pattern() — pattern-versus-pattern overlap,
+                           kept distinct from matching_pattern() (path versus pattern)
+tools/agent/config.py      protected_overlap / public_truth_overlap / safety_overlap
+tools/agent/validation.py  protected ownership by overlap; required tests must all
+                           pass with duplicates refused; check_base also requires
+                           handoff.base_sha == task.base_sha; IntegrationContext;
+                           verify_repository_evidence; evaluate_integration reports
+                           ready only when it could prove every local requirement
+tools/agent/evidence.py    NEW — RepositoryEvidence + collect_repository_evidence,
+                           the Git-backed source of truth
+tools/agent/gitcmd.py      canonical_repository() exact identity; diff_name_status /
+                           touched_paths (both sides of renames and copies);
+                           commit_shas()
+tools/agent/orchestration.py  plan() enforces max_sub_agents and reports
+                           capacity_deferred distinctly
+tools/agent/worktree.py    validate_repository compares canonical identities exactly
+tools/agent/cli.py         check-integration takes --repo and --plan
+```
+
+The corrected boundary, stated once:
+
+```text
+Sub-Agent report      untrusted evidence
+Git repository state  authoritative evidence
+Task contract         what is permitted
+Main Agent verifier   independently compares the two
+```
+
+New tests: 293 focused tests across the agent suites (unit + integration),
+including throwaway-git fixtures for the omitted-file, fake-base, fake-head,
+dirty-worktree, rename/copy and commit-evidence attacks. The real CAN-X
+repository is never mutated by pytest.
 
 ```text
 Implementation complete
 Self-verification complete
-Awaiting independent acceptance
+Awaiting independent re-acceptance
 ```
+
+Level 4 remains **not** `DONE`; no `Final Acceptance: PASS` is written by the
+development agent.
 
 Level 4 is **not** `DONE`, `Final Acceptance` was **not** written by the
 development agent, and `AGENT-02`, `V0.3-12` and `CD-01` have **not** started.

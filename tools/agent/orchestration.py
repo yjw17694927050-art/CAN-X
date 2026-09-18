@@ -34,11 +34,26 @@ class TaskPlanEntry:
     status: TaskStatus
     deferred_by: tuple[str, ...]
     serial_review_required: bool
+    capacity_deferred: bool = False
 
     @property
     def runnable(self) -> bool:
         """True when the task may be dispatched now."""
-        return self.status is TaskStatus.READY and not self.deferred_by
+        return (
+            self.status is TaskStatus.READY
+            and not self.deferred_by
+            and not self.capacity_deferred
+        )
+
+    def deferral_kind(self) -> str:
+        """Which of the three deferral reasons applies, in precedence order."""
+        if self.status is TaskStatus.BLOCKED:
+            return "dependency"
+        if self.deferred_by:
+            return "conflict"
+        if self.capacity_deferred:
+            return "capacity"
+        return "none"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -46,6 +61,8 @@ class TaskPlanEntry:
             "status": str(self.status),
             "runnable": self.runnable,
             "deferred_by": list(self.deferred_by),
+            "deferral_kind": self.deferral_kind(),
+            "capacity_deferred": self.capacity_deferred,
             "serial_review_required": self.serial_review_required,
         }
 
@@ -57,6 +74,7 @@ class OrchestrationPlan:
     entries: tuple[TaskPlanEntry, ...]
     conflicts: tuple[PairConflict, ...]
     integration_order: tuple[str, ...]
+    max_sub_agents: int
     deferral_rule: str = DEFERRAL_RULE
 
     def runnable_ids(self) -> tuple[str, ...]:
@@ -74,6 +92,11 @@ class OrchestrationPlan:
         deferred = {entry.task_id for entry in self.entries if entry.deferred_by}
         return tuple(task_id for task_id in self.integration_order if task_id in deferred)
 
+    def capacity_deferred_ids(self) -> tuple[str, ...]:
+        """Ready, non-conflicting ids held back only by the parallelism cap."""
+        held = {entry.task_id for entry in self.entries if entry.capacity_deferred}
+        return tuple(task_id for task_id in self.integration_order if task_id in held)
+
     def blocking_conflicts(self) -> tuple[PairConflict, ...]:
         """Conflicts at or above the serial-review ceiling."""
         return tuple(conflict for conflict in self.conflicts if not conflict.auto_resolvable)
@@ -85,13 +108,27 @@ class OrchestrationPlan:
             "runnable": list(self.runnable_ids()),
             "blocked": list(self.blocked_ids()),
             "deferred": list(self.deferred_ids()),
+            "capacity_deferred": list(self.capacity_deferred_ids()),
+            "capacity": {
+                "max_sub_agents": self.max_sub_agents,
+                "selected": list(self.runnable_ids()),
+                "capacity_deferred": list(self.capacity_deferred_ids()),
+            },
             "conflicts": [conflict.to_dict() for conflict in self.conflicts],
             "entries": [entry.to_dict() for entry in self.entries],
         }
 
 
 def plan(tasks: tuple[TaskContract, ...], config: AgentConfig) -> OrchestrationPlan:
-    """Compute the orchestration verdict for a set of tasks."""
+    """Compute the orchestration verdict for a set of tasks.
+
+    ``max_sub_agents`` is enforced here, not merely validated in the config: a
+    plan that claims "1 Main Agent + up to 4 Sub-Agents" must never hand back
+    five runnable tasks. The wave is cut deterministically from the integration
+    order, so the same input always yields the same wave, and the tasks held
+    back only by capacity are reported as such rather than as blocked or
+    conflicting (FIX-1 §21-22).
+    """
     graph = TaskGraph.build(tasks)
     readiness = graph.readiness()
     order = graph.integration_order(config)
@@ -114,6 +151,13 @@ def plan(tasks: tuple[TaskContract, ...], config: AgentConfig) -> OrchestrationP
         earlier = conflict.left if later == conflict.right else conflict.right
         deferred[later].append(earlier)
 
+    candidates = [
+        task_id
+        for task_id in order
+        if readiness[task_id] is TaskStatus.READY and not deferred[task_id]
+    ]
+    over_capacity = set(candidates[config.max_sub_agents :])
+
     by_id = {task.task_id: task for task in tasks}
     entries = tuple(
         TaskPlanEntry(
@@ -121,6 +165,7 @@ def plan(tasks: tuple[TaskContract, ...], config: AgentConfig) -> OrchestrationP
             status=readiness[task_id],
             deferred_by=tuple(sorted(set(deferred[task_id]))),
             serial_review_required=requires_serial_review(by_id[task_id], config),
+            capacity_deferred=task_id in over_capacity,
         )
         for task_id in order
     )
@@ -128,4 +173,5 @@ def plan(tasks: tuple[TaskContract, ...], config: AgentConfig) -> OrchestrationP
         entries=entries,
         conflicts=conflicts,
         integration_order=order,
+        max_sub_agents=config.max_sub_agents,
     )

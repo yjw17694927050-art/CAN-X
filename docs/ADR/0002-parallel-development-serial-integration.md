@@ -61,6 +61,27 @@ machine predicate, not a habit.**
 5. **The PR must be green on that head.** A green run on an older base is not
    evidence about the current one (`INTEGRATION_POLICY.md` §9).
 
+AGENT-01-FIX-1 tightened point 3 from "the two shas must be equal" to a pair of
+facts the repository has to agree with:
+
+```text
+handoff.base_sha == task.base_sha          a handoff may not invent a base
+handoff.base_sha == integration head       the stale-base rule above
+task.base_sha is an ancestor of the head   proved with git merge-base, not inferred
+```
+
+The first is what makes "typing the current `main` into the handoff JSON"
+insufficient: the claim is checked against the task contract *and* against real
+history, in `tools/agent/validation.py:check_base` and
+`tools/agent/evidence.py:collect_repository_evidence` respectively.
+
+FIX-1 also made the boundary between the two gates explicit rather than implied.
+The local verdict proves what it can prove (handoff schema, Git-backed evidence,
+ownership, base/current-head, dependency completion, conflict state, task
+readiness) and reports `github_gate.checked_here = false`; the GitHub Ruleset
+independently requires `Quality Gate`. Merge eligibility needs both. No GitHub
+client was added to the tooling to blur that line.
+
 The rules, in order:
 
 ```text

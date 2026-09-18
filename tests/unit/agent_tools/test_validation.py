@@ -7,6 +7,8 @@ that has moved, must never be integrated.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from agent_tools_support import BASE_SHA, HEAD_SHA, OTHER_SHA, config, make_handoff, make_task
 
@@ -20,7 +22,9 @@ from tools.agent.errors import (
     ProtectedPathConflictError,
     TaskInvalidError,
 )
+from tools.agent.evidence import SOURCE_WORKTREE, RepositoryEvidence
 from tools.agent.validation import (
+    IntegrationContext,
     assert_frozen_unchanged,
     check_base,
     evaluate_integration,
@@ -28,6 +32,27 @@ from tools.agent.validation import (
     validate_handoff,
     validate_task,
 )
+
+
+def _context(tasks: tuple[TaskContract, ...], integration_head: str) -> IntegrationContext:
+    return IntegrationContext.build(tasks, config(), integration_head)
+
+
+def _evidence(task: TaskContract, handoff: object, changed: tuple[str, ...]) -> RepositoryEvidence:
+    """Consistent Git-backed evidence, without touching a repository."""
+    return RepositoryEvidence(
+        repository_root=Path("."),
+        source=SOURCE_WORKTREE,
+        worktree_path=Path(".worktrees/agent-02-b"),
+        branch=task.branch,
+        base_sha=task.base_sha,
+        head_sha=handoff.head_sha,  # type: ignore[attr-defined]
+        base_is_ancestor=True,
+        clean=True,
+        changed_paths=changed,
+        commits=(HEAD_SHA,),
+        diff_records=(("M", changed),),
+    )
 
 
 def _ready_task(**overrides: object) -> TaskContract:
@@ -234,7 +259,8 @@ def test_a_not_ready_handoff_may_still_report_a_failure_honestly() -> None:
 
 
 def test_a_handoff_based_on_the_current_integration_head_is_accepted() -> None:
-    check_base(make_handoff(base_sha=BASE_SHA), BASE_SHA)
+    task = _ready_task()
+    check_base(make_handoff(base_sha=BASE_SHA), task, BASE_SHA)
 
 
 def test_a_handoff_based_on_a_stale_commit_is_refused() -> None:
@@ -245,44 +271,78 @@ def test_a_handoff_based_on_a_stale_commit_is_refused() -> None:
     integrated as if it had been built on the current one. The comparison is the
     whole point, so it is what this pins.
     """
+    task = _ready_task()
     with pytest.raises(BaseStaleError) as raised:
-        check_base(make_handoff(base_sha=BASE_SHA), OTHER_SHA)
+        check_base(make_handoff(base_sha=BASE_SHA), task, OTHER_SHA)
     assert raised.value.code == "agent.base_stale"
     assert raised.value.details["integration_head"] == OTHER_SHA
 
 
+def test_a_handoff_may_not_invent_a_base_the_task_does_not_have() -> None:
+    """FIX-1: ``handoff.base_sha`` must equal ``task.base_sha``.
+
+    Typing the current ``main`` into the handoff is not enough to make the
+    delivery based on it - the repository has to agree.
+    """
+    task = _ready_task(base_sha=BASE_SHA)
+    with pytest.raises(HandoffInvalidError) as raised:
+        check_base(make_handoff(base_sha=OTHER_SHA), task, OTHER_SHA)
+    assert raised.value.details["task_base_sha"] == BASE_SHA
+    assert raised.value.details["base_sha"] == OTHER_SHA
+
+
 def test_check_base_still_validates_the_shape_of_its_inputs() -> None:
+    task = _ready_task()
     with pytest.raises(HandoffInvalidError):
-        check_base(make_handoff(base_sha="not-a-sha"), BASE_SHA)
+        check_base(make_handoff(base_sha="not-a-sha"), task, BASE_SHA)
     with pytest.raises(TaskInvalidError):
-        check_base(make_handoff(base_sha=BASE_SHA), "not-a-sha")
+        check_base(make_handoff(base_sha=BASE_SHA), task, "not-a-sha")
 
 
 def test_integration_readiness_collects_every_blocker_not_just_the_first() -> None:
     task = _ready_task(allowed_paths=("runtime/canx/foo/**",))
     handoff = make_handoff(changed_files=("SPEC.md",), base_sha=BASE_SHA)
-    readiness = evaluate_integration(handoff, task, config(), OTHER_SHA)
+    readiness = evaluate_integration(
+        handoff, task, config(), _context((task,), OTHER_SHA)
+    )
     assert not readiness.ready
-    assert set(readiness.blockers) == {"agent.ownership_violation", "agent.base_stale"}
+    assert {"agent.ownership_violation", "agent.base_stale"} <= set(readiness.blockers)
 
 
-def test_integration_readiness_is_green_for_a_clean_handoff_on_the_current_head() -> None:
-    readiness = evaluate_integration(make_handoff(), _ready_task(), config(), BASE_SHA)
-    assert readiness.ready
+def test_integration_readiness_is_green_for_a_clean_handoff_with_full_evidence() -> None:
+    task = _ready_task(allowed_paths=("runtime/canx/foo/**",), status="HANDOFF_READY")
+    handoff = make_handoff(base_sha=BASE_SHA, changed_files=("runtime/canx/foo/a.py",))
+    readiness = evaluate_integration(
+        handoff,
+        task,
+        config(),
+        _context((task,), BASE_SHA),
+        evidence=_evidence(task, handoff, ("runtime/canx/foo/a.py",)),
+    )
+    assert readiness.ready, readiness.details
     assert readiness.blockers == ()
     assert readiness.to_dict()["task_id"] == "AGENT-02-B"
 
 
 def test_integration_readiness_reports_a_handoff_that_does_not_claim_readiness() -> None:
-    handoff = make_handoff(ready_for_integration=False)
-    readiness = evaluate_integration(handoff, _ready_task(), config(), BASE_SHA)
+    task = _ready_task(allowed_paths=("runtime/canx/foo/**",), status="HANDOFF_READY")
+    handoff = make_handoff(
+        base_sha=BASE_SHA, changed_files=("runtime/canx/foo/a.py",), ready_for_integration=False
+    )
+    readiness = evaluate_integration(
+        handoff,
+        task,
+        config(),
+        _context((task,), BASE_SHA),
+        evidence=_evidence(task, handoff, ("runtime/canx/foo/a.py",)),
+    )
     assert not readiness.ready
     assert "agent.handoff_invalid" in readiness.blockers
 
 
-def test_a_clean_handoff_on_the_previous_head_is_not_stale_when_the_head_matched() -> None:
-    handoff = make_handoff(base_sha=OTHER_SHA)
-    check_base(handoff, OTHER_SHA)
+def test_a_clean_handoff_is_checked_against_its_own_task_base() -> None:
+    task = _ready_task(base_sha=OTHER_SHA)
+    check_base(make_handoff(base_sha=OTHER_SHA), task, OTHER_SHA)
 
 
 # ----------------------------------------------------------------------- revision

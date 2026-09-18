@@ -122,12 +122,16 @@ class TaskGraph:
         """
         derived: dict[str, TaskStatus] = {}
         for task in self.tasks:
-            if task.status not in {
+            # Normalise: a contract may carry the status as a plain string (a
+            # hand-written JSON fixture, a caller building one in a test), and
+            # every downstream comparison is an identity check against the enum.
+            status = TaskStatus(task.status)
+            if status not in {
                 TaskStatus.PLANNED,
                 TaskStatus.READY,
                 TaskStatus.BLOCKED,
             }:
-                derived[task.task_id] = task.status
+                derived[task.task_id] = status
                 continue
             derived[task.task_id] = (
                 TaskStatus.READY if not self.unsatisfied_dependencies(task.task_id)

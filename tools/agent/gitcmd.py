@@ -8,6 +8,7 @@ except the worktree operations that ``worktree.py`` asks for explicitly.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -120,3 +121,89 @@ def contains(cwd: Path, ancestor: str, descendant: str) -> bool:
         "git merge-base --is-ancestor could not be evaluated",
         details={"ancestor": ancestor, "descendant": descendant, "stderr": result.stderr.strip()},
     )
+
+
+# -- repository identity --------------------------------------------------------
+
+_OWNER_REPO_SEGMENT: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+#: Origin shapes GitHub actually hands out. Anything else fails closed.
+_GITHUB_PREFIXES: Final[tuple[str, ...]] = (
+    "https://github.com/",
+    "http://github.com/",
+    "ssh://git@github.com/",
+    "git@github.com:",
+)
+
+
+def canonical_repository(url: str | None) -> str | None:
+    """Canonicalise a GitHub origin URL to ``owner/repo``, or ``None``.
+
+    Serving the identity question by substring would accept
+    ``github.com/evil/owner-repo-copy.git`` as ``owner/repo``. Only the four
+    documented shapes are recognised, the result must have exactly two path
+    segments, and a trailing ``.git`` is stripped before comparison.
+    """
+    if not url:
+        return None
+    value = url.strip()
+    for prefix in _GITHUB_PREFIXES:
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+            break
+    else:
+        return None
+    value = value.strip("/")
+    if value.endswith(".git"):
+        value = value[: -len(".git")]
+    segments = value.split("/")
+    if len(segments) != 2:
+        return None
+    owner, repo = segments
+    if not _OWNER_REPO_SEGMENT.match(owner) or not _OWNER_REPO_SEGMENT.match(repo):
+        return None
+    return f"{owner}/{repo}"
+
+
+def remote_identity(cwd: Path, remote: str = "origin") -> str | None:
+    """``owner/repo`` for the configured ``remote``, or ``None``."""
+    return canonical_repository(remote_url(cwd, remote))
+
+
+# -- change-set derivation ------------------------------------------------------
+
+
+def diff_name_status(
+    cwd: Path, base: str, head: str
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """``git diff --name-status -M -C base..head`` as ``(status, paths)`` records.
+
+    Rename and copy records carry two paths. Both sides are preserved: a
+    protected file renamed into an owned subtree must still appear under its old
+    path, and a deleted protected path is still a protected-path modification.
+    """
+    output = git(["diff", "--name-status", "-M", "-C", f"{base}..{head}"], cwd=cwd).stdout
+    records: list[tuple[str, tuple[str, ...]]] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        status = fields[0].strip()
+        paths = tuple(field for field in fields[1:] if field)
+        if paths:
+            records.append((status, paths))
+    return tuple(records)
+
+
+def touched_paths(cwd: Path, base: str, head: str) -> tuple[str, ...]:
+    """Every path the range touches, de-duplicated, both sides of R/C included."""
+    seen: dict[str, None] = {}
+    for _status, paths in diff_name_status(cwd, base, head):
+        for path in paths:
+            seen.setdefault(path, None)
+    return tuple(seen)
+
+
+def commit_shas(cwd: Path, base: str, head: str) -> tuple[str, ...]:
+    """Full commit ids reachable from ``head`` but not from ``base``."""
+    return git_lines(["log", "--format=%H", f"{base}..{head}"], cwd=cwd)

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from tools.agent.errors import PathInvalidError, TaskInvalidError
-from tools.agent.paths import matching_pattern, normalize_repo_pattern
+from tools.agent.paths import matching_pattern, normalize_repo_pattern, overlapping_pattern
 
 DEFAULT_CONFIG_RELPATH: Final[str] = ".agent/config.json"
 SUPPORTED_SCHEMA_VERSION: Final[int] = 1
@@ -123,6 +123,23 @@ class AgentConfig:
     def safety_match(self, pattern: str) -> str | None:
         """The safety pattern ``pattern`` collides with, if any."""
         return matching_pattern(pattern, self.safety_paths)
+
+    # -- pattern versus pattern ------------------------------------------------
+    # An ownership surface may be a glob, so "does it reach a protected path?"
+    # is an overlap question, not a match question. `**` matches no literal
+    # protected file name, yet it can reach every one of them.
+
+    def protected_overlap(self, pattern: str) -> str | None:
+        """The protected pattern whose surface ``pattern`` can reach, if any."""
+        return overlapping_pattern(pattern, self.protected_paths)
+
+    def public_truth_overlap(self, pattern: str) -> str | None:
+        """The public-truth pattern whose surface ``pattern`` can reach."""
+        return overlapping_pattern(pattern, self.public_truth_paths)
+
+    def safety_overlap(self, pattern: str) -> str | None:
+        """The safety pattern whose surface ``pattern`` can reach."""
+        return overlapping_pattern(pattern, self.safety_paths)
 
 
 def load_config(path: Path) -> AgentConfig:

@@ -271,18 +271,35 @@ it onto the new head, let CI re-run, and merge only then. This is
 
 - Every task declares a machine-readable `allowed_paths` surface; anything not
   listed is not editable.
-- A handoff's ownership compliance is **re-derived from `changed_files`**, never
-  taken from the flag the handoff reports about itself. A violation is
+- Ownership is decided by the **Git change set**, never by the handoff's own
+  `changed_files` list or its `ownership_compliance` flag. A violation is
   `agent.ownership_violation` and the handoff is rejected — "the change was fine
   anyway" is not a resolution.
-- Protected and high-contention paths (`AGENTS.md`, `PRD.md`, `SPEC.md`,
-  `docs/PROJECT_STATE.md`, manifests, lockfiles, `.github/workflows/**`, the
-  AGENT-01 schemas, the central safety policy) are Main-Agent-only. They are not
-  forbidden; they are **not parallel**.
+- Protected paths are compared by **pattern overlap**, not string matching, so a
+  broad ownership glob (`**`, `**/*.md`, `docs/**`) cannot reach `SPEC.md`,
+  `AGENTS.md`, `docs/PROJECT_STATE.md` or `.github/workflows/**` from a Sub-Agent
+  task. They are not forbidden; they are **not parallel**.
 - A conflict above C1 between two tasks stops automatic integration
   (`docs/engineering/MULTI_AGENT_PROTOCOL.md` §8). The Main Agent re-plans.
+- Required tests must all be reported as `passed`; `skipped` and `not_run` are
+  honest reports but not integration-passing results.
+- `plan()` enforces `max_sub_agents`; tasks held back only by the cap are
+  reported as capacity-deferred, distinctly from blocked and conflicted.
 
-### 17.3 What AGENT-01 did not touch
+### 17.3 Who checks what
+
+```text
+local `check-integration`   handoff schema · Git-backed evidence · ownership
+                            base/current-head · dependency completion
+                            conflict/deferral state · task readiness
+GitHub Ruleset              Quality Gate green · protected PR workflow
+```
+
+The local gate reports `github_gate.checked_here = false` and does not pretend
+otherwise; it embeds no GitHub client. **Merge eligibility requires both**, plus
+a re-check that the base is still current at merge time.
+
+### 17.4 What AGENT-01 did not touch
 
 ```text
 the ruleset            unchanged, still active, still bypass_actors: []
@@ -292,7 +309,7 @@ tests                  none skipped, deleted or loosened
 runtime/canx/safety/   untouched; S1–S25 unchanged
 ```
 
-### 17.4 Recorded gap
+### 17.5 Recorded gap
 
 `strict_required_status_checks_policy` on ruleset `main-protected-integration`
 (id `23600372`) is still `false`. The AGENT-01 rule above is enforced by the

@@ -170,3 +170,24 @@ def is_within(path: str, directory: str) -> bool:
     """True when ``path`` is ``directory`` itself or lives underneath it."""
     parent = directory.rstrip("/")
     return path == parent or path.startswith(parent + "/")
+
+
+def overlapping_pattern(pattern: str, patterns: tuple[str, ...]) -> str | None:
+    """The first of ``patterns`` whose owned surface *overlaps* ``pattern``.
+
+    Pattern versus pattern. This is the correct operation for comparing two
+    ownership surfaces - a task's ``allowed_paths`` against a protected path
+    class - and it is deliberately a different function from
+    :func:`matching_pattern`, which answers "does this concrete file fall under
+    this ownership pattern?".
+
+    The distinction is not cosmetic: ``matching_pattern("**", ("SPEC.md",))``
+    answers "does ``SPEC.md`` match the literal text ``**``?", which is *no* -
+    so a task owning ``**`` would look like it never touches ``SPEC.md``. The
+    overlap form asks the question the protocol actually needs: *can* this
+    ownership surface reach that protected path?
+    """
+    for candidate in patterns:
+        if patterns_overlap(pattern, candidate):
+            return candidate
+    return None
