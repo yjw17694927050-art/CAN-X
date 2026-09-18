@@ -21,6 +21,26 @@ from canx.runtime.service import CaptureSessionState, RuntimeService
 
 CAPTURE_CONFIG = VirtualAdapterConfig(rate_hz=2_000, seed=3)
 
+#: Cleanup budget for the pathological segment thresholds below.
+#:
+#: ``RuntimeService.recorder_cleanup_timeout_seconds`` defaults to 1 s - a drain
+#: budget sized for realistic segment sizes. A 16-frame segment threshold makes
+#: these captures deliberately pathological, and a 2 kHz / 0.1 s capture then
+#: produces ~12 segments and ~190 frames at stop. Measured on this host the
+#: stop-path drain for that workload is 0.10 s median but 0.75 s at worst with no
+#: contention, and 0.91 s median under eight overlapping captures - barely 1.1x
+#: headroom against the production default, which a slower or more contended CI
+#: runner crosses. The recorder then fails the session closed with
+#: ``recorder.cleanup_timeout``, which is exactly what ADR 0001 requires: under
+#: pressure it refuses to claim COMPLETED rather than silently dropping frames.
+#:
+#: The success-path tests below therefore state the budget their own workload
+#: needs, instead of inheriting a production default that assumes normal segment
+#: sizes. No assertion is relaxed and no workload is changed. The 64-frame tests
+#: need no override: the same probe measures their drain at <= 0.07 s, some 15x
+#: inside the default.
+CLEANUP_TIMEOUT_SECONDS = 6.0
+
 
 def project(tmp_path: Path, *, name: str = "vehicle.canx") -> ProjectHandle:
     return ProjectService().create(tmp_path / name, display_name="Vehicle A")
@@ -38,7 +58,10 @@ async def test_a_project_capture_creates_one_data_session_bound_to_the_stream(
     tmp_path: Path,
 ) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
 
         stream_id = await service.start_capture(
             CAPTURE_CONFIG, batch_size=10, project_path=handle.root
@@ -166,7 +189,10 @@ async def test_a_startup_failure_after_the_session_was_created_leaves_it_failed(
             return None
 
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         monkeypatch.setattr(service_module, "VirtualAdapter", BrokenAdapter)
 
         with pytest.raises(OSError):
@@ -200,7 +226,10 @@ async def test_a_startup_failure_after_the_session_was_created_leaves_it_failed(
 
 async def test_repeated_project_captures_create_independent_sessions(tmp_path: Path) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         session_ids: list[str | None] = []
         for _ in range(2):
             await service.start_capture(
@@ -219,7 +248,10 @@ async def test_repeated_project_captures_create_independent_sessions(tmp_path: P
 
 async def test_stopping_a_project_capture_twice_is_safe(tmp_path: Path) -> None:
     with project(tmp_path) as handle:
-        service = RuntimeService(project_max_frames_per_segment=16)
+        service = RuntimeService(
+            project_max_frames_per_segment=16,
+            recorder_cleanup_timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+        )
         await service.start_capture(CAPTURE_CONFIG, batch_size=10, project_path=handle.root)
         session_id = service.data_session_id
         await asyncio.sleep(0.05)
