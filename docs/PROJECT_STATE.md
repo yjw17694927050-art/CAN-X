@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-17 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4 — awaiting final independent acceptance, see §17)
+> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -238,7 +238,8 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
   hardening complete (SAFETY-01-FIX-2) ·
   emergency-stop epoch hardening complete (SAFETY-01-FIX-3) ·
   emergency-stop metadata hardening complete (SAFETY-01-FIX-4) ·
-  Awaiting final independent acceptance
+  Final Acceptance: PASS · Status: CLOSED   (independent acceptance —
+  project owner / independent reviewer)
   First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — all six fixed by
   SAFETY-01-FIX-1; the first verdict is preserved in §17.
   Second independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 1) — all three fixed
@@ -247,6 +248,9 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
   SAFETY-01-FIX-3; the third verdict is preserved in §17 as well.
   Fourth independent acceptance: NOT PASS (P0: 1, P1: 0, P2: 0) — fixed by
   SAFETY-01-FIX-4; the fourth verdict is preserved in §17 too.
+  Final independent acceptance: PASS (P0: 0, P1: 0, P2: 0) — merged to `main` as
+  c05debf9 with post-merge `main` CI green. The PASS is external; the development
+  agent did not write it (§17.15).
   Adds runtime/canx/safety/ and docs/architecture/SAFETY_ARCHITECTURE.md —
   safety domain, policy, contracts and tests only. It introduces no dangerous
   execution capability. See §17.
@@ -775,11 +779,13 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Hardening complete (SAFETY-01-FIX-2)
           Emergency-stop epoch hardening complete (SAFETY-01-FIX-3)
           Emergency-stop metadata hardening complete (SAFETY-01-FIX-4)
-          AWAITING FINAL INDEPENDENT ACCEPTANCE
+          Final Acceptance: PASS · Status: CLOSED   (independent acceptance)
           First independent acceptance: NOT PASS (P0: 3, P1: 2, P2: 1) — preserved in §17
           Second independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 1) — preserved in §17
           Third independent acceptance: NOT PASS (P0: 1, P1: 1, P2: 0) — preserved in §17
           Fourth independent acceptance: NOT PASS (P0: 1, P1: 0, P2: 0) — preserved in §17
+          Final independent acceptance: PASS (P0: 0, P1: 0, P2: 0) — merged to `main`
+          (c05debf9) with post-merge `main` CI green — preserved in §17
           Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
 ```
 
@@ -1026,20 +1032,22 @@ not product code.
 Level 1  Local Automated Verification          DONE
 Level 2  Repository Continuous Integration     DONE
 Level 3  Protected Integration Workflow        DONE
-Safety Foundation (SAFETY-01)                  IMPLEMENTED · REMEDIATED (FIX-1) ·
-                                               HARDENED (FIX-2) ·
-                                               EPOCH-HARDENED (FIX-3) ·
-                                               METADATA-HARDENED (FIX-4) ·
-                                               AWAITING FINAL INDEPENDENT ACCEPTANCE
+Safety Foundation (SAFETY-01)                  DONE · CLOSED
+                                               (Final Acceptance: PASS — independent
+                                               acceptance, merged to `main` as
+                                               c05debf9, post-merge CI green)
 Level 4  Multi-Agent Orchestration             NOT STARTED
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
 A Level 3 verdict — like every acceptance verdict here — is external. The `DONE` on Level 3 is the
 project owner / independent reviewer's CI-02 result (P0: 0, P1: 0, P2: 2 non-blocking, see §15),
-not a conclusion this document reached on its own. The Safety Foundation row becomes `DONE` only
-after its own independent acceptance; until then it stays `IMPLEMENTED · AWAITING INDEPENDENT
-ACCEPTANCE`. This record says what the tree contains, not that it has been accepted.
+not a conclusion this document reached on its own. The Safety Foundation row reads `DONE · CLOSED`
+because its own independent acceptance returned PASS *and* the accepted tree then reached `main`
+through the protected workflow with a green post-merge CI run (§17.15) — the row records work that
+was accepted and integrated, it is not a conclusion this document reached on its own. Level 4 and
+Level 5 remain `NOT STARTED`, and this record says what the tree contains, not that anything beyond
+SAFETY-01 has been accepted.
 
 ---
 
@@ -1131,13 +1139,39 @@ P0  Emergency Stop metadata could veto the safety reduction:
     while the operator believed they had pulled the stop.
 ```
 
+```text
+Final independent acceptance (after SAFETY-01-FIX-4):
+Project-owner / independent reviewer
+
+Final Acceptance: PASS
+Status: APPROVED FOR MERGE
+
+P0 = 0
+P1 = 0
+P2 = 0
+
+FIX-1 protections       PASS
+FIX-2 protections       PASS
+FIX-3 protections       PASS
+FIX-4 protections       PASS
+
+Latest PR head CI       PASS
+Ruleset                 ACTIVE
+Real TX added           NO
+Real UDS added          NO
+Dangerous execution     NO
+```
+
 **Status: implementation complete · remediation complete (FIX-1) · hardening
 complete (FIX-2) · emergency-stop epoch hardening complete (FIX-3) ·
-emergency-stop metadata hardening complete (FIX-4) · self-verification
-complete · AWAITING FINAL INDEPENDENT ACCEPTANCE.** The development agent did not
-write a `Final Acceptance: PASS` for this work at any point — not on the first
-submission, not after the first remediation, not after the second, not after the
-third, and not after the fourth.
+emergency-stop metadata hardening complete (FIX-4) · self-verification complete ·
+independently accepted · merged to `main` (merge commit c05debf9) · post-merge
+`main` CI green · Final Acceptance: PASS · Status: CLOSED.** The development agent
+did not write a `Final Acceptance: PASS` for this work at any point — not on the
+first submission, and not after any of the four remediations. The PASS recorded
+here is the external verdict; §17.15 is the record of the merge and of the
+post-merge `main` CI that had to pass before this document was allowed to write
+`CLOSED`.
 
 ### 17.1 The question it answers
 
@@ -1798,3 +1832,88 @@ concern the emergency-stop path, and §6 of the brief is explicit that the
 best-effort helper must not be applied globally), and it is a diagnosability
 defect rather than a safety one. Recorded so the next review sees it was
 considered rather than missed.
+
+### 17.15 Merge and post-merge verification (SAFETY-01-CLOSE)
+
+The independent verdict was `PASS / APPROVED FOR MERGE` on head `ca2d6f8`. What
+this subsection records is the second half of that sentence: the accepted tree
+actually reached `main` through the protected workflow, and `main` passed its own
+CI afterwards. Those are two separate facts from "the PR was reviewed", and the
+`CLOSED` above is only written because all three hold.
+
+```text
+Pre-merge (re-read live, not taken from the handoff brief)
+  main before merge       4ecc6cde8999e4ea8be53a63c12f17f2899e8189
+  PR #4                   OPEN, not draft, MERGEABLE, mergeStateStatus CLEAN
+  PR head                 ca2d6f8fab2ee930724d212c3666d04164d94245
+                          == the independently accepted head; no commit after it
+  PR head check-runs      Runtime / Python      success
+                          Frontend / TypeScript success
+                          Desktop System / Rust success
+                          Quality Gate          success
+  ruleset                 main-protected-integration, enforcement active,
+                          required check "Quality Gate", bypass_actors [],
+                          current_user_can_bypass "never"
+  bypass used             NO
+
+Merge
+  method                  merge commit (preserves the FIX-1 → FIX-4 audit trail;
+                          the ruleset allows merge / squash / rebase)
+  merge commit            c05debf9faa625810b27a391d5db979d30bea1e2
+  parents of the merge    4ecc6cde (old main) + ca2d6f8 (PR head)
+  merged at               2026-09-18T01:31:38Z
+  merged by               yjw17694927050-art
+  new main HEAD           c05debf9faa625810b27a391d5db979d30bea1e2
+  PR #4 state             MERGED
+```
+
+`ca2d6f8` being an *ancestor* of the new `main` HEAD was checked with
+`git merge-base --is-ancestor` rather than inferred from the PR's own state — a
+merge commit that lost the branch's commits would still report `MERGED`.
+
+```text
+Post-merge CI (a different run from the PR run, as it must be)
+  run id                  35295673078
+  event                   push
+  branch                  main
+  head                    c05debf9faa625810b27a391d5db979d30bea1e2
+  conclusion              success
+
+  Runtime / Python        success
+    pytest                2228 passed, 6 skipped in 182.87s   (0 failed)
+    ruff                  All checks passed!
+    mypy                  Success: no issues found in 80 source files
+  Frontend / TypeScript   success
+  Desktop System / Rust   success   (31 tests, 0 failed)
+  Quality Gate            success
+
+  the 6 skips             all tests/integration/test_packaged_runtime_smoke.py,
+                          reason "packaged canx-runtime.exe has not been built" —
+                          the pre-existing packaged-runtime skips, none added by
+                          SAFETY-01
+  rerun / flake           none — the run was green on its first and only attempt
+```
+
+The `2228 passed / 6 skipped` figures are read from *this* run's log. The PR run
+reported a different split (`2233 passed / 1 skipped` locally) because the local
+environment has a `canx-runtime.exe` console script so the packaged smoke tests
+execute rather than skip; the totals agree at 2234 collected, and neither number
+is reused as the other's evidence.
+
+```text
+Ruleset after the merge    unchanged
+  enforcement              active
+  required status check    Quality Gate
+  bypass_actors            []
+  current_user_can_bypass  never
+  main ref                 protected: true
+```
+
+**No `admin` bypass, no force push, no temporary ruleset disable, no direct push
+to `main`.** The merge went `PR → Quality Gate → ruleset → protected merge`, and
+the `CLOSED` status was written only after the post-merge `main` CI came back
+green, in a separate docs-only change.
+
+Scope of this closeout: documentation only. It adds no product code, no agent
+code and no capability. AGENT-01 has **not** started, V0.3-12 has **not** started,
+and CD-01 has **not** started — each waits on its own explicit task brief.
