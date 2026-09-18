@@ -2,11 +2,10 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-19 (CI-03-FIX-1 — Cross-Domain Dependency & Fail-Closed Hardening —
-> routes the Runtime control API and the Tauri IPC boundary across their real consumers and makes
-> `full_required` fail closed; CI-03 — Change-Aware Tiered Quality Gate is AWAITING INDEPENDENT
-> RE-ACCEPTANCE. DOC-GOV-01 — Documentation & Agent Context Governance — externally accepted and
-> integrated; Final Acceptance: PASS · Status: CLOSED.)
+> **Updated**: 2026-09-19 (CI-03 — Change-Aware Tiered Quality Gate — Final Acceptance: PASS ·
+> Status: CLOSED after protected integration: accepted head 6edac09, PR #16, merge 11d362e,
+> post-merge FULL main CI 35370751537 SUCCESS. DOC-GOV-01 — Documentation & Agent Context
+> Governance — Final Acceptance: PASS · Status: CLOSED.)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -411,19 +410,21 @@ this document it must attribute it, and must not present its own conclusion as t
 ## 12. Immediate Next Action
 
 ```text
-Awaiting independent acceptance:
-  CI-03 — Change-Aware Tiered Quality Gate
-  Status: AWAITING INDEPENDENT RE-ACCEPTANCE (CI-03-FIX-1)
+Just CLOSED — CI-03, Change-Aware Tiered Quality Gate
+  Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · CI-03-FIX-1 accepted
+  at head 6edac0982c78a6e2cc1c17d63f4937269db552fd · PR #16 · merge 11d362e
+  → `main` 11d362efeb78d369b0ab5a5dbb6f2350186cc0a9 (protected merge, merge commit, no bypass).
+  Accepted CI: 35368535974 (classification full; Runtime / Frontend / Rust / Quality Gate SUCCESS).
+  Post-merge FULL main CI: 35370751537 attempt 1 SUCCESS on 11d362e (classification full;
+  pytest 2715 passed / 6 skipped · ruff clean · mypy 98 files · frontend 162 · Rust 28 unit + 3 integration).
   CI control plane only — no product / runtime / safety / schema / API / dependency change, and the
-  ruleset is unchanged. CI-03 returned NOT PASS (P0: 0 · P1: 2 · P2: 2): a real Runtime control-API
-  Rust consumer was not routed, the Tauri IPC Rust+TypeScript boundary was classified Rust-only,
-  `full_required` did not fail closed, and the Git-backed diff had no real-repository coverage.
-  FIX-1 routes `runtime/canx/api/app.py` to Runtime + Frontend + Rust, routes `src-tauri/src/**` and
-  the TypeScript IPC bridges to Frontend + Rust, makes `full_required` (and the classification label)
-  fail closed, and adds real temporary-repo rename/delete/multi-commit/merge-base tests. Design +
-  evidence: docs/engineering/CI_TIERED_QUALITY_GATE.md; policy: INTEGRATION_POLICY.md §18.
+  ruleset is unchanged. CI-03 first returned NOT PASS (P0: 0 · P1: 2 · P2: 2) and was closed by
+  CI-03-FIX-1, which routed `runtime/canx/api/app.py` to Runtime + Frontend + Rust, routed
+  `src-tauri/src/**` and the TypeScript IPC bridges to Frontend + Rust, made `full_required` (and the
+  classification label) fail closed, and added real temporary-repo rename/delete/multi-commit/merge-base
+  tests. Design + evidence: docs/engineering/CI_TIERED_QUALITY_GATE.md; policy: INTEGRATION_POLICY.md §18.
 
-Just CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
+Earlier CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
   Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · PR #13 · head 38914b6
   → `main` e183c53 (protected merge, no bypass) · post-merge CI 35361083707 SUCCESS on attempt 1.
   Docs-only: no product code, runtime, safety, schema, API, dependency or CI-semantics change.
@@ -516,7 +517,9 @@ the two real cross-domain dependencies that CI-03 missed — the Rust sidecar's 
 Runtime control API (`runtime/canx/api/app.py` → Runtime + Frontend + Rust) and the Tauri IPC boundary
 (`src-tauri/src/**` → Frontend + Rust; the TypeScript IPC bridges → Frontend + Rust) — and made an
 unreadable `full_required` (and classification label) fail the gate rather than be defaulted away.
-Rules and evidence: `docs/engineering/CI_TIERED_QUALITY_GATE.md`.
+Rules and evidence: `docs/engineering/CI_TIERED_QUALITY_GATE.md`. The ~90 % reduction is measured for
+the **docs-only** case only: Runtime-only, Frontend-only and Rust-only routings have no real GitHub
+Actions benchmark, and no speed-up is claimed for them.
 
 **What CI does not establish** — see §9. `tests/integration/test_packaged_runtime_smoke.py` (6 tests)
 skips on CI (no packaged `canx-runtime.exe` staged) and runs locally after
