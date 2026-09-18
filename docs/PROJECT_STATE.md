@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 0), remediated by AGENT-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0) on accepted head `2eab62bfc53867f44996dafc08c32b84fabea7fd`, merged to `main` as `951e20272211d2fd3934f4c67063985d64229d7a` through protected PR #7, with post-merge `main` CI run `35315019912` green — Final Acceptance: PASS, Status: CLOSED, see §18)
+> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 0), remediated by AGENT-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0) on accepted head `2eab62bfc53867f44996dafc08c32b84fabea7fd`, merged to `main` as `951e20272211d2fd3934f4c67063985d64229d7a` through protected PR #7, with post-merge `main` CI run `35315019912` green — Final Acceptance: PASS, Status: CLOSED, see §18; RELIABILITY-01 Capture / DataSession Finalization Timing — first independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by RELIABILITY-01-FIX-1; second independent acceptance on accepted head `07a95f675527cb14c742edc93f108f5c1260ef06` PASS (P0: 0, P1: 0, P2: 1 PR metadata, resolved before the merge), integrated by RELIABILITY-01-CLOSE-FINAL — merged to `main` as `d22e989910ae896d40f59e718a502993126dd055` through protected PR #10, with post-merge `main` CI run `35349031072` green — Final Acceptance: PASS, Status: CLOSED)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -831,6 +831,32 @@ AGENT-01 — Multi-Agent Orchestration Foundation   (not a numbered phase)
           Adds .agent/ + tools/agent/ + docs/engineering/MULTI_AGENT_PROTOCOL.md
           + docs/ADR/0002-parallel-development-serial-integration.md
           + INTEGRATION_POLICY.md §17 + one ci.yml mypy-scope line
+
+RELIABILITY-01 — Capture / DataSession Finalization Timing   (not a numbered phase)
+          First independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1)
+          RELIABILITY-01-FIX-1 implementation complete · self-verification complete
+          (sibling success-path test-budget hardening)
+          Second independent acceptance: PASS (P0: 0, P1: 0, P2: 1 PR metadata)
+          on accepted head `07a95f675527cb14c742edc93f108f5c1260ef06`
+          RELIABILITY-01-FIX-2 implementation complete · self-verification complete
+          (fault/healthy budget separation, fail-safe FinalizationHarness,
+          executor-wait removal, diagnostic COMPLETED assertions)
+          3x same-SHA stability gate: 35341733910 / 35342314866 / 35342873157
+          — all SUCCESS on Runtime / Frontend / Rust / Quality Gate
+          RELIABILITY-01-CLOSE-FINAL: protected merge of PR #10 to `main` as
+          `d22e989910ae896d40f59e718a502993126dd055` (merge commit, no bypass)
+          Post-merge `main` CI: run `35349031072` SUCCESS (attempt 1)
+          Final Acceptance: PASS · Status: CLOSED
+          Adds docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md and test-harness
+          hardening in three test modules. No production Runtime change, production
+          cleanup default unchanged (1.0 s), assertion strength unchanged.
+          The reliability blocker for AGENT-02 is CLEARED; AGENT-02 itself has not
+          started.
+
+Immediate Next Engineering Task
+          DOC-GOV-01 — Documentation & Agent Context Governance
+          NOT STARTED · READY. Begins only after independent acceptance of this
+          closeout.
 ```
 
 V0.3-11 is CLOSED. It added one read-only Runtime endpoint —
@@ -2776,4 +2802,28 @@ Post-merge CI:    35315019912 — SUCCESS
 AGENT-02 started: NO
 V0.3-12 started:  NO
 CD-01 started:    NO
+```
+
+```text
+RELIABILITY-01 — Capture / DataSession Finalization Timing
+
+Final Acceptance: PASS
+Status: CLOSED
+Acceptance source: external / independent reviewer
+
+Accepted PR head: 07a95f675527cb14c742edc93f108f5c1260ef06
+PR:               #10
+Merge commit:     d22e989910ae896d40f59e718a502993126dd055
+Merge method:     merge commit (protected integration — no admin bypass,
+                  no force push, ruleset unchanged)
+Merged at:        2026-09-18T13:14:05Z
+Same-SHA gate:    35341733910 / 35342314866 / 35342873157 — SUCCESS
+Post-merge CI:    35349031072 — SUCCESS (attempt 1)
+
+RELIABILITY-01 blocker for AGENT-02: CLEARED
+
+DOC-GOV-01 started: NO  (READY — immediate next engineering task)
+AGENT-02 started:   NO
+V0.3-12 started:    NO
+CD-01 started:      NO
 ```
