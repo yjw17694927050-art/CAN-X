@@ -883,3 +883,53 @@ async def test_the_harness_releases_a_parked_worker_when_the_body_fails(
         # …and joined the worker, so nothing is left parked or outstanding.
         assert parked_service.finalization_pending is False
         assert await asyncio.to_thread(parked_service.wait_for_finalization, 5) is True
+
+
+# ---------------------------------------------------------------- TEMPORARY
+# CI diagnostics: REMOVED before handoff. Not part of the delivered fix.
+async def test_zzz_temporary_worker_arrival_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """How long does the worker take to reach its blocking point on the runner?
+
+    Two Run-1 failures — and the FIX-1 attempt-1 failures with them — are both
+    "the worker never reached its blocking phase", which a message that only says
+    "did not arrive inside the window" cannot diagnose. If the 0.8 s fault
+    deadline expires before the worker thread is scheduled onto ``flush_pending``,
+    the gate closes first and the worker never arrives at all, so the arrival time
+    is the number the deadline has to be sized against.
+    """
+    import time
+
+    rows: list[str] = []
+    for index in range(6):
+        with project(tmp_path / f"arrival-{index}") as handle:
+            service = RuntimeService(
+                project_max_frames_per_segment=SEGMENT_LIMIT,
+                recorder_cleanup_timeout_seconds=FAULT_CLEANUP_TIMEOUT_SECONDS,
+            )
+            block = BlockingFinalize(monkeypatch, "flush_pending")
+            await service.start_capture(
+                VirtualAdapterConfig(rate_hz=RATE_HZ, seed=5),
+                batch_size=BATCH_SIZE,
+                project_path=handle.root,
+            )
+            await asyncio.sleep(0.25)
+            stop_started = time.perf_counter()
+            stop_task = asyncio.create_task(service.stop_capture())
+            try:
+                await block.signals.wait(
+                    "entered", timeout=20, failure="worker never reached flush_pending"
+                )
+                arrival = time.perf_counter() - stop_started
+            except AssertionError:
+                arrival = -1.0
+            await asyncio.wait_for(stop_task, timeout=30)
+            code = service.failure.code if service.failure is not None else "none"
+            block.release.set()
+            await asyncio.wait_for(
+                asyncio.to_thread(service.wait_for_finalization, 20), timeout=25
+            )
+            rows.append(f"[{index}] arrival={arrival:.3f}s failure={code}")
+            monkeypatch.undo()
+    assert False, "TEMPORARY-WORKER-ARRIVAL :: " + " || ".join(rows)
