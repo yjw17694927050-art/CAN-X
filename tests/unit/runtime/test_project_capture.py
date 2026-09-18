@@ -8,6 +8,7 @@ degrades capture without stopping it or claiming a completed recording.
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 from canx.data.model import DataSessionState
@@ -46,6 +47,33 @@ def project(tmp_path: Path, *, name: str = "vehicle.canx") -> ProjectHandle:
     return ProjectService().create(tmp_path / name, display_name="Vehicle A")
 
 
+def completion_diagnostics(service: RuntimeService, stored: Any) -> str:
+    """Why a session is not ``COMPLETED``, in the runtime's own words.
+
+    A bare ``FAILED != COMPLETED`` in a CI log says nothing about which stage
+    consumed the budget, so a success assertion reports the durable state, the
+    runtime's capture state, the failure code and context behind it, and whether
+    a finalization is still outstanding.
+    """
+    failure = service.failure
+    code = failure.code if failure is not None else None
+    message = failure.message if failure is not None else None
+    context = dict(failure.context) if failure is not None else None
+    return (
+        f"session {stored.session_id} is {stored.state}, not COMPLETED "
+        f"[capture_state={service.capture_state} failure={code} "
+        f"message={message!r} context={context} "
+        f"finalization_pending={service.finalization_pending}]"
+    )
+
+
+def assert_completed(service: RuntimeService, stored: Any) -> None:
+    """Assert a session reached ``COMPLETED``, or say exactly why it did not."""
+    if stored.state is DataSessionState.COMPLETED:
+        return
+    raise AssertionError(completion_diagnostics(service, stored))
+
+
 def sessions(root: Path) -> tuple:
     return DataSessionService(root).list_sessions()
 
@@ -72,7 +100,7 @@ async def test_a_project_capture_creates_one_data_session_bound_to_the_stream(
 
         assert session_id is not None
         stored = DataSessionService(handle.root).get_session(session_id)
-        assert stored.state is DataSessionState.COMPLETED
+        assert_completed(service, stored)
         assert stored.stream_id == stream_id
         assert stored.project_id == handle.project_id
         assert stored.frame_count > 0
@@ -104,7 +132,7 @@ async def test_a_project_capture_does_not_depend_on_a_stream_client(tmp_path: Pa
         metrics = service.metrics_snapshot()
         assert session_id is not None
         stored = DataSessionService(handle.root).get_session(session_id)
-        assert stored.state is DataSessionState.COMPLETED
+        assert_completed(service, stored)
         assert stored.frame_count == metrics.captured_frames == metrics.recorded_frames
         assert metrics.dropped_frames == 0
         assert metrics.sequence_gaps == 0
@@ -218,10 +246,12 @@ async def test_a_startup_failure_after_the_session_was_created_leaves_it_failed(
         await service.start_capture(CAPTURE_CONFIG, batch_size=10, project_path=handle.root)
         assert service.capture_state is CaptureSessionState.RUNNING
         await service.stop_capture()
-        assert [session.state for session in sessions(handle.root)] == [
-            DataSessionState.FAILED,
-            DataSessionState.COMPLETED,
-        ]
+        recovered = sessions(handle.root)
+        expected_states = [DataSessionState.FAILED, DataSessionState.COMPLETED]
+        assert [session.state for session in recovered] == expected_states, (
+            "the recovery capture did not complete: "
+            f"{completion_diagnostics(service, recovered[-1])}"
+        )
 
 
 async def test_repeated_project_captures_create_independent_sessions(tmp_path: Path) -> None:
@@ -243,7 +273,8 @@ async def test_repeated_project_captures_create_independent_sessions(tmp_path: P
         assert session_ids[0] != session_ids[1]
         recorded = sessions(handle.root)
         assert {session.session_id for session in recorded} == set(session_ids)
-        assert all(session.state is DataSessionState.COMPLETED for session in recorded)
+        for session in recorded:
+            assert_completed(service, session)
 
 
 async def test_stopping_a_project_capture_twice_is_safe(tmp_path: Path) -> None:
@@ -261,7 +292,7 @@ async def test_stopping_a_project_capture_twice_is_safe(tmp_path: Path) -> None:
 
         assert session_id is not None
         stored = DataSessionService(handle.root).get_session(session_id)
-        assert stored.state is DataSessionState.COMPLETED
+        assert_completed(service, stored)
         assert service.has_session is False
 
 

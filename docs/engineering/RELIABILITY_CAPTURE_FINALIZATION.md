@@ -13,10 +13,12 @@ RELIABILITY-01        the original flake and its first remediation
                       (merged to main as PR #9 / 831930ee)
 RELIABILITY-01-FIX-1  the sibling the first remediation did not cover, exposed by
                       the post-merge main CI run 35321725801
+RELIABILITY-01-FIX-2  the test harness itself: two budgets instead of one,
+                      a teardown that owns every gate, no executor thread spent
+                      on waiting, and failures that explain themselves
 ```
 
-The second increment is remediation of the *same contract* in a second file. It
-extends and corrects the first; nothing in the first is reverted.
+Each increment extends the previous one; nothing earlier is reverted.
 
 ## Symptom
 
@@ -364,6 +366,27 @@ The single skip is `tests/unit/dbc/test_dbc_asset.py`'s directory-link case,
 which this Windows host cannot create (`WinError 1314`); it is environmental and
 pre-existing, unrelated to this change.
 
+Local, on the FIX-2 tree:
+
+```text
+the three target files, repeated ×3                 34 passed / 34 / 34
+same three under 12 busy processes, ×3              34 passed / 34 / 34, 0 failures
+harness teardown probe, pre-FIX-2 vs harness        gate released False -> True,
+                                                    worker joined False -> True,
+                                                    teardown 1.009 s -> 0.000 s
+executor probe, 5 concurrent waits                  +4 threads -> +0 threads
+full pytest                                         2604 passed, 1 skipped in 238.93 s
+ruff check runtime tests tools                      All checks passed
+mypy runtime tools/agent                            Success: no issues found in 95 source files
+frontend  lint / typecheck / test / build           passed; 162 tests; built
+rust      fmt --check / clippy / cargo test         passed; 31 tests
+```
+
+CI stability is a separate, weaker claim than "it passed once": the FIX-2 head is
+required to run the same SHA three times, all green, before this increment is
+offered for acceptance. Those run ids are recorded in the FIX-2 completion report
+rather than asserted here.
+
 GitHub:
 
 ```text
@@ -373,6 +396,95 @@ post-merge main   run 35321725801   Runtime / Python failure   <- repaired here
 
 The FIX-1 head's own run is what this branch exists to produce; its result lives
 in the pull request's check rollup rather than being asserted here.
+
+## RELIABILITY-01-FIX-2 — deterministic finalization harness
+
+FIX-1 sized the budget. FIX-2 makes the *harness* deterministic, because the two
+red attempts on the FIX-1 head failed on different tests with different counts and
+one of them expired a 15 s wait — a signature that points at the test rig rather
+than at the deadline.
+
+### P1-1 — the fault deadline no longer leaks into a healthy path
+
+`test_recorder_cleanup_timeout.py` used one constant for two different questions:
+
+```text
+FAULT_CLEANUP_TIMEOUT_SECONDS    0.8  a deadline a failure injection *wants* to expire
+HEALTHY_CLEANUP_TIMEOUT_SECONDS  6.0  the stop budget a capture needs to reach COMPLETED
+```
+
+Two tests ran a *recovery capture* through the same 0.8 s runtime that had just
+been used to force a timeout, and then required `COMPLETED` from it:
+
+```text
+test_a_new_capture_is_refused_while_a_finalize_worker_is_still_running
+test_a_pending_finalization_blocks_the_next_capture_and_repeated_stop_is_safe
+```
+
+Both now keep the fault half on the fault runtime — the refusal, the pending flag
+and its release are all still asserted there — and run the recovery capture that
+must complete on a runtime that states the healthy budget. The blocking contract
+and the completion contract are each pinned by the runtime that should own them;
+neither assertion was relaxed, and no production default was touched.
+
+Tests whose `COMPLETED` is produced by a worker clearing its own gate rather than
+by a deadline (in-flight terminal commit, shutdown-while-pending, the slow-but-
+in-time finalize) keep the fault budget, and their docstrings say why.
+
+### P1-2 — the teardown owns every gate
+
+`asyncio` cannot cancel a worker thread. A test that failed while a worker was
+parked on `BlockingFinalize.release` or `FlushCompletedSeam.terminal_unblocked`
+left that worker — and its default-executor slot, and sometimes a held SQLite write
+lock — behind for the next test; the gate's own 30 s/60 s timeout was the only
+thing that eventually freed it. Measured on the pre-FIX-2 shape:
+
+```text
+                              teardown   gate released   worker joined (<1 s)
+pre-FIX-2 shape (no harness)   1.009 s   False           False
+harness shape                  0.000 s   True            True
+```
+
+Every parkable resource is now created through `FinalizationHarness`, whose
+`close()` runs in a `finally` via the `finalization_harness` async context
+manager: it releases every gate, rolls back and closes the SQLite write lock,
+undoes the monkeypatch, and joins the finalization worker with a bounded wait. A
+failing body can no longer strand anything for the next test to trip over.
+
+`test_the_harness_releases_a_parked_worker_when_the_body_fails` pins the property:
+it drives the exact failure (a worker parked, the gate closed, the body raising),
+then asserts the gate is released, nothing is pending, and the worker is joined.
+
+### FIX-2 §4 — the waiting side no longer costs an executor thread
+
+The waits used `asyncio.to_thread(threading.Event.wait, …)`, which occupies a
+default-executor worker for the whole wait. Five concurrent waits, measured while
+they were in flight:
+
+```text
+asyncio.to_thread(Event.wait)         1 -> 5   (+4 executor threads)
+asyncio.Event + call_soon_threadsafe  5 -> 5   (+0)
+```
+
+`WorkerSignals` keeps the blocking side a `threading.Event` — no worker can await
+— and signals the async side through `loop.call_soon_threadsafe`, so a parked
+worker no longer costs a waiting thread. Production behaviour is untouched: this
+is entirely test-side plumbing.
+
+### FIX-2 §5 — a failure now explains itself
+
+`assert_completed()` replaces the bare `assert stored.state is COMPLETED` in all
+three files. The condition and its strength are unchanged; what is added is a
+diagnosis, because a bare `FAILED != COMPLETED` in a CI log said nothing about
+which stage consumed the budget:
+
+```text
+session <id> is <state>, not COMPLETED
+[capture_state=… failure=<code> message=… context=… finalization_pending=…]
+```
+
+No `sleep`, retry, `xfail`, `skip` or `continue-on-error` was added anywhere, and
+no failure-semantics budget was widened.
 
 ## Remaining uncertainty
 
@@ -393,6 +505,13 @@ in the pull request's check rollup rather than being asserted here.
   budget. They are recorded as an **open** runner-starvation observation; no
   claim is made that this increment fixes them, and no assertion, wait window or
   failure-semantics budget in the affected tests was changed to make them pass.
+  FIX-2 removes the harness-owned part of that exposure — a failed test no longer
+  leaves a parked worker or a held lock behind, and a parked worker no longer
+  costs an executor thread — but runner-side starvation itself is outside what a
+  test harness can fix, and is not claimed as fixed.
+- Three consecutive green CI runs on one SHA is evidence about that SHA on
+  `windows-latest`, not a proof that the flake class is gone. The failure rate was
+  always low (2 of 114 contended local runs); three runs cannot exclude it.
 - The reproduction rate is low by nature; a green repetition is not evidence that
   the historical CI failure did not occur. The historical run remains evidence.
 
