@@ -158,3 +158,24 @@ def test_the_fallback_is_used_only_when_no_task_worktree_is_registered(
     assert evidence.source == SOURCE_BRANCH_REF
     assert evidence.worktree_path is None
     assert evidence.branch == TASK_BRANCH
+    assert evidence.clean
+
+
+def test_a_leftover_directory_at_the_declared_path_is_not_reported_clean(
+    tmp_path: Path,
+) -> None:
+    """Removing a worktree's registration must not launder its dirty state.
+
+    A residual directory left where the task worktree used to be is treated as
+    dirty, not assumed clean: the branch-ref fallback means "nothing is left to
+    hold uncommitted work", not "we inspected a worktree and found it clean"
+    (AGENT-01-FIX-2 §20).
+    """
+    repo, worktree, task = _delivered(tmp_path)
+    remove_worktree(repo.root, worktree, allow_unmerged=True)
+    worktree.mkdir(parents=True, exist_ok=True)
+    (worktree / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+
+    evidence = collect_repository_evidence(repo.root, task)
+    assert evidence.source == SOURCE_BRANCH_REF
+    assert not evidence.clean

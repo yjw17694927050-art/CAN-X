@@ -312,7 +312,34 @@ def test_active_plus_dispatched_never_exceeds_the_cap(
 ) -> None:
     tasks, cfg = _scenario(active, ready, max_sub)
     result = plan(tasks, cfg)
-    assert len(result.active_ids) + len(result.runnable_ids()) <= max_sub
+    assert result.available_slots == max(0, max_sub - len(result.active_ids))
+    assert len(result.runnable_ids()) <= result.available_slots
+    assert len(result.active_ids) + len(result.runnable_ids()) <= max(
+        max_sub, len(result.active_ids)
+    )
+
+
+def test_an_over_dispatched_agent_set_is_reported_not_rounded_away() -> None:
+    """The planner cannot create this state, but it must not hide it.
+
+    Five Sub-Agents already ``IN_PROGRESS`` against a cap of four: the planner
+    adds nothing (``available_slots`` is 0) and reports the excess instead of
+    letting a bare "active + new <= max" claim stand (FIX-2 §7).
+    """
+    tasks, cfg = _scenario(5, 3, 4)
+    result = plan(tasks, cfg)
+    assert len(result.active_ids) == 5
+    assert result.available_slots == 0
+    assert result.runnable_ids() == ()
+    assert result.active_over_capacity == 1
+    assert result.to_dict()["capacity"]["active_over_capacity"] == 1
+
+
+def test_a_well_behaved_plan_reports_no_over_capacity() -> None:
+    tasks, cfg = _scenario(3, 4, 4)
+    result = plan(tasks, cfg)
+    assert result.active_over_capacity == 0
+    assert result.to_dict()["capacity"]["active_over_capacity"] == 0
 
 
 def test_capacity_is_deterministic_with_active_slots() -> None:
