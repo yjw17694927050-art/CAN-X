@@ -91,6 +91,8 @@ def test_capacity_deferral_is_reported_as_its_own_kind() -> None:
     payload = result.to_dict()
     assert payload["capacity"] == {
         "max_sub_agents": 4,
+        "active": [],
+        "available_slots": 4,
         "selected": ["AGENT-02-A", "AGENT-02-B", "AGENT-02-C", "AGENT-02-D"],
         "capacity_deferred": ["AGENT-02-E"],
     }
