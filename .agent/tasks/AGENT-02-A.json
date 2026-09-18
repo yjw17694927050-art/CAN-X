@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "task_id": "AGENT-02-A",
+  "title": "Bring the desktop DBC read-model client validation to domain parity",
+  "objective": "The desktop DBC read-model client refuses a malformed Runtime read model at the client boundary instead of admitting it into renderer state: duplicate asset ids, duplicate frame ids inside one database, and a frame whose is_extended disagrees with its frame_id range are rejected with a typed client error. This closes the recorded limitation that client-side validation is contract-shape only (docs/PROJECT_STATE.md §9).",
+  "scope": "The DBC read-model client validator and its vitest suite.",
+  "non_goals": [
+    "Re-implementing the Runtime domain validator - the Runtime stays authoritative",
+    "Changing the Runtime HTTP contract or any module under runtime/",
+    "Adding UI, a new panel, or any new user-visible behaviour"
+  ],
+  "base_sha": "bf88873d583a82b28ca7e52bafac208e8c2c7f81",
+  "branch": "agent/AGENT-02-A-dbc-client-validation",
+  "worktree": ".worktrees/agent-02-a",
+  "owner": "sub-a",
+  "allowed_paths": [
+    "apps/desktop/src/runtime/dbc-client.ts",
+    "apps/desktop/src/runtime/dbc-client.test.ts"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src-tauri/**",
+    "runtime/**",
+    ".agent/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "runtime/canx/api/dbc.py",
+      "sha": "bf88873d583a82b28ca7e52bafac208e8c2c7f81"
+    }
+  ],
+  "acceptance_criteria": [
+    "A read model carrying two assets with the same asset id is refused with a typed client error, and no renderer state is produced from it",
+    "A read model carrying two frames with the same frame id, or a frame whose is_extended disagrees with its frame_id, is refused the same way",
+    "A well-formed read model is still accepted unchanged - the change adds no false rejection"
+  ],
+  "required_tests": [
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for pnpm test, pnpm typecheck and pnpm lint at the repository root",
+    "Name the new test cases and confirm the pre-existing dbc-client tests still pass",
+    "State explicitly that no Runtime file and no Rust file was touched"
+  ],
+  "risk_class": "LOW",
+  "status": "PLANNED",
+  "revision": 1
+}
