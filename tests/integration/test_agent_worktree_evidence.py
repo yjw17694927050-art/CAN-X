@@ -12,10 +12,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from agent_git_sandbox import GIT_IDENTITY, SandboxRepository, git, make_repository
+from agent_git_sandbox import (
+    CANONICAL_ORIGIN,
+    GIT_IDENTITY,
+    SandboxRepository,
+    git,
+    make_repository,
+)
 
 from tools.agent.config import AgentConfig, load_config
 from tools.agent.contracts import RiskClass, TaskContract, TestResult
+from tools.agent.errors import WorktreeConflictError
 from tools.agent.evidence import (
     SOURCE_BRANCH_REF,
     SOURCE_WORKTREE,
@@ -179,3 +186,125 @@ def test_a_leftover_directory_at_the_declared_path_is_not_reported_clean(
     evidence = collect_repository_evidence(repo.root, task)
     assert evidence.source == SOURCE_BRANCH_REF
     assert not evidence.clean
+
+
+# ------------------------------ FIX-3: the contract freezes the worktree path AND branch
+#
+# The contract declares `branch` and `worktree`; Git must agree with **both**.
+# A live registered worktree for the task's branch may never be ignored in favour
+# of the branch-ref fallback (AGENT-01-FIX-3 §4-§15).
+
+WRONG_PATH = ".worktrees/wrong-location"
+OTHER_BRANCH = "agent/AGENT-02-B-other"
+
+
+def _registered_worktree(
+    repo: SandboxRepository, path: Path, branch: str, base: str, *, dirty: bool = False
+) -> Path:
+    """A real linked worktree with one delivered commit, optionally dirty."""
+    create_worktree(repo.root, task_id="AGENT-02-A", branch=branch, path=path, base_sha=base)
+    (path / "runtime" / "canx" / "foo").mkdir(parents=True, exist_ok=True)
+    (path / "runtime" / "canx" / "foo" / "a.py").write_text("a = 2\n", encoding="utf-8")
+    git(path, ["add", "-A"])
+    git(path, [*GIT_IDENTITY, "commit", "-m", "deliver the owned change"])
+    if dirty:
+        (path / "DIRTY.txt").write_text("uncommitted\n", encoding="utf-8")
+    return path
+
+
+def test_the_expected_branch_at_the_wrong_path_is_refused(tmp_path: Path) -> None:
+    """RED -> GREEN: this used to fall back to branch-ref and report clean."""
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    wrong = repo.root / WRONG_PATH
+    _registered_worktree(repo, wrong, TASK_BRANCH, base, dirty=True)
+    task = _task(base)
+
+    with pytest.raises(WorktreeConflictError) as raised:
+        collect_repository_evidence(repo.root, task)
+    assert raised.value.code == "agent.worktree_conflict"
+    assert Path(str(raised.value.details["actual_worktree"])).resolve() == wrong.resolve()
+    assert raised.value.details["expected_worktree"] == WORKTREE_REL
+
+    # The final gate refuses too: a dirty live worktree is never laundered into
+    # clean branch-ref evidence.
+    readiness = evaluate_integration(
+        _handoff(wrong, task),
+        task,
+        config(),
+        IntegrationContext.build((task,), config(), base),
+        repository=repo.root,
+    )
+    assert not readiness.ready
+    assert "agent.worktree_conflict" in readiness.blockers
+
+
+def test_a_declared_path_holding_the_wrong_branch_is_refused(tmp_path: Path) -> None:
+    """Case B: the declared path exists but is checked out on another branch."""
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    declared = repo.root / WORKTREE_REL
+    _registered_worktree(repo, declared, OTHER_BRANCH, base)
+    task = _task(base)
+
+    with pytest.raises(WorktreeConflictError) as raised:
+        collect_repository_evidence(repo.root, task)
+    assert raised.value.code == "agent.worktree_conflict"
+    assert raised.value.details["actual_branch"] == OTHER_BRANCH
+    assert raised.value.details["expected_branch"] == TASK_BRANCH
+
+
+def test_the_branch_ref_fallback_survives_when_nothing_is_registered(
+    tmp_path: Path,
+) -> None:
+    """Case E: neither the declared path nor the branch is registered."""
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    git(repo.root, ["branch", TASK_BRANCH])  # a branch ref, no worktree
+    task = _task(base)
+
+    evidence = collect_repository_evidence(repo.root, task)
+    assert evidence.source == SOURCE_BRANCH_REF
+    assert evidence.worktree_path is None
+    assert evidence.clean
+
+
+def test_ambiguous_worktree_metadata_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """Case D: two records for the same task path/branch must not pick the first."""
+    from tools.agent import evidence as evidence_module
+    from tools.agent.worktree import list_worktrees
+
+    repo, _worktree, task = _delivered(tmp_path)
+    real = list_worktrees(repo.root)
+    monkeypatch.setattr(
+        evidence_module, "list_worktrees", lambda _root: (*real, real[-1])
+    )
+
+    with pytest.raises(WorktreeConflictError) as raised:
+        collect_repository_evidence(repo.root, task)
+    assert "ambiguous" in raised.value.message
+
+
+def test_the_trust_chain_binds_repository_branch_and_path(tmp_path: Path) -> None:
+    """One end-to-end local gate over the whole chain (AGENT-01-FIX-3 §42)."""
+    repo, worktree, task = _delivered(tmp_path)
+    handoff = _handoff(worktree, task)
+    context = IntegrationContext.build((task,), config(), task.base_sha)
+
+    ready = evaluate_integration(handoff, task, config(), context, repository=repo.root)
+    assert ready.ready, ready.details
+
+    # Same task, same worktree, different repository identity.
+    git(repo.root, ["remote", "set-url", "origin", "https://github.com/other/repo.git"])
+    wrong_repo = evaluate_integration(handoff, task, config(), context, repository=repo.root)
+    assert not wrong_repo.ready
+    assert "agent.git_state_error" in wrong_repo.blockers
+
+    # Correct repository again, but the task branch now lives at the wrong path.
+    git(repo.root, ["remote", "set-url", "origin", CANONICAL_ORIGIN])
+    remove_worktree(repo.root, worktree, allow_unmerged=True)
+    wrong = repo.root / WRONG_PATH
+    git(repo.root, ["worktree", "add", str(wrong), TASK_BRANCH])
+    moved = evaluate_integration(handoff, task, config(), context, repository=repo.root)
+    assert not moved.ready
+    assert "agent.worktree_conflict" in moved.blockers

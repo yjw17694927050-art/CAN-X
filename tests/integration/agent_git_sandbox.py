@@ -19,6 +19,12 @@ GIT_IDENTITY = (
     "user.name=CAN-X Test",
 )
 
+#: The canonical identity `.agent/config.json` pins. Sandboxes default to it so
+#: they are faithful stand-ins for the CAN-X repository: FIX-3 binds final
+#: integration evidence to `config.repository`, and a fixture with no origin
+#: would be testing a repository the tooling must refuse.
+CANONICAL_ORIGIN = "https://github.com/yjw17694927050-art/CAN-X.git"
+
 
 def git(repo: Path, args: list[str]) -> str:
     done = subprocess.run(
@@ -66,8 +72,14 @@ class SandboxRepository:
         return tuple(line for line in output.splitlines() if line.strip())
 
 
-def make_repository(tmp_path: Path, name: str = "repo") -> SandboxRepository:
-    """A repository with one commit, a ``main`` branch and a worktrees ignore."""
+def make_repository(
+    tmp_path: Path, name: str = "repo", *, origin: str | None = CANONICAL_ORIGIN
+) -> SandboxRepository:
+    """A repository with one commit, a ``main`` branch and a worktrees ignore.
+
+    ``origin`` defaults to the canonical CAN-X remote; pass ``None`` to build a
+    repository with no origin at all (the case the identity gate must refuse).
+    """
     root = tmp_path / name
     root.mkdir()
     git(root, ["init", "-b", "main"])
@@ -78,4 +90,6 @@ def make_repository(tmp_path: Path, name: str = "repo") -> SandboxRepository:
     repo.write("runtime/canx/foo/a.py", "a = 1\n")
     repo.write("runtime/canx/bar/b.py", "b = 1\n")
     repo.commit("init")
+    if origin is not None:
+        git(root, ["remote", "add", "origin", origin])
     return repo

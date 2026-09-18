@@ -315,8 +315,15 @@ def test_a_deleted_protected_file_is_still_a_violation(tmp_path: Path) -> None:
 
 
 def test_evidence_falls_back_to_the_branch_ref_and_says_so(tmp_path: Path) -> None:
-    """A cleaned-up worktree may still be verified, but never silently."""
+    """A cleaned-up worktree may still be verified, but never silently.
+
+    The fallback is legitimate **only** when the task branch is registered in no
+    worktree at all (AGENT-01-FIX-3 §10). Here the branch ref survives while the
+    main worktree is left on `main`, so neither the declared path nor the branch
+    is registered anywhere.
+    """
     repo, base, head, _commits = reading_repo(tmp_path)
+    repo.checkout("main")
     task = task_for(repo, base, worktree=".worktrees/agent-02-a")
 
     evidence = collect_repository_evidence(repo.root, task)
@@ -325,6 +332,7 @@ def test_evidence_falls_back_to_the_branch_ref_and_says_so(tmp_path: Path) -> No
     assert evidence.worktree_path is None
     assert evidence.branch == TASK_BRANCH
     assert evidence.head_sha == head
+    assert evidence.clean
 
 
 def test_a_base_that_is_not_an_ancestor_is_reported(tmp_path: Path) -> None:
