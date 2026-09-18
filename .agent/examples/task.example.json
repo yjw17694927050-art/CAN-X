@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "task_id": "AGENT-02-B",
+  "title": "Re-derive ownership compliance in the handoff validator",
+  "objective": "validate_handoff refuses a handoff whose changed_files contain a path outside the task's allowed_paths, regardless of the ownership_compliance flag the handoff reports about itself.",
+  "scope": "The handoff ownership gate inside tools/agent/validation.py and its unit tests.",
+  "non_goals": [
+    "Changing the task contract schema",
+    "Changing the conflict classifier",
+    "Touching the worktree helper"
+  ],
+  "base_sha": "81f9c4131513c19d859fceac704d9b74449041f2",
+  "branch": "agent/AGENT-02-B-handoff-validator",
+  "worktree": ".worktrees/agent-02-b",
+  "owner": "sub-b",
+  "allowed_paths": [
+    "tools/agent/validation.py",
+    "tests/unit/agent_tools/**"
+  ],
+  "forbidden_paths": [
+    "tools/agent/worktree.py"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": ".agent/schemas/handoff.schema.json",
+      "sha": "81f9c4131513c19d859fceac704d9b74449041f2"
+    }
+  ],
+  "acceptance_criteria": [
+    "A handoff changing a file outside allowed_paths raises agent.ownership_violation",
+    "A handoff that stays inside allowed_paths validates cleanly"
+  ],
+  "required_tests": [
+    "unit"
+  ],
+  "handoff_requirements": [
+    "Report the focused pytest run for tests/unit/agent_tools",
+    "Report ruff and mypy for tools/agent",
+    "Report the GitHub Quality Gate result for the PR"
+  ],
+  "risk_class": "MEDIUM",
+  "status": "READY",
+  "revision": 1
+}

@@ -1,0 +1,310 @@
+"""P1-1: the task worktree is found identically from either documented entry point.
+
+``--repo`` may be the main repository worktree or the actual task worktree; both
+must produce the same evidence, and a dirty task worktree must block readiness
+from either one (AGENT-01-FIX-2 §15-§20). The fixture uses the real
+``.worktrees/<task>`` shape and a contract that passes ``validate_task``, so it
+cannot accidentally bypass the production contract (§37).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from agent_git_sandbox import (
+    CANONICAL_ORIGIN,
+    GIT_IDENTITY,
+    SandboxRepository,
+    git,
+    make_repository,
+)
+
+from tools.agent.config import AgentConfig, load_config
+from tools.agent.contracts import RiskClass, TaskContract, TestResult
+from tools.agent.errors import WorktreeConflictError
+from tools.agent.evidence import (
+    SOURCE_BRANCH_REF,
+    SOURCE_WORKTREE,
+    collect_repository_evidence,
+)
+from tools.agent.handoff import build_handoff
+from tools.agent.lifecycle import TaskStatus
+from tools.agent.validation import (
+    IntegrationContext,
+    evaluate_integration,
+    validate_task,
+)
+from tools.agent.worktree import create_worktree, remove_worktree
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TASK_BRANCH = "agent/AGENT-02-A-fix2"
+WORKTREE_REL = ".worktrees/agent-02-a"
+
+
+def config() -> AgentConfig:
+    return load_config(REPO_ROOT / ".agent" / "config.json")
+
+
+def _task(base: str) -> TaskContract:
+    return TaskContract(
+        task_id="AGENT-02-A",
+        title="fix2 worktree evidence",
+        objective="the task worktree is found from either entry point",
+        scope="runtime/canx/foo/**",
+        non_goals=(),
+        base_sha=base,
+        branch=TASK_BRANCH,
+        worktree=WORKTREE_REL,
+        owner="sub-a",
+        allowed_paths=("runtime/canx/foo/**",),
+        forbidden_paths=(),
+        dependencies=(),
+        shared_contracts=(),
+        acceptance_criteria=("the gate reads the real task worktree",),
+        required_tests=("unit",),
+        handoff_requirements=("report the run",),
+        risk_class=RiskClass.LOW,
+        status=TaskStatus.HANDOFF_READY,
+        revision=1,
+    )
+
+
+def _delivered(tmp_path: Path) -> tuple[SandboxRepository, Path, TaskContract]:
+    """A real linked worktree at the production path, with one real commit."""
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    worktree = repo.root / WORKTREE_REL
+    create_worktree(
+        repo.root,
+        task_id="AGENT-02-A",
+        branch=TASK_BRANCH,
+        path=worktree,
+        base_sha=base,
+    )
+    task = _task(base)
+    validate_task(task, config())
+
+    (worktree / "runtime" / "canx" / "foo").mkdir(parents=True, exist_ok=True)
+    (worktree / "runtime" / "canx" / "foo" / "a.py").write_text("a = 2\n", encoding="utf-8")
+    git(worktree, ["add", "-A"])
+    git(worktree, [*GIT_IDENTITY, "commit", "-m", "deliver the owned change"])
+    return repo, worktree, task
+
+
+def _handoff(worktree: Path, task: TaskContract):
+    return build_handoff(
+        worktree,
+        task,
+        agent="sub-a",
+        tests=(TestResult(name="unit", command="python -m pytest -q", result="passed"),),
+        ready_for_integration=True,
+    )
+
+
+def test_both_entry_points_produce_equivalent_evidence(tmp_path: Path) -> None:
+    """RED -> GREEN: from the task worktree this used to fall back to branch-ref."""
+    repo, worktree, task = _delivered(tmp_path)
+    from_main = collect_repository_evidence(repo.root, task)
+    from_worktree = collect_repository_evidence(worktree, task)
+
+    assert from_main.source == SOURCE_WORKTREE
+    assert from_worktree.source == SOURCE_WORKTREE
+    assert from_main.branch == from_worktree.branch == TASK_BRANCH
+    assert from_main.head_sha == from_worktree.head_sha
+    assert from_main.base_sha == from_worktree.base_sha == task.base_sha
+    assert from_main.base_is_ancestor and from_worktree.base_is_ancestor
+    assert from_main.clean and from_worktree.clean
+    assert from_main.net_changed_paths == from_worktree.net_changed_paths
+    assert from_main.history_touched_paths == from_worktree.history_touched_paths
+    assert from_main.commits == from_worktree.commits
+    assert from_main.worktree_path == from_worktree.worktree_path
+
+
+def test_a_clean_delivery_is_ready_from_either_entry_point(tmp_path: Path) -> None:
+    repo, worktree, task = _delivered(tmp_path)
+    handoff = _handoff(worktree, task)
+    context = IntegrationContext.build((task,), config(), task.base_sha)
+    for repository in (repo.root, worktree):
+        readiness = evaluate_integration(
+            handoff, task, config(), context, repository=repository
+        )
+        assert readiness.ready, (repository, readiness.details)
+
+
+@pytest.mark.parametrize("entry", ["main", "worktree"])
+def test_a_dirty_task_worktree_blocks_readiness_from_either_entry_point(
+    tmp_path: Path, entry: str
+) -> None:
+    """RED -> GREEN: the dirty state used to be missed from the worktree path."""
+    repo, worktree, task = _delivered(tmp_path)
+    handoff = _handoff(worktree, task)
+    (worktree / "runtime" / "canx" / "foo" / "uncommitted.py").write_text(
+        "x = 1\n", encoding="utf-8"
+    )
+
+    repository = repo.root if entry == "main" else worktree
+    readiness = evaluate_integration(
+        handoff,
+        task,
+        config(),
+        IntegrationContext.build((task,), config(), task.base_sha),
+        repository=repository,
+    )
+    assert not readiness.ready
+    assert "agent.git_state_error" in readiness.blockers
+
+
+def test_the_fallback_is_used_only_when_no_task_worktree_is_registered(
+    tmp_path: Path,
+) -> None:
+    repo, worktree, task = _delivered(tmp_path)
+    remove_worktree(repo.root, worktree, allow_unmerged=True)
+
+    evidence = collect_repository_evidence(repo.root, task)
+    assert evidence.source == SOURCE_BRANCH_REF
+    assert evidence.worktree_path is None
+    assert evidence.branch == TASK_BRANCH
+    assert evidence.clean
+
+
+def test_a_leftover_directory_at_the_declared_path_is_not_reported_clean(
+    tmp_path: Path,
+) -> None:
+    """Removing a worktree's registration must not launder its dirty state.
+
+    A residual directory left where the task worktree used to be is treated as
+    dirty, not assumed clean: the branch-ref fallback means "nothing is left to
+    hold uncommitted work", not "we inspected a worktree and found it clean"
+    (AGENT-01-FIX-2 §20).
+    """
+    repo, worktree, task = _delivered(tmp_path)
+    remove_worktree(repo.root, worktree, allow_unmerged=True)
+    worktree.mkdir(parents=True, exist_ok=True)
+    (worktree / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+
+    evidence = collect_repository_evidence(repo.root, task)
+    assert evidence.source == SOURCE_BRANCH_REF
+    assert not evidence.clean
+
+
+# ------------------------------ FIX-3: the contract freezes the worktree path AND branch
+#
+# The contract declares `branch` and `worktree`; Git must agree with **both**.
+# A live registered worktree for the task's branch may never be ignored in favour
+# of the branch-ref fallback (AGENT-01-FIX-3 §4-§15).
+
+WRONG_PATH = ".worktrees/wrong-location"
+OTHER_BRANCH = "agent/AGENT-02-B-other"
+
+
+def _registered_worktree(
+    repo: SandboxRepository, path: Path, branch: str, base: str, *, dirty: bool = False
+) -> Path:
+    """A real linked worktree with one delivered commit, optionally dirty."""
+    create_worktree(repo.root, task_id="AGENT-02-A", branch=branch, path=path, base_sha=base)
+    (path / "runtime" / "canx" / "foo").mkdir(parents=True, exist_ok=True)
+    (path / "runtime" / "canx" / "foo" / "a.py").write_text("a = 2\n", encoding="utf-8")
+    git(path, ["add", "-A"])
+    git(path, [*GIT_IDENTITY, "commit", "-m", "deliver the owned change"])
+    if dirty:
+        (path / "DIRTY.txt").write_text("uncommitted\n", encoding="utf-8")
+    return path
+
+
+def test_the_expected_branch_at_the_wrong_path_is_refused(tmp_path: Path) -> None:
+    """RED -> GREEN: this used to fall back to branch-ref and report clean."""
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    wrong = repo.root / WRONG_PATH
+    _registered_worktree(repo, wrong, TASK_BRANCH, base, dirty=True)
+    task = _task(base)
+
+    with pytest.raises(WorktreeConflictError) as raised:
+        collect_repository_evidence(repo.root, task)
+    assert raised.value.code == "agent.worktree_conflict"
+    assert Path(str(raised.value.details["actual_worktree"])).resolve() == wrong.resolve()
+    assert raised.value.details["expected_worktree"] == WORKTREE_REL
+
+    # The final gate refuses too: a dirty live worktree is never laundered into
+    # clean branch-ref evidence.
+    readiness = evaluate_integration(
+        _handoff(wrong, task),
+        task,
+        config(),
+        IntegrationContext.build((task,), config(), base),
+        repository=repo.root,
+    )
+    assert not readiness.ready
+    assert "agent.worktree_conflict" in readiness.blockers
+
+
+def test_a_declared_path_holding_the_wrong_branch_is_refused(tmp_path: Path) -> None:
+    """Case B: the declared path exists but is checked out on another branch."""
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    declared = repo.root / WORKTREE_REL
+    _registered_worktree(repo, declared, OTHER_BRANCH, base)
+    task = _task(base)
+
+    with pytest.raises(WorktreeConflictError) as raised:
+        collect_repository_evidence(repo.root, task)
+    assert raised.value.code == "agent.worktree_conflict"
+    assert raised.value.details["actual_branch"] == OTHER_BRANCH
+    assert raised.value.details["expected_branch"] == TASK_BRANCH
+
+
+def test_the_branch_ref_fallback_survives_when_nothing_is_registered(
+    tmp_path: Path,
+) -> None:
+    """Case E: neither the declared path nor the branch is registered."""
+    repo = make_repository(tmp_path)
+    base = repo.sha()
+    git(repo.root, ["branch", TASK_BRANCH])  # a branch ref, no worktree
+    task = _task(base)
+
+    evidence = collect_repository_evidence(repo.root, task)
+    assert evidence.source == SOURCE_BRANCH_REF
+    assert evidence.worktree_path is None
+    assert evidence.clean
+
+
+def test_ambiguous_worktree_metadata_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """Case D: two records for the same task path/branch must not pick the first."""
+    from tools.agent import evidence as evidence_module
+    from tools.agent.worktree import list_worktrees
+
+    repo, _worktree, task = _delivered(tmp_path)
+    real = list_worktrees(repo.root)
+    monkeypatch.setattr(
+        evidence_module, "list_worktrees", lambda _root: (*real, real[-1])
+    )
+
+    with pytest.raises(WorktreeConflictError) as raised:
+        collect_repository_evidence(repo.root, task)
+    assert "ambiguous" in raised.value.message
+
+
+def test_the_trust_chain_binds_repository_branch_and_path(tmp_path: Path) -> None:
+    """One end-to-end local gate over the whole chain (AGENT-01-FIX-3 §42)."""
+    repo, worktree, task = _delivered(tmp_path)
+    handoff = _handoff(worktree, task)
+    context = IntegrationContext.build((task,), config(), task.base_sha)
+
+    ready = evaluate_integration(handoff, task, config(), context, repository=repo.root)
+    assert ready.ready, ready.details
+
+    # Same task, same worktree, different repository identity.
+    git(repo.root, ["remote", "set-url", "origin", "https://github.com/other/repo.git"])
+    wrong_repo = evaluate_integration(handoff, task, config(), context, repository=repo.root)
+    assert not wrong_repo.ready
+    assert "agent.git_state_error" in wrong_repo.blockers
+
+    # Correct repository again, but the task branch now lives at the wrong path.
+    git(repo.root, ["remote", "set-url", "origin", CANONICAL_ORIGIN])
+    remove_worktree(repo.root, worktree, allow_unmerged=True)
+    wrong = repo.root / WRONG_PATH
+    git(repo.root, ["worktree", "add", str(wrong), TASK_BRANCH])
+    moved = evaluate_integration(handoff, task, config(), context, repository=repo.root)
+    assert not moved.ready
+    assert "agent.worktree_conflict" in moved.blockers

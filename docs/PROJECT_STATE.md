@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17)
+> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 0), remediated by AGENT-01-FIX-4 — implementation and self-verification complete, awaiting independent re-acceptance, see §18)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -254,6 +254,21 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
   Adds runtime/canx/safety/ and docs/architecture/SAFETY_ARCHITECTURE.md —
   safety domain, policy, contracts and tests only. It introduces no dangerous
   execution capability. See §17.
+
+AGENT-01 — Multi-Agent Orchestration Foundation
+  Implementation complete · remediation complete (AGENT-01-FIX-1) ·
+  hardening complete (AGENT-01-FIX-2) · identity binding complete (AGENT-01-FIX-3) ·
+  final authority and credential-redaction hardening complete (AGENT-01-FIX-4) ·
+  self-verification complete
+  First independent acceptance: NOT PASS (P0: 2, P1: 3, P2: 1) — preserved in §18.11
+  Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved in §18.13
+  Third independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1) — preserved in §18.15
+  Fourth independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 0) — preserved in §18.18
+  Awaiting independent re-acceptance (§18.12, §18.14, §18.16, §18.19)
+  Adds .agent/ and tools/agent/, docs/engineering/MULTI_AGENT_PROTOCOL.md,
+  docs/ADR/0002-parallel-development-serial-integration.md and
+  INTEGRATION_POLICY.md §17 — engineering tooling only, no product scope change.
+  See §18.
 ```
 
 The `Final Acceptance: PASS / Status: CLOSED` verdicts recorded here are **project-owner /
@@ -787,6 +802,22 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
           Final independent acceptance: PASS (P0: 0, P1: 0, P2: 0) — merged to `main`
           (c05debf9) with post-merge `main` CI green — preserved in §17
           Adds runtime/canx/safety/ + docs/architecture/SAFETY_ARCHITECTURE.md (§17)
+
+AGENT-01 — Multi-Agent Orchestration Foundation   (not a numbered phase)
+          First independent acceptance: NOT PASS (P0: 2, P1: 3, P2: 1) — preserved
+          in §18.11
+          AGENT-01-FIX-1 implementation complete · self-verification complete
+          Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved
+          in §18.13
+          AGENT-01-FIX-2 implementation complete · self-verification complete
+          Third independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1) — preserved
+          in §18.15
+          AGENT-01-FIX-3 implementation complete · self-verification complete
+          Awaiting independent final re-acceptance (§18.12, §18.14, §18.16)
+          Level 4 is NOT marked DONE — only an external verdict may do that
+          Adds .agent/ + tools/agent/ + docs/engineering/MULTI_AGENT_PROTOCOL.md
+          + docs/ADR/0002-parallel-development-serial-integration.md
+          + INTEGRATION_POLICY.md §17 + one ci.yml mypy-scope line
 ```
 
 V0.3-11 is CLOSED. It added one read-only Runtime endpoint —
@@ -830,6 +861,16 @@ of vetoing the stop (invariant S25). It adds **no**
 dangerous capability: no TX, no replay send, no
 injection, no diagnostic request, no ECU mutation, no new endpoint and no new UI control. Its own
 verdict is external as well; §17 records what was implemented and what remains unverified.
+
+AGENT-01 is not a numbered product phase either. It is engineering infrastructure: no product
+behaviour, no schema, no API contract, no dependency and no runtime code changes. It adds `.agent/`
+(contracts, schemas, examples, prompt templates), `tools/agent/` (the standard-library-only
+enforcement tooling), `docs/engineering/MULTI_AGENT_PROTOCOL.md`,
+`docs/ADR/0002-parallel-development-serial-integration.md`, a §17 in
+`docs/engineering/INTEGRATION_POLICY.md`, two extending lint/type config lines
+(`pyproject.toml`, `.github/workflows/ci.yml`) and `scripts/agent.cmd`. Its own verdict is external
+too — the development agent did not write `Final Acceptance: PASS` for it, and Level 4 is **not**
+`DONE`. §18 records what was implemented, what was verified and what remains unverified.
 
 ---
 
@@ -1036,7 +1077,13 @@ Safety Foundation (SAFETY-01)                  DONE · CLOSED
                                                (Final Acceptance: PASS — independent
                                                acceptance, merged to `main` as
                                                c05debf9, post-merge CI green)
-Level 4  Multi-Agent Orchestration             NOT STARTED
+Level 4  Multi-Agent Orchestration             NOT DONE — AGENT-01 first independent
+                                               acceptance NOT PASS (P0:2 P1:3 P2:1),
+                                               second NOT PASS (P0:2 P1:2 P2:1),
+                                               third NOT PASS (P0:0 P1:2 P2:1);
+                                               AGENT-01-FIX-3 implemented and
+                                               self-verified, awaiting independent
+                                               final re-acceptance (§18.11–§18.16)
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
@@ -1045,9 +1092,12 @@ project owner / independent reviewer's CI-02 result (P0: 0, P1: 0, P2: 2 non-blo
 not a conclusion this document reached on its own. The Safety Foundation row reads `DONE · CLOSED`
 because its own independent acceptance returned PASS *and* the accepted tree then reached `main`
 through the protected workflow with a green post-merge CI run (§17.15) — the row records work that
-was accepted and integrated, it is not a conclusion this document reached on its own. Level 4 and
-Level 5 remain `NOT STARTED`, and this record says what the tree contains, not that anything beyond
-SAFETY-01 has been accepted.
+was accepted and integrated, it is not a conclusion this document reached on its own.
+
+The Level 4 row records something weaker, and deliberately so. AGENT-01's implementation and
+self-verification are complete (§18), but no external verdict on it exists yet, so Level 4 is
+**not** `DONE`, and `Level 5` remains `NOT STARTED`. This record says what the tree contains, not
+that anything beyond SAFETY-01 has been accepted.
 
 ---
 
@@ -1966,3 +2016,689 @@ owner / reviewer decision     OPEN — whether to give this budget more headroom
 Flagged rather than fixed, and flagged rather than hidden: a test that fails only
 on a slow runner is exactly the kind of thing that becomes "we do not know why CI
 is red" six months later.
+
+---
+
+## 18. Multi-Agent Orchestration Foundation (AGENT-01)
+
+AGENT-01 is the foundation that had to exist **before** CAN-X runs more than one
+agent. It is not a numbered product phase, and it adds no product capability.
+
+### 18.1 The question it answers
+
+> How can CAN-X safely parallelise engineering work without losing ownership,
+> contract integrity, test evidence, integration safety, or independent
+> acceptance?
+
+The answer is stated in `docs/engineering/MULTI_AGENT_PROTOCOL.md` and enforced by
+`tools/agent/`: **parallel development, serial protected integration, clear
+machine-checkable ownership, machine-verifiable handoff, and a protected CI gate**.
+
+```text
+no clear ownership             → no parallelism
+no stable contract             → no parallelism
+a high probability of conflict → serial
+shared core truth              → Main Agent only
+```
+
+This is not "how to call four AI agents at once". AGENT-01 spawns no agent, adds
+no provider SDK, and names no model anywhere in its contracts.
+
+### 18.2 What was added
+
+```text
+.agent/
+  README.md                     how to use the contracts
+  config.json                   parallelism cap, path classes, branch prefix
+  schemas/task.schema.json      task interchange contract (JSON Schema 2020-12)
+  schemas/handoff.schema.json   handoff interchange contract
+  examples/                     one valid task · one valid handoff ·
+                                one ownership violation · one four-task plan
+  prompts/                      Main-Agent and Sub-Agent prompt templates
+  handoffs/README.md            where produced handoffs land
+
+tools/
+  agent/                        errors · config · paths · contracts · lifecycle ·
+                                graph · conflicts · validation · gitcmd ·
+                                worktree · handoff · orchestration · cli
+scripts/agent.cmd               the Windows entry point
+
+docs/engineering/MULTI_AGENT_PROTOCOL.md
+docs/ADR/0002-parallel-development-serial-integration.md
+docs/engineering/INTEGRATION_POLICY.md            §17 added
+
+tests/unit/agent_tools/                           6 files, 169 tests
+tests/integration/test_agent_worktree_lifecycle.py   18 tests
+tests/integration/test_multi_agent_orchestration_simulation.py  13 tests
+```
+
+Two existing files changed, and one deliberately not:
+
+```text
+pyproject.toml             pytest pythonpath and mypy_path also resolve tools/agent
+.github/workflows/ci.yml   mypy now type-checks runtime AND tools/agent
+.gitignore                 unchanged — .worktrees/ was already ignored
+```
+
+The `tools/agent/` package is engineering tooling, not product: it is not
+imported by `canx` and is not packaged into the wheel (`pyproject.toml` packages
+only `runtime/canx`). It is standard library only — no new dependency was added.
+
+### 18.3 The required design decision
+
+> How does CAN-X prevent individually-green but jointly-broken parallel PRs?
+
+Answered in `docs/ADR/0002-parallel-development-serial-integration.md`: **no merge
+queue**. Development is parallel; integration is not. The Main Agent merges one PR
+at a time, and every handoff must be based on the current integration head, which
+`tools/agent/validation.py:check_base` enforces as a returned error code
+(`agent.base_stale`) rather than an instruction in a prompt.
+
+The ADR evaluates the three alternatives (enable the ruleset's strict up-to-date
+flag, a long-lived integration branch, a merge queue) and records enabling
+`strict_required_status_checks_policy` as the recommended platform-level backstop
+— to be applied as its own deliberate, verified configuration change, not folded
+into this one. The ruleset is **unchanged** by AGENT-01.
+
+### 18.4 RED → GREEN evidence
+
+Two orchestration contracts were pinned by a test that fails before the gate
+exists and passes after it.
+
+```text
+#1  changed file outside allowed_paths
+    before   a handoff could claim ownership_compliance: true and change SPEC.md
+             while its task owned runtime/canx/foo/**; validate_handoff accepted it
+             RED    4 failed, 153 passed   (tests/unit/agent_tools, 157 collected;
+                    test_validation.py: DID NOT RAISE OwnershipViolationError)
+    after   validate_handoff re-derives compliance from changed_files and raises
+             agent.ownership_violation
+             GREEN  2 failed, 155 passed  (the ownership tests pass; the stale-base
+                    test is still red because that gate is not in yet)
+
+#2  stale base
+    before   check_base validated the shape of the two shas and returned; a handoff
+             built on an obsolete main was integrated as if it were current
+             RED    test_validation.py: DID NOT RAISE BaseStaleError
+    after   check_base refuses any base_sha that is not the current integration head
+             GREEN  157 passed  (tests/unit/agent_tools, at that point)
+```
+
+The two `GREEN` counts differ because the examples/schema suite was added after
+both gates landed; the final count for that directory is 169.
+
+Both gates were then rolled back one final time to confirm the tests are not
+vacuous — with the two checks removed, `tests/unit/agent_tools/test_validation.py`
+returns `4 failed, 44 passed`; restored, it is green. A test that stays green
+with its fix reverted protects nothing.
+
+### 18.5 Simulated orchestration
+
+`tests/integration/test_multi_agent_orchestration_simulation.py` runs the §74
+scenario end to end against the contracts:
+
+```text
+A  independent                                  → RUNNABLE
+B  independent, freezes a public-truth contract → RUNNABLE
+C  depends on A                                 → BLOCKED
+D  races B on that same public-truth path       → DEFERRED, B~D classified C3
+
+A's handoff with an unowned file                → REJECTED (agent.ownership_violation)
+A's clean handoff on the current head           → ACCEPTED
+A integrated                                    → C becomes RUNNABLE
+B integrated                                    → D's deferral is released
+a handoff built before the head moved           → REJECTED (agent.base_stale)
+```
+
+The scenario also verifies the serial-integration rule directly: after A
+integrates, B's handoff on the old base is refused, and the same work rebased onto
+the new head is accepted.
+
+**This is `protocol/tooling verified in simulation`.** It is not
+`four-agent parallel development verified` — no agent was spawned, and no product
+pilot was run. That is AGENT-02.
+
+### 18.6 Verification (local, this tree)
+
+```text
+pytest        2433 passed, 1 skipped in 157.50s   (2434 collected; baseline
+              before AGENT-01 was 2234 collected — the delta is the 200 new tests)
+              the 1 skip is tests/unit/dbc/test_dbc_asset.py:274, "this environment
+              cannot create a directory link" — pre-existing, none added
+ruff          All checks passed!  (runtime tests tools)
+mypy          Success: no issues found in 94 source files  (runtime tools/agent)
+frontend      eslint --max-warnings 0 clean · tsc -b clean · 162 tests passed
+              (12 files) · vite build ok
+rust          cargo fmt --check clean · clippy --all-targets --all-features
+              --locked -D warnings clean · 31 tests passed
+```
+
+Frontend and Rust are unchanged by AGENT-01; they were run as a regression check.
+The packaged-runtime smoke tests skip locally only when no `canx-runtime.exe` is
+staged — on this tree it is staged, so they ran.
+
+### 18.7 What was deliberately NOT added
+
+```text
+no agent runtime, no provider SDK, no model name in any contract
+no message broker, scheduler, database queue, daemon or dashboard
+no FastAPI product endpoint, no Tauri command, no React UI
+no new dependency — tools/agent is standard library only
+no real four-agent pilot
+```
+
+### 18.8 Safety
+
+`runtime/canx/safety/**` is untouched; S1–S25 are unchanged; no dangerous
+capability was added. What AGENT-01 does add is a classification: a task whose
+ownership surface reaches a safety path, or whose `risk_class` is
+`SAFETY_CRITICAL`, is marked `serial_review_required` and may never be integrated
+in parallel with another task. `RiskClass` (development risk) is a different type
+from the Runtime's `canx.safety.risk.RiskLevel` (vehicle-operation risk) and the
+two are never conflated.
+
+### 18.9 Known limitations and NOT VERIFIED
+
+- **Simulation only.** No real multi-agent pilot has run. The protocol has been
+  exercised by tests, not by four concurrent agents against a live repository.
+- **The ruleset's strict up-to-date flag is still `false`.** The parallel-case
+  integration rule is enforced by the protocol and `check_base`, not by the
+  platform. `docs/ADR/0002-*` records this as an open follow-up.
+- **Windows only.** Every number above is from this Windows tree; CI runs on
+  `windows-latest`. macOS and Linux remain `NOT VERIFIED`.
+- **No merge queue.** Deliberate; see §18.3.
+- **`worktree remove` needs a gitignored worktrees directory.** Documented as a
+  precondition, not worked around.
+
+### 18.10 Deferred items
+
+```text
+enabling strict_required_status_checks_policy on ruleset 23600372, with its
+  negative case verified — its own change (ADR 0002, alternative A)
+the reliable handling of the capture/finalization timing flake before AGENT-02
+  (see §17.15, carried forward unchanged and not repaired here)
+the real 1 Main + up to 4 Sub-Agent pilot — AGENT-02
+```
+
+### 18.11 First independent acceptance — NOT PASS
+
+The first independent review of AGENT-01 did **not** pass, and the verdict is
+preserved here rather than smoothed over:
+
+```text
+Independent acceptance source:
+Project owner / independent reviewer
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-1
+
+P0 = 2
+P1 = 3
+P2 = 1
+```
+
+The reviewer's framing was explicit, and correct: the architecture was accepted
+in direction, but **several claimed machine gates still trusted agent-supplied
+metadata instead of independently deriving repository facts**. That is a fair
+reading of the tree at `5b7e1d6`:
+
+```text
+P0-1  protected paths could be bypassed by a broad ownership glob. `**` or
+      `docs/**` was accepted for a Sub-Agent because the check asked whether the
+      *literal text* of the glob is a protected file name, not whether the glob
+      can *reach* one.
+P0-2  handoff facts were self-reported. `check-integration` trusted
+      `changed_files`, `base_sha` and `head_sha` from the JSON, so a lying
+      handoff could omit a changed `SPEC.md`, or invent the current `main` as its
+      base, and still come back ready.
+P1-1  a required test reported `skipped` or `not_run` still allowed readiness.
+P1-2  `plan()` did not use `max_sub_agents`; five independent tasks all came
+      back runnable.
+P1-3  the local gate did not check dependencies, conflict deferral or task
+      status, yet READY_FOR_INTEGRATION is documented as requiring them.
+P2    repository identity was a substring test, so
+      `github.com/evil/<owner>/<repo>-copy.git` passed as `<owner>/<repo>`.
+```
+
+Every one of those was reproduced against `5b7e1d6` before any fix was written
+(the RED record is summarised in §18.12). The verdict is external; the
+development agent did not write it and does not dispute it.
+
+### 18.12 Remediation — AGENT-01-FIX-1
+
+A narrow remediation: no redesign of the accepted architecture, no AGENT-02, no
+product capability, no Safety change.
+
+```text
+RED, all seven, against 5b7e1d6
+  validate_task(allowed_paths=("**",), owner=sub-a)          ACCEPTED
+  validate_task(allowed_paths=("**/*.md",), owner=sub-a)     ACCEPTED
+  validate_task(allowed_paths=("docs/**",), owner=sub-a)     ACCEPTED
+  lying handoff omitting a changed SPEC.md                   ready=True
+  handoff inventing the current main as its base             ready=True
+  handoff inventing a head_sha                               ready=True
+  ready handoff with an uncommitted worktree                 ready=True
+  required 'integration' reported not_run / skipped          ACCEPTED
+  two test records named 'unit', both passed                 ACCEPTED
+  five independent tasks, max_sub_agents=4                   runnable len=5
+  dependent C ready while A is READY                         ready=True
+  deferred-by-conflict D                                     ready=True
+  origin github.com/evil/<owner>/<repo>-copy.git             accepted
+```
+
+What changed:
+
+```text
+tools/agent/paths.py       overlapping_pattern() — pattern-versus-pattern overlap,
+                           kept distinct from matching_pattern() (path versus pattern)
+tools/agent/config.py      protected_overlap / public_truth_overlap / safety_overlap
+tools/agent/validation.py  protected ownership by overlap; required tests must all
+                           pass with duplicates refused; check_base also requires
+                           handoff.base_sha == task.base_sha; IntegrationContext;
+                           verify_repository_evidence; evaluate_integration reports
+                           ready only when it could prove every local requirement
+tools/agent/evidence.py    NEW — RepositoryEvidence + collect_repository_evidence,
+                           the Git-backed source of truth
+tools/agent/gitcmd.py      canonical_repository() exact identity; diff_name_status /
+                           touched_paths (both sides of renames and copies);
+                           commit_shas()
+tools/agent/orchestration.py  plan() enforces max_sub_agents and reports
+                           capacity_deferred distinctly
+tools/agent/worktree.py    validate_repository compares canonical identities exactly
+tools/agent/cli.py         check-integration takes --repo and --plan
+```
+
+The corrected boundary, stated once:
+
+```text
+Sub-Agent report      untrusted evidence
+Git repository state  authoritative evidence
+Task contract         what is permitted
+Main Agent verifier   independently compares the two
+```
+
+New tests: 293 focused tests across the agent suites (unit + integration),
+including throwaway-git fixtures for the omitted-file, fake-base, fake-head,
+dirty-worktree, rename/copy and commit-evidence attacks. The real CAN-X
+repository is never mutated by pytest.
+
+```text
+Implementation complete
+Self-verification complete
+Awaiting independent re-acceptance
+```
+
+Level 4 remains **not** `DONE`; no `Final Acceptance: PASS` is written by the
+development agent.
+
+Level 4 is **not** `DONE`, `Final Acceptance` was **not** written by the
+development agent, and `AGENT-02`, `V0.3-12` and `CD-01` have **not** started.
+
+### 18.13 Second independent acceptance — NOT PASS
+
+The **second** independent review of AGENT-01 did **not** pass either, and its
+verdict is preserved here exactly as the first one was:
+
+```text
+AGENT-01 Re-Acceptance
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-2
+
+P0 = 2
+P1 = 2
+P2 = 1
+```
+
+The first verdict stays unedited above (§18.11) — history is not rewritten. The
+reviewer accepted the architecture in direction and confirmed the FIX-1 findings
+as fixed, then named a narrower set of remaining defects:
+
+```text
+P0-1  the planner's blocking-conflict deferral disappeared after dispatch. It
+      fired only while both tasks were READY, so dispatching the earlier owner
+      (READY -> IN_PROGRESS) released the later task onto the same public-truth
+      surface the deferral existed to serialise.
+P0-2  max_sub_agents capped *new* READY candidates, not the Sub-Agents already
+      running: 3 IN_PROGRESS + 4 READY (max 4) returned 4 new runnable tasks,
+      i.e. 7 effective concurrent agents against a promise of 1 + <= 4.
+P1-1  the evidence collector resolved task.worktree against whatever Git root the
+      caller supplied, so invoking it from the task worktree produced
+      <task-worktree>/.worktrees/<task>, fell back to branch-ref, and could
+      report clean = true while the real worktree held uncommitted work.
+P1-2  ownership used the net tree diff (base vs head). A protected file edited in
+      one commit and restored in a later one left the net diff clean, so the
+      task's own history could touch a protected surface undetected.
+P2    the Main-Agent prompt showed an incomplete check-integration command,
+      omitting --repo and --plan, which the FIX-1 gate requires.
+```
+
+The verdict is external; the development agent did not write it and does not
+dispute it.
+
+### 18.14 Remediation — AGENT-01-FIX-2
+
+A narrow lifecycle-and-evidence hardening: no redesign of the accepted
+architecture, no AGENT-02, no product capability, no Safety change. The ruleset
+is unchanged.
+
+```text
+RED, all six, against the FIX-1 tree (861e9e0)
+  B READY, D READY -> D deferred; B -> IN_PROGRESS -> D runnable       DEFECT
+  3 IN_PROGRESS + 4 READY, max 4 -> runnable len 4 (7 effective)       DEFECT
+  --repo <task worktree> -> source=branch-ref, clean=true (dirty tree) DEFECT
+  modify SPEC.md, restore it before head -> net diff clean, ready=true DEFECT
+  IntegrationContext(include_plan=False) -> ready=true                 DEFECT
+  two commit tokens both prefixing one commit -> ready=true            DEFECT
+  over-dispatched: 5 IN_PROGRESS, max 4 -> sum 5 > 4 with no signal    DEFECT
+  no registered worktree, leftover dirty dir at the declared path
+    -> source=branch-ref, clean=true                                   DEFECT
+```
+
+(The last two were found by an adversarial self-review of the finished change
+set, reproduced against the tree, and fixed here — the FIX-2 pass is not only the
+reviewer's list.)
+
+What changed:
+
+```text
+tools/agent/lifecycle.py      EXECUTION_SLOT_STATUSES / CONFLICT_LEASE_STATUSES /
+                              CONFLICT_REPLAN_STATUSES and their three predicates —
+                              capacity and conflict serialisation stay separate
+                              policies, defined once
+tools/agent/orchestration.py  leases held across status transitions; DONE releases;
+                              FAILED/CANCELLED -> replan_required_by; capacity is
+                              max(0, max_sub_agents - active) and the planner adds
+                              at most the free slots; the capacity block reports
+                              active / active_over_capacity / available_slots /
+                              selected
+tools/agent/gitcmd.py         history_touched_paths — a per-commit diff-tree union,
+                              both sides of renames/copies, `-m` for merge commits
+tools/agent/evidence.py       net_changed_paths vs history_touched_paths; the task
+                              worktree is resolved against the primary worktree root
+tools/agent/validation.py     ownership and handoff equality use the history set;
+                              an orchestration plan is required for ready; commit
+                              evidence must be a one-to-one bijection; a terminated
+                              conflict owner is exposed as replan_required
+tools/agent/handoff.py        build_handoff derives changed_files from the same
+                              history helper the verifier uses
+tools/agent/worktree.py       primary_worktree()
+.agent/prompts/main-agent.prompt.md   the complete check-integration command, and
+                              the local-gate vs GitHub-Quality-Gate boundary
+```
+
+New tests: `tests/unit/agent_tools/test_orchestration_lifecycle.py`
+(conflict-lease matrix, capacity matrix, slot predicates),
+`tests/unit/agent_tools/test_evidence_hardening.py` (plan-required, one-to-one
+commit evidence, replan visibility),
+`tests/integration/test_agent_worktree_evidence.py` (a real linked worktree, both
+entry points, the dirty-state proof), the transient-edit and rename/delete history
+tests in `tests/integration/test_agent_git_backed_handoff.py`, and the multi-cycle
+serial-integration simulation in
+`tests/integration/test_multi_agent_orchestration_simulation.py`. Every fix was
+rolled back once to confirm its tests turn red — a test that stays green with its
+fix reverted protects nothing.
+
+One thing FIX-2 deliberately did **not** change, recorded so a later reviewer
+does not have to rediscover it: `check-integration` does not pass
+`expected_remote` to `validate_repository`, so the local *read-only* gate does not
+verify the repository's origin identity. The identity check lives on the write
+path (`worktree create`). Wiring it into `check-integration` would fail every
+remote-less test fixture and is not part of FIX-2; the platform gate and the
+protected PR workflow remain the boundary that matters.
+
+```text
+AGENT-01-FIX-2 implementation complete
+Self-verification complete
+Awaiting independent re-acceptance
+```
+
+Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are
+**not** written by the development agent. `AGENT-02`, `V0.3-12` and `CD-01` have
+**not** started.
+
+### 18.15 Third independent acceptance — NOT PASS
+
+The **third** independent review returned `NOT PASS` with no P0 and is preserved
+exactly as the first two were:
+
+```text
+AGENT-01 Re-Acceptance #3
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-3
+
+P0 = 0
+P1 = 2
+P2 = 1
+```
+
+The architecture is now substantially accepted; the reviewer explicitly asked
+that already-fixed areas not be reopened. The three remaining findings were
+narrow:
+
+```text
+P1-1  the evidence collector resolved a task's worktree by its **declared path**
+      only. If the task's branch was registered in a *different* live worktree,
+      the collector did not look: with the declared path absent it fell back to
+      the branch ref, which reports clean = true and never inspects the live
+      worktree. A dirty wrong-location worktree could therefore be laundered into
+      clean evidence. The contract freezes branch *and* worktree path; Git must
+      agree with both.
+P1-2  integration evidence was not bound to the configured repository.
+      validate_repository() had supported expected_remote since FIX-1, but
+      collect_repository_evidence() called it without the identity, so a wrong
+      owner/repo, a lookalike name or a repository with no origin could still
+      produce ready = true.
+P2    the tools/agent/cli.py module docstring still advertised the old,
+      incomplete check-integration command (no --plan, no --repo).
+```
+
+Previous history is kept unedited: §18.11 (P0: 2, P1: 3, P2: 1) and §18.13
+(P0: 2, P1: 2, P2: 1). The verdict is external; the development agent did not
+write it and does not dispute it.
+
+### 18.16 Remediation — AGENT-01-FIX-3
+
+A narrow evidence-resolution and identity-binding hardening: no redesign of the
+planner, the leases, the capacity accounting, historical ownership or commit
+evidence. No product capability, no Safety change, ruleset unchanged.
+
+```text
+RED, both, against the FIX-2 tree (9f47c9f)
+  branch registered at .worktrees/wrong-location (dirty), contract declares
+    .worktrees/agent-02-a
+    -> source=branch-ref, clean=true, worktree=None      (live worktree ignored)
+  origin = other-owner/other-repo  -> ready=true         (identity unchecked)
+  origin = .../CAN-X-copy.git      -> ready=true
+  origin = <none>                  -> ready=true
+  origin = correct CAN-X           -> ready=true         (control)
+```
+
+What changed:
+
+```text
+tools/agent/evidence.py       resolve_task_worktree() classifies the full state
+                              instead of looking only at the declared path:
+                                A  declared path + branch both match  -> use it
+                                B  declared path holds another branch -> conflict
+                                C  branch registered at another path  -> conflict
+                                D  ambiguous metadata                 -> conflict
+                                E  neither registered                 -> branch-ref
+                              collect_repository_evidence() takes
+                              expected_repository and validates it, and records
+                              RepositoryEvidence.repository_identity
+tools/agent/validation.py     evaluate_integration() passes config.repository to
+                              the collector, so final integration evidence is
+                              repository-bound
+tools/agent/cli.py            the module docstring shows the complete
+                              check-integration command (--plan, --repo)
+```
+
+`agent.worktree_conflict` reports `task_id`, `expected_branch`, `expected_worktree`,
+`actual_worktree`, `actual_branch` and `declared_path`. A mismatch is never
+silently repaired: following the branch to a different worktree would make
+`task.worktree` non-authoritative, and the Main Agent decides whether a new task
+revision is required.
+
+Tests: `tests/integration/test_agent_worktree_evidence.py` grew the Case B/C/D/E
+matrix, a dirty wrong-location case, and one end-to-end trust-chain test that
+walks correct repository + correct branch/path -> wrong repository -> wrong
+worktree path. `tests/integration/test_agent_repository_identity.py` gained the
+integration-level identity gate (wrong / lookalike / unsupported host / no origin
+rejected; HTTPS and SSH accepted). `agent_git_sandbox.make_repository()` now
+stamps the canonical CAN-X origin by default, so fixtures are faithful stand-ins
+rather than repositories the tooling must refuse; the no-origin case is built
+explicitly. `test_evidence_falls_back_to_the_branch_ref_and_says_so` was moved to
+a fixture where the fallback is legitimate (the branch is registered in no
+worktree at all), which is what FIX-3 §10 requires.
+
+Both fixes were rolled back once and the suites re-run: nine tests turn red.
+
+### 18.17 Known limitations after FIX-3
+
+- `build_handoff()` is still a producer convenience and is deliberately **not**
+  identity-bound; the consumer (`evaluate_integration`) is the trust boundary and
+  binds `config.repository` independently.
+- `check-integration` now fails closed on a wrong or missing origin, which means
+  a local sandbox repository must configure the canonical origin to be verified.
+  That is the intended behaviour, but it is a new operational requirement for any
+  local reproduction.
+- The capture/finalization timing flake in
+  `tests/unit/api/test_capture_project_target.py` is carried forward unchanged
+  (FIX-3 §44).
+
+```text
+AGENT-01-FIX-3 implementation complete
+Self-verification complete
+Awaiting independent final re-acceptance
+```
+
+Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are
+**not** written by the development agent. `AGENT-02`, `V0.3-12` and `CD-01` have
+**not** started.
+
+### 18.18 Fourth independent acceptance — NOT PASS
+
+The **fourth** independent review returned `NOT PASS`, again with no P0, and is
+preserved exactly as the earlier three:
+
+```text
+AGENT-01 Final Re-Acceptance
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-4
+
+P0 = 0
+P1 = 2
+P2 = 0
+```
+
+The architecture is now substantially accepted, and the reviewer explicitly
+froze every previously accepted area rather than reopening it. The two remaining
+findings were the last two holes in the trust boundary:
+
+```text
+P1-1  the final IntegrationReadiness could still accept a caller-injected
+      RepositoryEvidence. evaluate_integration(..., evidence=...) produced
+      ready = true from a hand-built dataclass whose repository_identity was
+      None: no real Git collection, and no proof the repository was
+      config.repository. The gate had two authority paths and only one of them
+      was real. A Sub-Agent report is untrusted; a caller-created evidence
+      object is equally untrusted; only real Git state is evidence.
+P1-2  validate_repository() wrote the raw remote URL into
+      error.details["origin"] when the origin shape was unsupported. An origin
+      such as https://alice:TOP_SECRET_TOKEN@github.com/owner/repo.git
+      canonicalises to None and was then echoed verbatim into
+      exception.as_dict() - and from there into CLI output, CI logs and captured
+      structured errors.
+```
+
+Previous history is kept unedited: §18.11 (P0: 2, P1: 3, P2: 1), §18.13
+(P0: 2, P1: 2, P2: 1) and §18.15 (P0: 0, P1: 2, P2: 1). The verdict is external;
+the development agent did not write it and does not dispute it.
+
+### 18.19 Remediation — AGENT-01-FIX-4
+
+Two invariants and nothing else. No planner, execution-slot, conflict-lease,
+capacity, ownership, worktree-identity, commit-evidence, required-test, Safety or
+ruleset change; no product scope.
+
+```text
+INVARIANT A  a final READY verdict is derived from a real repository and real
+             Git evidence, never from a caller-supplied evidence object
+INVARIANT B  repository identity validation may reject an unsafe remote, but the
+             rejection itself never discloses it
+```
+
+RED, both, against the FIX-3 tree (168d0c2):
+
+```text
+caller-built RepositoryEvidence (repository_identity = None) that otherwise
+  matches the handoff exactly
+  -> ready = true, blockers = []                  (no Git ever read)
+
+origin = https://alice:TOP_SECRET_TOKEN@github.com/yjw17694927050-art/CAN-X.git
+  -> json.dumps(error.as_dict()) contains TOP_SECRET_TOKEN
+```
+
+What changed:
+
+```text
+tools/agent/validation.py   evaluate_integration() no longer takes evidence=.
+                            The only authority path is
+                              repository -> collect_repository_evidence(
+                                  ..., expected_repository=config.repository)
+                            so a caller cannot substitute a fabricated dataclass
+                            for Git. repository=None is
+                            agent.integration_context_incomplete and never READY.
+                            verify_repository_evidence() stays pure, so the
+                            comparison itself remains directly unit-testable.
+tools/agent/worktree.py     validate_repository() rejects an unsupported origin
+                            with origin_supported: false and no URL at all. The
+                            fix is omission, not substitution: no token shape is
+                            guessed and no credential is redacted in place. A
+                            valid-but-wrong canonical repository still reports
+                            its safe owner/repo.
+```
+
+Synthetic-evidence unit tests were moved down to what each one actually asserts:
+the commit-evidence matrix and the handoff/evidence comparison now run through
+`verify_repository_evidence()`, and the dependency / conflict / status / capacity
+tests read verdicts that never needed evidence in the first place. The *final*
+verdict is exercised only over real temporary Git repositories.
+
+Tests: `tests/integration/test_agent_final_authority.py` (new) states the
+invariants directly - the signature has no `evidence` parameter and the call
+shape raises `TypeError`, no repository can never be READY, a real repository
+delivery is READY and still disclaims the GitHub gate, a credential-bearing
+origin is refused through both `collect_repository_evidence()` and
+`evaluate_integration()` with `TOP_SECRET_TOKEN` absent from the message, the
+details, `as_dict()` and `json.dumps()`, a valid-but-wrong repository reports only
+`other-owner/other-repo`, a repository with no origin is refused, and the real CLI
+(`python -m tools.agent.cli check-integration`) exits non-zero with the sentinel
+absent from both stdout and stderr.
+
+Both fixes were rolled back once and the suite re-run: five tests turn red.
+
+### 18.20 Known limitations after FIX-4
+
+- `build_handoff()` remains a producer convenience and is deliberately **not**
+  identity-bound; the consumer (`evaluate_integration`) is the trust boundary and
+  binds `config.repository` independently.
+- Unit-level final-ready coverage is gone by design. Any test that wants a
+  `ready: true` verdict must build a real temporary Git repository; the pure
+  comparison is covered through `verify_repository_evidence()` instead.
+- The capture/finalization timing flake in
+  `tests/unit/api/test_capture_project_target.py` is carried forward unchanged
+  (FIX-4 §28).
+
+```text
+AGENT-01-FIX-4 implementation complete
+Self-verification complete
+Awaiting independent re-acceptance
+```
+
+Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are
+**not** written by the development agent. `AGENT-02`, `V0.3-12` and `CD-01` have
+**not** started.
