@@ -2,9 +2,11 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (DOC-GOV-01 — Documentation & Agent Context Governance — externally
-> accepted and integrated; Final Acceptance: PASS · Status: CLOSED. CI-03 — Change-Aware Tiered
-> Quality Gate is AWAITING INDEPENDENT ACCEPTANCE)
+> **Updated**: 2026-09-19 (CI-03-FIX-1 — Cross-Domain Dependency & Fail-Closed Hardening —
+> routes the Runtime control API and the Tauri IPC boundary across their real consumers and makes
+> `full_required` fail closed; CI-03 — Change-Aware Tiered Quality Gate is AWAITING INDEPENDENT
+> RE-ACCEPTANCE. DOC-GOV-01 — Documentation & Agent Context Governance — externally accepted and
+> integrated; Final Acceptance: PASS · Status: CLOSED.)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -411,10 +413,15 @@ this document it must attribute it, and must not present its own conclusion as t
 ```text
 Awaiting independent acceptance:
   CI-03 — Change-Aware Tiered Quality Gate
-  Status: AWAITING INDEPENDENT ACCEPTANCE
+  Status: AWAITING INDEPENDENT RE-ACCEPTANCE (CI-03-FIX-1)
   CI control plane only — no product / runtime / safety / schema / API / dependency change, and the
-  ruleset is unchanged. Design + evidence: docs/engineering/CI_TIERED_QUALITY_GATE.md;
-  policy: INTEGRATION_POLICY.md §18.
+  ruleset is unchanged. CI-03 returned NOT PASS (P0: 0 · P1: 2 · P2: 2): a real Runtime control-API
+  Rust consumer was not routed, the Tauri IPC Rust+TypeScript boundary was classified Rust-only,
+  `full_required` did not fail closed, and the Git-backed diff had no real-repository coverage.
+  FIX-1 routes `runtime/canx/api/app.py` to Runtime + Frontend + Rust, routes `src-tauri/src/**` and
+  the TypeScript IPC bridges to Frontend + Rust, makes `full_required` (and the classification label)
+  fail closed, and adds real temporary-repo rename/delete/multi-commit/merge-base tests. Design +
+  evidence: docs/engineering/CI_TIERED_QUALITY_GATE.md; policy: INTEGRATION_POLICY.md §18.
 
 Just CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
   Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · PR #13 · head 38914b6
@@ -504,8 +511,12 @@ reproduced locally, repaired minimally and re-run — never by skipping, deletin
 
 **Change-aware since CI-03.** A docs-only change now costs ~40 s instead of ~405 s (run `35364782061`
 vs `35361993908`): the three domain jobs are conditional on a tested classifier, while `Quality Gate`
-is unchanged, runs on every event, and fails closed on an unauthorised skip. Rules and evidence:
-`docs/engineering/CI_TIERED_QUALITY_GATE.md`.
+is unchanged, runs on every event, and fails closed on an unauthorised skip. **CI-03-FIX-1** routed
+the two real cross-domain dependencies that CI-03 missed — the Rust sidecar's consumption of the
+Runtime control API (`runtime/canx/api/app.py` → Runtime + Frontend + Rust) and the Tauri IPC boundary
+(`src-tauri/src/**` → Frontend + Rust; the TypeScript IPC bridges → Frontend + Rust) — and made an
+unreadable `full_required` (and classification label) fail the gate rather than be defaulted away.
+Rules and evidence: `docs/engineering/CI_TIERED_QUALITY_GATE.md`.
 
 **What CI does not establish** — see §9. `tests/integration/test_packaged_runtime_smoke.py` (6 tests)
 skips on CI (no packaged `canx-runtime.exe` staged) and runs locally after

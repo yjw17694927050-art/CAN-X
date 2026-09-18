@@ -4,9 +4,16 @@ The gate is the repository's only required status check, so its decision must be
 executable and testable rather than a shell string. The rule is:
 
 * the classifier must have succeeded;
+* ``full_required`` must be readable as ``true`` or ``false`` and is authoritative:
+  when it is ``true`` every domain job is required regardless of the individual
+  flags, and when it is neither ``true`` nor ``false`` the gate fails closed — a
+  value that cannot be read is never defaulted away;
 * a domain job the classifier marked **required** must report ``success``;
 * a domain job the classifier did **not** require may report ``skipped`` or
   ``success`` — an *authorised* skip, not a missing validation;
+* the ``classification`` label must be present and consistent with the requirement
+  flags the gate is about to act on — an empty or unrecognised label is unreadable
+  and fails closed;
 * anything else — a red job, a cancelled job, an unexpected skip, a missing
   result, an unreadable classification — fails the gate.
 
@@ -80,6 +87,24 @@ def as_bool(raw: object) -> bool | None:
     return None
 
 
+def _recognised_labels(*, full_required: bool, required: Mapping[str, bool]) -> frozenset[str]:
+    """The classification labels consistent with the declared requirement flags.
+
+    The classifier emits ``full``, ``docs_only``, ``no_changes``, or a ``+``-joined
+    union of the three domain names in a fixed order. Re-deriving the label from the
+    flags the gate is about to act on keeps it from trusting a label that contradicts
+    them: a truncated, empty or unrecognised label fails closed.
+    """
+
+    if full_required:
+        return frozenset({"full"})
+
+    names = [flag.removesuffix("_required") for _job, flag in _JOB_FLAGS if required[flag]]
+    if not names:
+        return frozenset({"docs_only", "no_changes"})
+    return frozenset({"+".join(names)})
+
+
 def evaluate(
     classification: Mapping[str, object],
     results: Mapping[str, str],
@@ -96,15 +121,24 @@ def evaluate(
     if classifier_result != "success":
         reasons.append(f"the change classifier did not succeed ({classifier_result!r})")
 
+    # `full_required` is authoritative, so it has to be readable. A value that is
+    # neither `true` nor `false` is not defaulted away: falling back to the
+    # individual flags would let a corrupt FULL classification run a selective gate.
     full_required = as_bool(classification.get("full_required"))
+    if full_required is None:
+        reasons.append("classification is incomplete: full_required is missing or not a boolean")
+
+    declared: dict[str, bool | None] = {
+        flag: as_bool(classification.get(flag)) for _job, flag in _JOB_FLAGS
+    }
 
     for job, flag in _JOB_FLAGS:
-        declared = as_bool(classification.get(flag))
-        if declared is None:
+        requirement = declared[flag]
+        if requirement is None:
             reasons.append(f"classification is incomplete: {flag} is missing or not a boolean")
             continue
 
-        required = True if full_required is True else declared
+        required = True if full_required is True else requirement
         outcome = results.get(job)
 
         if required:
@@ -112,6 +146,19 @@ def evaluate(
                 reasons.append(f"a required job did not succeed ({job}={outcome!r})")
         elif outcome not in _ACCEPTABLE_WHEN_NOT_REQUIRED:
             reasons.append(f"a non-required job ended in an unexpected state ({job}={outcome!r})")
+
+    if full_required is not None and all(
+        requirement is not None for requirement in declared.values()
+    ):
+        recognised = _recognised_labels(
+            full_required=full_required,
+            required={flag: value is True for flag, value in declared.items()},
+        )
+        if label not in recognised:
+            reasons.append(
+                "classification is unreadable: the classification label "
+                f"{label!r} is missing or is not one the requirement flags describe"
+            )
 
     return GateDecision(not reasons, tuple(reasons), label)
 

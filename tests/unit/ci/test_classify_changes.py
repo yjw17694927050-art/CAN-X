@@ -97,6 +97,35 @@ def test_realtime_transport_is_a_shared_contract() -> None:
     assert result.frontend_required is True
 
 
+def test_runtime_control_api_requires_rust() -> None:
+    """`runtime/canx/api/app.py` defines the Rust-consumed control contract.
+
+    The desktop sidecar (`apps/desktop/src-tauri/src/runtime_sidecar.rs`) calls
+    `GET /health` — asserting `service == "canx-runtime"` and `schema_version == 1`
+    — and `POST /runtime/shutdown`, asserting HTTP 202. Both routes and the models
+    they answer with are defined by the FastAPI application factory in this file,
+    so it has three real consumers: Python, TypeScript and Rust.
+    """
+
+    result = classify_paths(["runtime/canx/api/app.py"])
+
+    assert result.runtime_required is True
+    assert result.frontend_required is True
+    assert result.rust_required is True
+    assert result.classification == "runtime+frontend+rust"
+
+
+def test_other_runtime_api_routers_stay_runtime_plus_frontend() -> None:
+    """Only the control-plane factory carries the Rust-consumed contract; the
+    other API routers remain a Python + frontend contract."""
+
+    result = classify_paths(["runtime/canx/api/project.py"])
+
+    assert result.runtime_required is True
+    assert result.frontend_required is True
+    assert result.rust_required is False
+
+
 # --------------------------------------------------------------------------
 # Tier B / Tier D — Frontend and Rust
 # --------------------------------------------------------------------------
@@ -110,12 +139,69 @@ def test_frontend_component_requires_only_the_frontend_job() -> None:
     assert result.rust_required is False
 
 
-def test_tauri_rust_requires_only_the_rust_job() -> None:
-    result = classify_paths(["apps/desktop/src-tauri/src/main.rs"])
+def test_tauri_rust_source_requires_the_frontend_job_too() -> None:
+    """Tauri IPC is a Rust + TypeScript boundary, not a Rust-internal one.
 
-    assert result.rust_required is True
-    assert result.runtime_required is False
-    assert result.frontend_required is False
+    The renderer invokes these commands by exact command name, and the frontend's
+    own drift test reads these Rust sources — so a change here must run the
+    frontend job, or the cross-language contract test would be skipped.
+    """
+
+    for path in (
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/desktop/src-tauri/src/lib.rs",
+        "apps/desktop/src-tauri/src/dbc_file_bridge.rs",
+        "apps/desktop/src-tauri/src/runtime_sidecar.rs",
+    ):
+        result = classify_paths([path])
+        assert result.rust_required is True, path
+        assert result.frontend_required is True, path
+        assert result.runtime_required is False, path
+
+
+def test_tauri_rust_tests_icons_and_packaging_stay_rust_only() -> None:
+    """Rust's own integration tests, icons and packaging resources have no
+    TypeScript consumer, so they do not drag the frontend job in."""
+
+    for path in (
+        "apps/desktop/src-tauri/tests/runtime_sidecar.rs",
+        "apps/desktop/src-tauri/icons/icon.ico",
+        "apps/desktop/src-tauri/tauri.conf.json",
+    ):
+        result = classify_paths([path])
+        assert result.rust_required is True, path
+        assert result.frontend_required is False, path
+        assert result.runtime_required is False, path
+
+
+def test_tauri_ipc_frontend_bridges_require_rust() -> None:
+    """The TypeScript IPC bridges invoke Rust commands, so changing one can break
+    the Rust side of the same contract and must run the Rust job."""
+
+    for path in (
+        "apps/desktop/src/desktop/dbc-file-bridge.ts",
+        "apps/desktop/src/desktop/dbc-file-bridge.test.ts",
+        "apps/desktop/src/runtime/runtime-client.ts",
+        "apps/desktop/src/smoke/dbc-dialog-smoke.ts",
+    ):
+        result = classify_paths([path])
+        assert result.frontend_required is True, path
+        assert result.rust_required is True, path
+        assert result.runtime_required is False, path
+
+
+def test_runtime_http_clients_are_not_escalated_to_rust() -> None:
+    """Only the Tauri IPC bridges require Rust. The HTTP Runtime clients do not:
+    they speak HTTP to the Python runtime and have no Rust consumer."""
+
+    for path in (
+        "apps/desktop/src/runtime/capture-client.ts",
+        "apps/desktop/src/runtime/dbc-client.ts",
+        "apps/desktop/src/runtime/realtime-stream.ts",
+    ):
+        result = classify_paths([path])
+        assert result.frontend_required is True, path
+        assert result.rust_required is False, path
 
 
 def test_frontend_source_prefix_does_not_swallow_src_tauri() -> None:

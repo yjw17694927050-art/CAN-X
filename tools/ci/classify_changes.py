@@ -96,6 +96,46 @@ SHARED_CONTRACT_PATTERNS: tuple[str, ...] = (
     "runtime/canx/transport/**",
 )
 
+#: The Runtime control-plane HTTP contract, which has a **Rust** consumer as well.
+#:
+#: The desktop sidecar (`apps/desktop/src-tauri/src/runtime_sidecar.rs`) calls
+#: `GET /health` — asserting `service == "canx-runtime"` and
+#: `schema_version == 1` — and `POST /runtime/shutdown`, asserting HTTP 202. Both
+#: routes, and the `HealthResponse` / `ShutdownResponse` models they answer with,
+#: are defined by the FastAPI application factory in this one module. The renderer
+#: consumes the same HTTP surface and the Python runtime implements it, so a change
+#: here has three real consumers and requires all three domain jobs.
+#:
+#: Kept as an explicit single-file rule rather than escalating the whole
+#: `runtime/canx/api/**` package: the Rust sidecar consumes the control plane and
+#: nothing else, so the frontend-only routers (`project`, `dbc`, `trace`, `errors`)
+#: remain a Python + frontend contract. The anchor is the application factory — the
+#: stable root module of the package — and if the control routes are ever moved to
+#: another module, that module must be added here in the same change.
+DESKTOP_CONTROL_API_PATTERNS: tuple[str, ...] = ("runtime/canx/api/app.py",)
+
+#: Tauri IPC is a boundary between Rust and TypeScript, not a Rust-internal one.
+#:
+#: The commands registered by `apps/desktop/src-tauri/src/lib.rs` and
+#: `.../dbc_file_bridge.rs` are invoked from the renderer by exact command name,
+#: and the frontend's own drift test (`apps/desktop/src/desktop/dbc-file-bridge.test.ts`)
+#: reads these Rust sources to prove the two halves have not diverged. A change to
+#: Rust source must therefore run the frontend job as well, or that cross-language
+#: contract test would be skipped. `tests/**`, icons, packaging resources and
+#: `tauri.conf.json` are not IPC sources and stay Rust-only.
+TAURI_IPC_RUST_PATTERNS: tuple[str, ...] = ("apps/desktop/src-tauri/src/**",)
+
+#: The TypeScript half of the Tauri IPC boundary: the modules that `invoke` a Rust
+#: command. Changing one can change the contract the Rust side must satisfy, so the
+#: Rust job is required too. Deliberately a precise list, not `apps/desktop/src/**`:
+#: the HTTP Runtime clients (`capture-client`, `dbc-client`, `realtime-stream`) speak
+#: to the Python runtime and have no Rust consumer, so they are not escalated.
+TAURI_IPC_FRONTEND_PATTERNS: tuple[str, ...] = (
+    "apps/desktop/src/desktop/**",
+    "apps/desktop/src/runtime/runtime-client.ts",
+    "apps/desktop/src/smoke/**",
+)
+
 #: Documentation-only surfaces. Nothing here needs a domain job.
 DOCS_PATTERNS: tuple[str, ...] = ("docs/**", "*.md")
 
@@ -204,6 +244,19 @@ def classify_paths(paths: Iterable[str]) -> Classification:
         if _matches_any(path, SHARED_CONTRACT_PATTERNS):
             runtime = True
             frontend = True
+            known = True
+        if _matches_any(path, DESKTOP_CONTROL_API_PATTERNS):
+            runtime = True
+            frontend = True
+            rust = True
+            known = True
+        if _matches_any(path, TAURI_IPC_RUST_PATTERNS):
+            frontend = True
+            rust = True
+            known = True
+        if _matches_any(path, TAURI_IPC_FRONTEND_PATTERNS):
+            frontend = True
+            rust = True
             known = True
         if _matches_any(path, DOCS_PATTERNS):
             known = True

@@ -377,11 +377,17 @@ The distinction is enforced, not asserted. `Quality Gate` runs on every event
 (`if: always()`), it reads the classifier's decision, and it **fails closed**:
 
 ```text
-classifier did not succeed        → FAIL
-a required domain job != success  → FAIL  (skipped counts as != success)
-a not-required job is red         → FAIL  (a failure is evidence either way)
-unreadable classification         → FAIL
+classifier did not succeed          → FAIL
+`full_required` not `true`/`false`  → FAIL
+a required domain job != success    → FAIL  (skipped counts as != success)
+a not-required job is red           → FAIL  (a failure is evidence either way)
+unreadable classification           → FAIL  (mapping not readable, or a label
+                                             missing / empty / inconsistent)
 ```
+
+`full_required` is authoritative and cannot be defaulted away: a value that is
+missing, empty or not `true`/`false` fails the gate on its own, so a corrupt FULL
+classification can never run a selective gate.
 
 So a skip can only pass if the classifier asked for it and the classifier itself
 succeeded. There is no path where "nothing ran" produces a green gate.
@@ -398,6 +404,17 @@ CI control plane            → FULL CI
 dependency / build authority→ FULL CI
 project authority documents → FULL CI
 Agent shared truth          → FULL CI
+```
+
+A change is also escalated when a *second domain* really consumes it, even though
+it is not an authority:
+
+```text
+Runtime control API (runtime/canx/api/app.py) → Runtime + Frontend + Rust
+                                                (the Rust sidecar consumes
+                                                 /health and /runtime/shutdown)
+Tauri IPC Rust source (src-tauri/src/**)      → Frontend + Rust
+Tauri IPC TypeScript bridges                  → Frontend + Rust
 ```
 
 FULL CI means every domain job runs. It is never "no validation". The routing

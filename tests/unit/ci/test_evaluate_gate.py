@@ -175,6 +175,114 @@ def test_classification_that_is_not_a_mapping_blocks() -> None:
     assert decision.ok is False
 
 
+# --------------------------------------------------------------------------
+# `full_required` is authoritative and must fail closed when it is unreadable
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "maybe", "yes", "no", "1", "0", "trueish"])
+def test_full_required_that_is_not_a_boolean_blocks(raw: str) -> None:
+    classification = {**DOCS_ONLY, "full_required": raw}
+
+    decision = evaluate(classification, results(runtime="success"))
+
+    assert decision.ok is False
+    assert any("full_required" in reason for reason in decision.reasons)
+
+
+def test_a_missing_full_required_blocks() -> None:
+    classification = {k: v for k, v in DOCS_ONLY.items() if k != "full_required"}
+
+    decision = evaluate(classification, results(runtime="success"))
+
+    assert decision.ok is False
+    assert any("full_required" in reason for reason in decision.reasons)
+
+
+def test_full_required_false_keeps_normal_selective_behaviour() -> None:
+    decision = evaluate({**RUNTIME_ONLY, "full_required": "false"}, results(runtime="success"))
+
+    assert decision.ok is True
+
+
+def test_full_required_true_requires_all_three_domain_jobs() -> None:
+    """`full_required: true` is authoritative: a docs-shaped flag set cannot skip it."""
+
+    classification = {
+        "runtime_required": False,
+        "frontend_required": False,
+        "rust_required": False,
+        "full_required": "true",
+        "classification": "full",
+    }
+
+    decision = evaluate(classification, results())
+
+    assert decision.ok is False
+    assert len(decision.reasons) == 3
+
+
+# --------------------------------------------------------------------------
+# The classification label is part of classification integrity
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("label", ["", "   ", "garbage", "runtime+rust+frontend", "FULL"])
+def test_an_unreadable_classification_label_blocks(label: str) -> None:
+    decision = evaluate({**DOCS_ONLY, "classification": label}, results())
+
+    assert decision.ok is False
+    assert any("classification" in reason for reason in decision.reasons)
+
+
+def test_a_missing_classification_label_blocks() -> None:
+    classification = {k: v for k, v in DOCS_ONLY.items() if k != "classification"}
+
+    decision = evaluate(classification, results())
+
+    assert decision.ok is False
+
+
+def test_a_label_inconsistent_with_the_requirement_flags_blocks() -> None:
+    classification = {**DOCS_ONLY, "runtime_required": True, "classification": "docs_only"}
+
+    decision = evaluate(classification, results(runtime="success"))
+
+    assert decision.ok is False
+    assert any("classification" in reason for reason in decision.reasons)
+
+
+def test_every_classifier_label_combination_is_accepted() -> None:
+    for runtime, frontend, rust, label in (
+        (False, False, False, "docs_only"),
+        (False, False, False, "no_changes"),
+        (True, False, False, "runtime"),
+        (False, True, False, "frontend"),
+        (False, False, True, "rust"),
+        (True, True, False, "runtime+frontend"),
+        (True, False, True, "runtime+rust"),
+        (False, True, True, "frontend+rust"),
+        (True, True, True, "runtime+frontend+rust"),
+    ):
+        classification = {
+            "runtime_required": runtime,
+            "frontend_required": frontend,
+            "rust_required": rust,
+            "full_required": False,
+            "classification": label,
+        }
+        decision = evaluate(
+            classification,
+            results(
+                runtime="success" if runtime else "skipped",
+                frontend="success" if frontend else "skipped",
+                rust="success" if rust else "skipped",
+            ),
+        )
+
+        assert decision.ok is True, label
+
+
 def test_decision_is_immutable_and_serialisable() -> None:
     decision = evaluate(DOCS_ONLY, results())
 
@@ -253,4 +361,29 @@ def test_main_ignores_a_malformed_override_and_falls_back_to_the_environment(
     _set_env(monkeypatch, CANX_CI_RUNTIME_REQUIRED="true")
 
     assert main(["--classification", "{not json"]) == 1
+
+
+@pytest.mark.parametrize("raw", ["", "maybe", "true-ish"])
+def test_main_fails_closed_when_full_required_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    _set_env(monkeypatch, CANX_CI_FULL_REQUIRED=raw)
+
+    assert main([]) == 1
+
+
+def test_main_passes_when_full_required_is_a_readable_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(monkeypatch, CANX_CI_FULL_REQUIRED="false")
+
+    assert main([]) == 0
+
+
+def test_main_fails_closed_when_the_classification_label_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(monkeypatch, CANX_CI_CLASSIFICATION="")
+
+    assert main([]) == 1
 
