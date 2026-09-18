@@ -113,6 +113,22 @@ def list_worktrees(repo: Path) -> tuple[WorktreeRecord, ...]:
     return _parse_porcelain(result.stdout)
 
 
+def primary_worktree(repo: Path) -> Path:
+    """The repository's main / primary worktree root.
+
+    ``git worktree list`` always lists the main worktree first, so this resolves
+    the canonical root from *any* entry point - the main worktree or any linked
+    task worktree. ``task.worktree`` is repository-relative, so it must be
+    resolved against this root rather than against whichever worktree happened
+    to invoke the tool (AGENT-01-FIX-2 §16-§17).
+    """
+    records = list_worktrees(repo)
+    for record in records:
+        if not record.bare:
+            return record.path
+    return records[0].path if records else repo
+
+
 def validate_repository(repo: Path, *, expected_remote: str | None = None) -> Path:
     """Confirm ``repo`` is the repository the tooling is allowed to touch.
 
