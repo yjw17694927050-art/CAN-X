@@ -1,6 +1,7 @@
 # RELIABILITY-01 — Capture / DataSession Finalization Timing
 
-> **Status**: implementation complete · self-verification complete · awaiting independent acceptance
+> **Status**: Final Acceptance: PASS · Status: CLOSED
+> **Acceptance source**: external / independent reviewer
 > **Scope**: capture stop, recorder cleanup, DataSession terminal-state observation
 > **Production lifecycle change**: none
 
@@ -55,8 +56,9 @@ tests\unit\api\test_capture_project_target.py:50
 
 ### The failure the first remediation did not cover
 
-PR #9 was green on its own head (`run 35320171207`, Runtime / Python 4m55s) and
-was merged as `831930ee`. The post-merge `main` run failed:
+PR #9 was green on its own head `1d2a026594a9cef869f065e649a868f70a146dc6`
+(`run 35320171207`, Runtime / Python 4m55s) and was merged as `831930ee`. The
+post-merge `main` run failed:
 
 ```text
 run 35321725801, attempt 1
@@ -532,6 +534,19 @@ Quality Gate            success
 The six skips are the known packaged-runtime smoke tests (`canx-runtime.exe` not
 staged in that job), unchanged from every earlier run.
 
+The docs-only closeout that carried this record into `main`, and the final `main`
+CI that closes the whole sequence:
+
+```text
+closeout PR          #11  docs(reliability): close RELIABILITY-01 after protected integration
+closeout head        060e29b5f21308978100af7d228183732f9e1cfa
+closeout PR CI       35349886546 — SUCCESS (attempt 1)
+closeout merge       0ab81aea600c2a2bae7585dbd9072bde5aeaff46 (2026-09-18T13:30:24Z)
+files changed        docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md
+                     docs/PROJECT_STATE.md          (documentation only)
+final `main` CI      35350608526 — SUCCESS (attempt 1), all four jobs
+```
+
 ### What the closure does and does not establish
 
 ```text
@@ -574,6 +589,8 @@ not a property this repository controls.
 - The reproduction rate is low by nature; a green repetition is not evidence that
   the historical CI failure did not occur. The historical run remains evidence.
 
-AGENT-02 remains blocked pending independent acceptance of this reliability
-record. `Final Acceptance: PASS`, `Status: CLOSED`, and AGENT-02 entry approval
-are external decisions and are not asserted here.
+RELIABILITY-01 closed with the external verdict `Final Acceptance: PASS` /
+`Status: CLOSED`. The reliability prerequisite for AGENT-02 is **CLEARED**;
+AGENT-02 itself has **not started**. `DOC-GOV-01` — Documentation & Agent Context
+Governance — is the immediate next engineering task and is **NOT STARTED · READY**.
+`V0.3-12` and `CD-01` are **NOT STARTED**.
