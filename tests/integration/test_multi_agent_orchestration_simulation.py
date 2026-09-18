@@ -449,3 +449,101 @@ def test_the_verdict_never_claims_to_have_checked_the_github_gate() -> None:
     payload = readiness.to_dict()
     assert payload["github_gate"]["checked_here"] is False
     assert "Quality Gate" in payload["github_gate"]["note"]
+
+
+# ------------------------------------------- the multi-cycle serial-integration life
+
+
+def _set_status(
+    tasks: tuple[TaskContract, ...], task_id: str, status: TaskStatus
+) -> tuple[TaskContract, ...]:
+    return tuple(
+        replace(task, status=status) if task.task_id == task_id else task for task in tasks
+    )
+
+
+def _entry(result: OrchestrationPlan, task_id: str):
+    return next(entry for entry in result.entries if entry.task_id == task_id)
+
+
+def test_the_serial_integration_lifecycle_survives_every_status_transition() -> None:
+    """A multi-cycle life, not a snapshot (AGENT-01-FIX-2 §36).
+
+    ``B`` owns a C3 public-truth surface; ``D`` races it. ``B`` moving through
+    READY -> IN_PROGRESS -> HANDOFF_READY -> INTEGRATING -> DONE must keep ``D``
+    deferred until ``B`` actually lands - and release it only then, with the
+    moved integration head making ``D``'s old handoff stale.
+    """
+    config = _config()
+    tasks = _widened()
+    peak = 0
+
+    def observe(state: tuple[TaskContract, ...]) -> OrchestrationPlan:
+        nonlocal peak
+        result = _plan(state)
+        peak = max(peak, len(result.active_ids) + len(result.runnable_ids()))
+        return result
+
+    # Cycle 1: B and D are both READY. B holds the surface, D waits.
+    cycle1 = observe(tasks)
+    assert "AGENT-02-B" in cycle1.runnable_ids()
+    assert "AGENT-02-D" in cycle1.deferred_ids()
+    assert "AGENT-02-D" not in cycle1.runnable_ids()
+
+    # Dispatch B plus three independents: the four slots are genuinely full.
+    state = tasks
+    for task_id in ("AGENT-02-B", "AGENT-02-A", "AGENT-02-E", "AGENT-02-F"):
+        state = _set_status(state, task_id, TaskStatus.IN_PROGRESS)
+
+    # Cycle 2: B is no longer READY, but D must stay deferred, and no slot leaks.
+    cycle2 = observe(state)
+    assert cycle2.active_ids == (
+        "AGENT-02-B",
+        "AGENT-02-A",
+        "AGENT-02-E",
+        "AGENT-02-F",
+    )
+    assert cycle2.available_slots == 0
+    assert cycle2.runnable_ids() == ()
+    assert "AGENT-02-D" in cycle2.deferred_ids()
+
+    # B hands off: it stops consuming a slot but keeps the lease.
+    state = _set_status(state, "AGENT-02-B", TaskStatus.HANDOFF_READY)
+    cycle3 = observe(state)
+    assert cycle3.available_slots == 1
+    assert "AGENT-02-D" not in cycle3.runnable_ids()
+    assert "AGENT-02-D" in cycle3.deferred_ids()
+    assert "AGENT-02-B" not in cycle3.active_ids
+
+    # B integrates: still no release.
+    state = _set_status(state, "AGENT-02-B", TaskStatus.INTEGRATING)
+    cycle4 = observe(state)
+    assert "AGENT-02-D" not in cycle4.runnable_ids()
+    assert "AGENT-02-D" in cycle4.deferred_ids()
+
+    # B lands. The surface is released - and only now.
+    state = _set_status(state, "AGENT-02-B", TaskStatus.DONE)
+    cycle5 = observe(state)
+    assert "AGENT-02-D" not in cycle5.deferred_ids()
+    assert "AGENT-02-D" in cycle5.runnable_ids()
+
+    # ...but the integration head moved with B, so D's old delivery is stale.
+    stale_head = "1234567890abcdef1234567890abcdef12345678"
+    task_d = replace(_by_id(state, "AGENT-02-D"), status=TaskStatus.HANDOFF_READY)
+    state_with_d = tuple(
+        task_d if task.task_id == "AGENT-02-D" else task for task in state
+    )
+    handoff = _handoff(
+        task_d, head_sha=A_HEAD, changed_files=("runtime/canx/domain/frame.py",)
+    )
+    readiness = evaluate_integration(
+        handoff,
+        task_d,
+        config,
+        _context(state_with_d, stale_head),
+        evidence=_synthetic_evidence(task_d, handoff, ("runtime/canx/domain/frame.py",)),
+    )
+    assert not readiness.ready
+    assert "agent.base_stale" in readiness.blockers
+
+    assert peak <= config.max_sub_agents, "a conflict leak would have exceeded the cap"

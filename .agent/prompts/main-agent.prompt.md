@@ -93,13 +93,43 @@ branch, its tests, its handoff requirements — and nothing else it does not nee
 
 ```bash
 python -m tools.agent.cli validate-handoff --task <task.json> --handoff <handoff.json>
-python -m tools.agent.cli check-integration --task <task.json> \
-  --handoff <handoff.json> --integration-head <current-main-40-hex>
+
+python -m tools.agent.cli check-integration \
+  --task <task.json> \
+  --handoff <handoff.json> \
+  --plan <current-task-plan.json> \
+  --repo <repository-root-or-task-worktree> \
+  --integration-head <current-main-40-hex>
 ```
 
-`check-integration` must report `ready: true`. Re-derive ownership; never accept
-the `ownership_compliance` flag on its own. A `C2+` conflict with another
-in-flight task stops the integration.
+Windows note: the trailing `\` above is a POSIX line continuation. In `cmd.exe`
+use `^`, or put the whole command on one line.
+
+`--plan` and `--repo` are not optional in practice. Without the task set there is
+no dependency or conflict verdict; without a repository there is no Git-backed
+evidence. Either omission fails closed — the command reports
+`agent.integration_context_incomplete`, never `ready: true`. `--repo` accepts
+either the repository root or the task's own worktree; both are read as the same
+task worktree.
+
+`check-integration` must report `ready: true` — and that is **necessary, not
+sufficient.** Merge eligibility requires all of:
+
+```text
+local check-integration   ready: true
+GitHub PR                 Quality Gate: SUCCESS on this head
+base                      still the current integration head immediately before merge
+merge path                the protected PR workflow — never a direct push, never a bypass
+```
+
+The local CLI does **not** contact GitHub and does not verify the GitHub Quality
+Gate — it says so itself (`github_gate.checked_here = false`). The Ruleset
+requires `Quality Gate` independently.
+
+`ready: true` already means ownership was re-derived from the task's whole
+`base..head` history (never the `ownership_compliance` flag on its own), every
+required test was reported `passed`, and no `C2+` conflict with an in-flight task
+blocks it.
 
 ## 8. Integrate, serially
 
