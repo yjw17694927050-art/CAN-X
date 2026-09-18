@@ -3,7 +3,8 @@
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
 > **Updated**: 2026-09-18 (DOC-GOV-01 — Documentation & Agent Context Governance — externally
-> accepted and integrated; Final Acceptance: PASS · Status: CLOSED)
+> accepted and integrated; Final Acceptance: PASS · Status: CLOSED. CI-03 — Change-Aware Tiered
+> Quality Gate is AWAITING INDEPENDENT ACCEPTANCE)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -408,11 +409,16 @@ this document it must attribute it, and must not present its own conclusion as t
 ## 12. Immediate Next Action
 
 ```text
+Awaiting independent acceptance:
+  CI-03 — Change-Aware Tiered Quality Gate
+  Status: AWAITING INDEPENDENT ACCEPTANCE
+  CI control plane only — no product / runtime / safety / schema / API / dependency change, and the
+  ruleset is unchanged. Design + evidence: docs/engineering/CI_TIERED_QUALITY_GATE.md;
+  policy: INTEGRATION_POLICY.md §18.
+
 Just CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
-  Final Acceptance: PASS · Status: CLOSED   (external / independent reviewer)
-  Accepted head 38914b6a2ac7f422c0d11e131170d80d73dd4f12 · PR #13
-  Merged to `main` as e183c53fdb1dc07a784b76ef5c1e45f07bb88c0e (merge commit, protected
-  workflow, no bypass) · post-merge `main` CI run 35361083707 — SUCCESS on attempt 1.
+  Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · PR #13 · head 38914b6
+  → `main` e183c53 (protected merge, no bypass) · post-merge CI 35361083707 SUCCESS on attempt 1.
   Docs-only: no product code, runtime, safety, schema, API, dependency or CI-semantics change.
 
 Next prerequisite task — AGENT-CONTEXT-PROTECTION (Context Governance Protected Truth Surface)
@@ -463,16 +469,21 @@ docs/V0.1.1_HANDOFF_AUDIT.md · docs/DEPENDENCIES.md   earlier reports + depende
 
 `.github/workflows/ci.yml` is CAN-X's first real CI — before it the repository had no `.github/`, so
 every earlier test number is a local run. Triggers `pull_request → main`, `push → main`,
-`workflow_dispatch`; `permissions: contents: read` only; superseded runs cancelled. Four jobs, all on
+`workflow_dispatch`; `permissions: contents: read` only; superseded runs cancelled. Five jobs, all on
 `windows-latest`:
 
 ```text
-Runtime / Python        pytest -q · ruff check runtime tests tools · mypy runtime tools/agent
+Change Classification   routing decision — always runs (CI-03)
+Runtime / Python        pytest -q · ruff check runtime tests tools · mypy runtime tools/agent tools/ci
 Frontend / TypeScript   pnpm install --frozen-lockfile · lint · typecheck · test · build
 Desktop System / Rust   cargo fmt --check · clippy --all-targets --all-features --locked
                         -- -D warnings · test --locked
-Quality Gate            needs all three, if: always(); non-zero unless every one succeeded
+Quality Gate            needs all four, if: always(); fails closed on an unauthorised skip (CI-03)
 ```
+
+The three domain jobs run only when the change classifier requires them; `Quality Gate` still runs on
+every event and is still the only required status check
+(`docs/engineering/CI_TIERED_QUALITY_GATE.md`).
 
 Versions are never re-declared in the workflow: Python from `pyproject.toml` (pinned 3.13.15), pnpm
 from `package.json`'s `packageManager` via corepack, Rust from `Cargo.lock` (`--locked`), Node
@@ -487,15 +498,18 @@ from `package.json`'s `packageManager` via corepack, Rust from `Cargo.lock` (`--
 35221583265  workflow_dispatch  @75693f6  SUCCESS   all four jobs success
 ```
 
-That first run exposed three pre-existing environment defects no local run had shown
-(`bundle.externalBin` at a gitignored artifact, a jsdom canvas gap, a capture-test drain budget sized
-for a faster machine). Each was reproduced locally, repaired minimally and re-run — never by skipping,
-deleting or weakening a test (commits `75693f6`, `efb90cb`, `fc98f8e`).
+That first run exposed three pre-existing environment defects no local run had shown; each was
+reproduced locally, repaired minimally and re-run — never by skipping, deleting or weakening a test
+(commits `75693f6`, `efb90cb`, `fc98f8e`).
 
-**What CI does not establish** — a green CI is an automatic quality gate, never `Final Acceptance:
-PASS`; it runs on `windows-latest` only, so macOS / Linux / real CAN hardware stay `NOT VERIFIED`; it
-builds no MSI, updater or release. `tests/integration/test_packaged_runtime_smoke.py` (6 tests) skips
-on CI (no packaged `canx-runtime.exe` staged) and runs locally after `scripts\package-windows.cmd`.
+**Change-aware since CI-03.** A docs-only change now costs ~40 s instead of ~405 s (run `35364782061`
+vs `35361993908`): the three domain jobs are conditional on a tested classifier, while `Quality Gate`
+is unchanged, runs on every event, and fails closed on an unauthorised skip. Rules and evidence:
+`docs/engineering/CI_TIERED_QUALITY_GATE.md`.
+
+**What CI does not establish** — see §9. `tests/integration/test_packaged_runtime_smoke.py` (6 tests)
+skips on CI (no packaged `canx-runtime.exe` staged) and runs locally after
+`scripts\package-windows.cmd`.
 
 ---
 

@@ -356,3 +356,78 @@ platform flag on as a deliberate follow-up on its own change, together with the
 negative case that must be verified. Until that happens, integration safety in
 the parallel case rests on the Main Agent honouring §17.1 — which is exactly the
 kind of reliance on discipline that `check_base` exists to reduce.
+
+## 18. Change-aware validation (CI-03)
+
+CI-01 ran every job on every event. CI-03 keeps the same gate but only runs the
+validation jobs a change actually requires. The policy this section adds is the
+*meaning* of a skip — because "a job did not run" now has two very different
+causes.
+
+### 18.1 Authorised skip ≠ missing validation
+
+```text
+authorised skip     the classifier decided this domain cannot be affected, the
+                    classifier job succeeded, and `Quality Gate` recorded it
+missing validation  the required check never reported at all — blocked exactly
+                    like a red one (§7)
+```
+
+The distinction is enforced, not asserted. `Quality Gate` runs on every event
+(`if: always()`), it reads the classifier's decision, and it **fails closed**:
+
+```text
+classifier did not succeed        → FAIL
+a required domain job != success  → FAIL  (skipped counts as != success)
+a not-required job is red         → FAIL  (a failure is evidence either way)
+unreadable classification         → FAIL
+```
+
+So a skip can only pass if the classifier asked for it and the classifier itself
+succeeded. There is no path where "nothing ran" produces a green gate.
+
+### 18.2 When the classifier must escalate
+
+```text
+unknown path                → FULL CI
+diff cannot be established  → FULL CI
+workflow_dispatch           → FULL CI
+classifier internal error   → FULL CI
+Safety implementation       → FULL CI
+CI control plane            → FULL CI
+dependency / build authority→ FULL CI
+project authority documents → FULL CI
+Agent shared truth          → FULL CI
+```
+
+FULL CI means every domain job runs. It is never "no validation". The routing
+table, the derivation of the compared commits, and the reasoning behind the
+shared-contract and `scripts/**` escalations are in
+`docs/engineering/CI_TIERED_QUALITY_GATE.md`.
+
+### 18.3 Forcing complete validation
+
+`workflow_dispatch` always classifies as FULL. That is the supported escape hatch;
+no label, bot or comment-command system exists, and none is planned for this
+stage.
+
+### 18.4 What did not change
+
+```text
+ruleset                 main-protected-integration — unchanged, active
+required status check   still exactly "Quality Gate"
+triggers                pull_request → main · push → main · workflow_dispatch
+job display names       Runtime / Python · Frontend / TypeScript · Desktop System / Rust
+domain job commands     unchanged
+```
+
+`Local Verification ≠ GitHub CI ≠ Protected Merge ≠ Independent Acceptance` is
+unchanged. CI-03 changes which validation jobs run *before* the gate.
+
+### 18.5 Measured effect
+
+A docs-only change now costs ~40 s of wall time instead of ~405 s, with the
+required `Quality Gate` check still produced. The measurement, its run IDs and the
+limits of what was observed are recorded in
+`docs/engineering/CI_TIERED_QUALITY_GATE.md` §8 — including the routings that are
+proven by unit test rather than by a measured run.
