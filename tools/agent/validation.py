@@ -686,14 +686,24 @@ def evaluate_integration(
     context: IntegrationContext,
     *,
     repository: Path | None = None,
-    evidence: RepositoryEvidence | None = None,
 ) -> IntegrationReadiness:
     """Collect every reason a handoff may not be integrated, rather than the first.
 
     ``ready`` is reported only when the gate could actually prove every local
-    requirement. Git-backed evidence is required: with neither ``repository`` nor
-    ``evidence`` the verdict is not "ready", it is "cannot tell", and that is a
-    blocker (FIX-1 §8-§10, §26).
+    requirement. Git-backed evidence is **collected here**, from the real
+    repository, so the authority chain has exactly one root:
+
+    ```text
+    sub-agent report            untrusted
+    caller-supplied evidence    untrusted - no parameter accepts one
+    real repository state       authority
+    ```
+
+    There is deliberately no ``evidence=`` parameter. "A consistent-looking
+    dataclass" is not proof of anything: only reading the repository can bind
+    the delivery to ``config.repository`` and to real Git history. With no
+    ``repository`` the verdict is not "ready", it is "cannot tell"
+    (FIX-1 §8-§10, §26; FIX-4 §3-§9).
     """
     blockers: list[str] = []
     details: list[dict[str, object]] = []
@@ -710,8 +720,11 @@ def evaluate_integration(
             ),
         )
 
-    collected = evidence
-    if collected is None and repository is not None:
+    # The only authority path: read the repository. A caller cannot substitute a
+    # fabricated dataclass for Git, and a HANDOFF_READY verdict obtained without
+    # touching a repository is not a verdict at all.
+    collected: RepositoryEvidence | None = None
+    if repository is not None:
         try:
             # Final integration evidence must be bound to the *configured*
             # repository, not merely to some valid Git repository
@@ -727,7 +740,7 @@ def evaluate_integration(
             blockers,
             details,
             IntegrationContextIncompleteError(
-                "Git-backed evidence is required and was not supplied",
+                "Git-backed evidence is required and was not collected from a repository",
                 details={"task_id": task.task_id},
             ),
         )

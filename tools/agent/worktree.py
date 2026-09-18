@@ -136,6 +136,13 @@ def validate_repository(repo: Path, *, expected_remote: str | None = None) -> Pa
     canonicalised and compared exactly: a substring test would accept
     ``github.com/evil/owner-repo-copy.git`` as ``owner/repo`` (FIX-1 §31-33).
     Any origin shape the canonicaliser does not recognise fails closed.
+
+    A remote URL is **never** echoed back. GitHub hands out credential-bearing
+    origin shapes such as ``https://user:token@github.com/owner/repo.git``, and
+    every failure here travels onward into CLI output, CI logs and captured
+    structured errors. An unrecognised origin is therefore rejected with
+    ``origin_supported: false`` and no URL at all - the fix for a possible leak
+    is omission, never a fragile string substitution (FIX-4 §12-§18).
     """
     if not repo.exists():
         raise GitStateError("repository path does not exist", details={"repo": str(repo)})
@@ -154,9 +161,16 @@ def validate_repository(repo: Path, *, expected_remote: str | None = None) -> Pa
         if actual is None:
             raise GitStateError(
                 "repository origin is not a supported GitHub remote shape",
-                details={"repo": str(root), "origin": url, "expected_remote": expected},
+                details={
+                    "repo": str(root),
+                    "expected_remote": expected,
+                    "origin_supported": False,
+                },
             )
         if actual != expected:
+            # A canonical ``owner/repo`` contains no credentials, so reporting
+            # *which* repository the origin is (not the URL it was spelled as)
+            # stays safe and useful (FIX-4 §13, §18).
             raise GitStateError(
                 "repository origin does not match the configured repository",
                 details={"repo": str(root), "origin": actual, "expected_remote": expected},
