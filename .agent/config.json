@@ -11,6 +11,8 @@
     "PRD.md",
     "SPEC.md",
     "docs/PROJECT_STATE.md",
+    "docs/CONTEXT_INDEX.md",
+    "docs/engineering/AGENT_CONTEXT_GOVERNANCE.md",
     "pyproject.toml",
     "package.json",
     "pnpm-lock.yaml",
@@ -29,7 +31,9 @@
     "runtime/canx/safety/**",
     "runtime/canx/agent/tools.py",
     "docs/engineering/INTEGRATION_POLICY.md",
-    "docs/engineering/MULTI_AGENT_PROTOCOL.md"
+    "docs/engineering/MULTI_AGENT_PROTOCOL.md",
+    "docs/CONTEXT_INDEX.md",
+    "docs/engineering/AGENT_CONTEXT_GOVERNANCE.md"
   ],
   "safety_paths": [
     "runtime/canx/safety/**",
