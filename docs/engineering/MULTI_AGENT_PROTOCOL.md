@@ -181,6 +181,14 @@ with no repository, no task set **or no orchestration plan** it reports
 A caller cannot bypass the conflict gate with `include_plan=False` and still
 obtain `ready: true` (FIX-2 §29).
 
+`evaluate_integration` also collects its own Git evidence: it takes a
+**repository path** and never an evidence object. There is no `evidence=`
+parameter, so an internally consistent dataclass cannot stand in for Git, and a
+verdict asked for without a repository is `agent.integration_context_incomplete`
+rather than `ready`. The sub-agent report, the handoff JSON and any caller-built
+object are all untrusted input; the repository is the only authority
+(FIX-4 §3-§9).
+
 ### 3.2 Local verdict versus platform gate
 
 The two halves answer different questions and neither claims the other's job:
@@ -450,6 +458,7 @@ Main Agent's verifier independently compares the two:
 
 ```text
 TaskContract            what is permitted
+real repository path    the only entry point to evidence (FIX-4)
 real worktree / branch  the strongest local source of truth
 real base..head history what actually happened
 real changed paths      the authority for ownership
@@ -472,6 +481,23 @@ handoff.changed_files   == actual history paths        agent.handoff_evidence_mi
 handoff.commits         <=> actual base..head range    agent.handoff_evidence_mismatch
                         (one-to-one, bijective)
 ```
+
+Every row above is read from the repository. `evaluate_integration` accepts no
+evidence object from its caller: a self-consistent dataclass proves nothing, and
+a final `ready: true` built from one would be a verdict about the caller's typing
+rather than about the code. `RepositoryEvidence.repository_identity` is likewise
+**diagnostic** metadata - the binding is enforced by
+`validate_repository(expected_remote=config.repository)` reading the real origin,
+never by comparing that field (FIX-4 §8).
+
+Repository identity validation fails closed on an origin shape it does not
+recognise, credential-bearing URLs such as
+`https://user:token@github.com/owner/repo.git` included. It never echoes the URL
+back: the failure carries `origin_supported: false` and nothing else, because
+that error travels onward into CLI output, CI logs and captured structured
+errors. A recognised-but-wrong repository is the other case - a canonical
+`owner/repo` contains no credentials, so it is reported as itself
+(FIX-4 §12-§18).
 
 Three consequences worth stating plainly:
 

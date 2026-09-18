@@ -2,7 +2,7 @@
 
 > **Document**: `docs/PROJECT_STATE.md`
 > **Purpose**: Compact current-state snapshot — the mandatory startup context for every agent task.
-> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3 — implementation and self-verification complete, awaiting independent final re-acceptance, see §18)
+> **Updated**: 2026-09-18 (V0.3-11 independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-01 continuous-integration baseline independently accepted — Final Acceptance: PASS, Status: CLOSED; Maintenance CI-02 protected-integration gate foundation independently accepted — Final Acceptance: PASS, Status: CLOSED, see §15; SAFETY-01 Safety Architecture & Risk Control Foundation — first independent acceptance NOT PASS (P0: 3, P1: 2, P2: 1), remediated by SAFETY-01-FIX-1; **second** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 1), remediated by SAFETY-01-FIX-2; **third** independent acceptance NOT PASS (P0: 1, P1: 1, P2: 0), remediated by SAFETY-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 1, P1: 0, P2: 0), remediated by SAFETY-01-FIX-4; **final** independent acceptance PASS (P0: 0, P1: 0, P2: 0), merged to `main` as c05debf9 with post-merge `main` CI green — Final Acceptance: PASS, Status: CLOSED, see §17; AGENT-01 Multi-Agent Orchestration Foundation — first independent acceptance NOT PASS (P0: 2, P1: 3, P2: 1), remediated by AGENT-01-FIX-1; **second** independent acceptance NOT PASS (P0: 2, P1: 2, P2: 1), remediated by AGENT-01-FIX-2; **third** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 1), remediated by AGENT-01-FIX-3; **fourth** independent acceptance NOT PASS (P0: 0, P1: 2, P2: 0), remediated by AGENT-01-FIX-4 — implementation and self-verification complete, awaiting independent re-acceptance, see §18)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Project Owner**: CAN-X sole author
 > **Development Model**: Document-Driven Development
@@ -258,11 +258,13 @@ Safety Foundation (SAFETY-01) — Safety Architecture & Risk Control Foundation
 AGENT-01 — Multi-Agent Orchestration Foundation
   Implementation complete · remediation complete (AGENT-01-FIX-1) ·
   hardening complete (AGENT-01-FIX-2) · identity binding complete (AGENT-01-FIX-3) ·
+  final authority and credential-redaction hardening complete (AGENT-01-FIX-4) ·
   self-verification complete
   First independent acceptance: NOT PASS (P0: 2, P1: 3, P2: 1) — preserved in §18.11
   Second independent acceptance: NOT PASS (P0: 2, P1: 2, P2: 1) — preserved in §18.13
   Third independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 1) — preserved in §18.15
-  Awaiting independent final re-acceptance (§18.12, §18.14, §18.16)
+  Fourth independent acceptance: NOT PASS (P0: 0, P1: 2, P2: 0) — preserved in §18.18
+  Awaiting independent re-acceptance (§18.12, §18.14, §18.16, §18.19)
   Adds .agent/ and tools/agent/, docs/engineering/MULTI_AGENT_PROTOCOL.md,
   docs/ADR/0002-parallel-development-serial-integration.md and
   INTEGRATION_POLICY.md §17 — engineering tooling only, no product scope change.
@@ -2570,6 +2572,131 @@ Both fixes were rolled back once and the suites re-run: nine tests turn red.
 AGENT-01-FIX-3 implementation complete
 Self-verification complete
 Awaiting independent final re-acceptance
+```
+
+Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are
+**not** written by the development agent. `AGENT-02`, `V0.3-12` and `CD-01` have
+**not** started.
+
+### 18.18 Fourth independent acceptance — NOT PASS
+
+The **fourth** independent review returned `NOT PASS`, again with no P0, and is
+preserved exactly as the earlier three:
+
+```text
+AGENT-01 Final Re-Acceptance
+
+Final Acceptance: NOT PASS
+Status: AWAITING AGENT-01-FIX-4
+
+P0 = 0
+P1 = 2
+P2 = 0
+```
+
+The architecture is now substantially accepted, and the reviewer explicitly
+froze every previously accepted area rather than reopening it. The two remaining
+findings were the last two holes in the trust boundary:
+
+```text
+P1-1  the final IntegrationReadiness could still accept a caller-injected
+      RepositoryEvidence. evaluate_integration(..., evidence=...) produced
+      ready = true from a hand-built dataclass whose repository_identity was
+      None: no real Git collection, and no proof the repository was
+      config.repository. The gate had two authority paths and only one of them
+      was real. A Sub-Agent report is untrusted; a caller-created evidence
+      object is equally untrusted; only real Git state is evidence.
+P1-2  validate_repository() wrote the raw remote URL into
+      error.details["origin"] when the origin shape was unsupported. An origin
+      such as https://alice:TOP_SECRET_TOKEN@github.com/owner/repo.git
+      canonicalises to None and was then echoed verbatim into
+      exception.as_dict() - and from there into CLI output, CI logs and captured
+      structured errors.
+```
+
+Previous history is kept unedited: §18.11 (P0: 2, P1: 3, P2: 1), §18.13
+(P0: 2, P1: 2, P2: 1) and §18.15 (P0: 0, P1: 2, P2: 1). The verdict is external;
+the development agent did not write it and does not dispute it.
+
+### 18.19 Remediation — AGENT-01-FIX-4
+
+Two invariants and nothing else. No planner, execution-slot, conflict-lease,
+capacity, ownership, worktree-identity, commit-evidence, required-test, Safety or
+ruleset change; no product scope.
+
+```text
+INVARIANT A  a final READY verdict is derived from a real repository and real
+             Git evidence, never from a caller-supplied evidence object
+INVARIANT B  repository identity validation may reject an unsafe remote, but the
+             rejection itself never discloses it
+```
+
+RED, both, against the FIX-3 tree (168d0c2):
+
+```text
+caller-built RepositoryEvidence (repository_identity = None) that otherwise
+  matches the handoff exactly
+  -> ready = true, blockers = []                  (no Git ever read)
+
+origin = https://alice:TOP_SECRET_TOKEN@github.com/yjw17694927050-art/CAN-X.git
+  -> json.dumps(error.as_dict()) contains TOP_SECRET_TOKEN
+```
+
+What changed:
+
+```text
+tools/agent/validation.py   evaluate_integration() no longer takes evidence=.
+                            The only authority path is
+                              repository -> collect_repository_evidence(
+                                  ..., expected_repository=config.repository)
+                            so a caller cannot substitute a fabricated dataclass
+                            for Git. repository=None is
+                            agent.integration_context_incomplete and never READY.
+                            verify_repository_evidence() stays pure, so the
+                            comparison itself remains directly unit-testable.
+tools/agent/worktree.py     validate_repository() rejects an unsupported origin
+                            with origin_supported: false and no URL at all. The
+                            fix is omission, not substitution: no token shape is
+                            guessed and no credential is redacted in place. A
+                            valid-but-wrong canonical repository still reports
+                            its safe owner/repo.
+```
+
+Synthetic-evidence unit tests were moved down to what each one actually asserts:
+the commit-evidence matrix and the handoff/evidence comparison now run through
+`verify_repository_evidence()`, and the dependency / conflict / status / capacity
+tests read verdicts that never needed evidence in the first place. The *final*
+verdict is exercised only over real temporary Git repositories.
+
+Tests: `tests/integration/test_agent_final_authority.py` (new) states the
+invariants directly - the signature has no `evidence` parameter and the call
+shape raises `TypeError`, no repository can never be READY, a real repository
+delivery is READY and still disclaims the GitHub gate, a credential-bearing
+origin is refused through both `collect_repository_evidence()` and
+`evaluate_integration()` with `TOP_SECRET_TOKEN` absent from the message, the
+details, `as_dict()` and `json.dumps()`, a valid-but-wrong repository reports only
+`other-owner/other-repo`, a repository with no origin is refused, and the real CLI
+(`python -m tools.agent.cli check-integration`) exits non-zero with the sentinel
+absent from both stdout and stderr.
+
+Both fixes were rolled back once and the suite re-run: five tests turn red.
+
+### 18.20 Known limitations after FIX-4
+
+- `build_handoff()` remains a producer convenience and is deliberately **not**
+  identity-bound; the consumer (`evaluate_integration`) is the trust boundary and
+  binds `config.repository` independently.
+- Unit-level final-ready coverage is gone by design. Any test that wants a
+  `ready: true` verdict must build a real temporary Git repository; the pure
+  comparison is covered through `verify_repository_evidence()` instead.
+- The capture/finalization timing flake in
+  `tests/unit/api/test_capture_project_target.py` is carried forward unchanged
+  (FIX-4 §28).
+
+```text
+AGENT-01-FIX-4 implementation complete
+Self-verification complete
+Awaiting independent re-acceptance
 ```
 
 Level 4 remains **not** `DONE`; `Final Acceptance: PASS` / `Status: CLOSED` are

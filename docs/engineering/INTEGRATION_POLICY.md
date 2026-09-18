@@ -310,6 +310,19 @@ it onto the new head, let CI re-run, and merge only then. This is
   (`config.repository`), not merely from some valid Git repository (FIX-3). A
   wrong owner/repo, a lookalike name, an unsupported host or a missing origin is
   `agent.git_state_error` and the verdict is not ready.
+- The final verdict has **one** authority path (FIX-4):
+  `evaluate_integration` takes a repository path, collects the Git evidence
+  itself and binds it to `config.repository`. It has no `evidence=` parameter, so
+  a caller-created `RepositoryEvidence` - however internally consistent, and
+  whatever `repository_identity` it claims - cannot produce `ready: true`.
+  `repository=None` is `agent.integration_context_incomplete`, not ready.
+  `RepositoryEvidence.repository_identity` is diagnostic; the proof is read from
+  the real origin.
+- Rejecting an unsafe remote never discloses it (FIX-4). An origin shape the
+  canonicaliser does not recognise - a credential-bearing URL among them - fails
+  closed with `origin_supported: false` and no URL in the structured error, so
+  nothing leaks into CLI output, CI logs or captured error artifacts. A
+  recognised-but-wrong repository still reports its safe canonical `owner/repo`.
 
 ### 17.3 Who checks what
 

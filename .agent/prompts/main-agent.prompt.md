@@ -112,6 +112,13 @@ evidence. Either omission fails closed — the command reports
 either the repository root or the task's own worktree; both are read as the same
 task worktree.
 
+`--repo` is the *only* evidence path. The gate collects the Git facts itself and
+binds them to `config.repository`; there is no parameter through which anyone —
+Main Agent, Sub-Agent or a caller-built object — can hand in an evidence record
+of its own making. A refusal that mentions an origin never quotes the URL: an
+unsupported origin is reported as `origin_supported: false`, because the URL may
+carry credentials and the error is rendered into logs.
+
 `check-integration` must report `ready: true` — and that is **necessary, not
 sufficient.** Merge eligibility requires all of:
 
