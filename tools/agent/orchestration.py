@@ -107,6 +107,11 @@ class OrchestrationPlan:
     max_sub_agents: int
     active_ids: tuple[str, ...]
     available_slots: int
+    #: How many more Sub-Agents are already running than the cap allows. The
+    #: planner never creates this state (it only ever *adds* up to
+    #: ``available_slots``), but an over-dispatched caller must be told rather
+    #: than have the excess silently rounded away.
+    active_over_capacity: int = 0
     deferral_rule: str = DEFERRAL_RULE
 
     def runnable_ids(self) -> tuple[str, ...]:
@@ -150,6 +155,7 @@ class OrchestrationPlan:
             "capacity": {
                 "max_sub_agents": self.max_sub_agents,
                 "active": list(self.active_ids),
+                "active_over_capacity": self.active_over_capacity,
                 "available_slots": self.available_slots,
                 "selected": list(self.runnable_ids()),
                 "capacity_deferred": list(self.capacity_deferred_ids()),
@@ -210,9 +216,16 @@ def plan(tasks: tuple[TaskContract, ...], config: AgentConfig) -> OrchestrationP
             replan[later].append(earlier)
 
     # Execution capacity. Only slots actually occupied by a running Sub-Agent are
-    # subtracted, so active + newly dispatched never exceeds the cap.
+    # subtracted, so the planner never *adds* more than the free slots:
+    #
+    #     len(active) + len(newly dispatched) <= max(len(active), max_sub_agents)
+    #
+    # If a caller has already over-dispatched (``len(active) > max_sub_agents``)
+    # the planner adds nothing and reports the excess as ``active_over_capacity``
+    # rather than pretending the invariant holds.
     active = tuple(task_id for task_id in order if occupies_sub_agent_slot(readiness[task_id]))
     available_slots = max(0, config.max_sub_agents - len(active))
+    active_over_capacity = max(0, len(active) - config.max_sub_agents)
 
     candidates = [
         task_id
@@ -242,4 +255,5 @@ def plan(tasks: tuple[TaskContract, ...], config: AgentConfig) -> OrchestrationP
         max_sub_agents=config.max_sub_agents,
         active_ids=active,
         available_slots=available_slots,
+        active_over_capacity=active_over_capacity,
     )

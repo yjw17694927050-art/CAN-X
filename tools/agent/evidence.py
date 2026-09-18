@@ -121,8 +121,9 @@ def collect_repository_evidence(repo: Path, task: TaskContract) -> RepositoryEvi
     no task worktree is registered the task *branch ref* is used instead - still
     Git, and still required to resolve to the head the handoff claims - and the
     fallback is recorded in ``source`` rather than hidden (FIX-1 §9). In that
-    case ``clean`` means "no live task worktree exists to contain uncommitted
-    changes", **not** "a worktree was inspected and found clean" (FIX-2 §20).
+    case ``clean`` means "no live task worktree exists **and** nothing is left at
+    the declared path to contain uncommitted changes" - **not** "a worktree was
+    inspected and found clean" (FIX-2 §20).
     """
     root = validate_repository(repo)
     primary_root, record = resolve_task_worktree(root, task)
@@ -138,9 +139,14 @@ def collect_repository_evidence(repo: Path, task: TaskContract) -> RepositoryEvi
         worktree_path = None
         branch = task.branch
         head_sha = resolve_revision(task.branch, cwd=primary_root)
-        # No task worktree is registered, so there is no uncommitted work left to
-        # lose; the committed head is the whole delivery.
-        clean = True
+        # No task worktree is registered. ``clean`` then means "nothing is left
+        # at the declared path that could hold uncommitted work": a leftover,
+        # de-registered directory is treated as dirty rather than assumed clean,
+        # so removing a worktree's registration cannot launder its dirty state
+        # (FIX-2 §20). The declared path is never the primary root here - if it
+        # were, the main worktree would have matched above.
+        declared = (primary_root / task.worktree).resolve()
+        clean = declared == primary_root.resolve() or not declared.exists()
         probe = primary_root
     base_sha = task.base_sha
     records = diff_name_status(probe, base_sha, head_sha)
