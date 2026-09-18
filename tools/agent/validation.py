@@ -713,7 +713,13 @@ def evaluate_integration(
     collected = evidence
     if collected is None and repository is not None:
         try:
-            collected = collect_repository_evidence(repository, task)
+            # Final integration evidence must be bound to the *configured*
+            # repository, not merely to some valid Git repository
+            # (AGENT-01-FIX-3 §16-§20). A wrong owner, a lookalike name, an
+            # unsupported host or a missing origin is `agent.git_state_error`.
+            collected = collect_repository_evidence(
+                repository, task, expected_repository=config.repository
+            )
         except AgentToolingError as exc:
             _record(blockers, details, exc)
     if collected is None:

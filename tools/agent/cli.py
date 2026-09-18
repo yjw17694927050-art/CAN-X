@@ -3,13 +3,22 @@
 ```text
 python -m tools.agent.cli validate-task      --file .agent/examples/task.example.json
 python -m tools.agent.cli validate-handoff   --task ... --handoff ...
-python -m tools.agent.cli check-integration  --task ... --handoff ... --integration-head <sha>
+python -m tools.agent.cli check-integration  --task <task.json> --handoff <handoff.json> \
+        --plan <current-task-plan.json> --repo <repository-root-or-task-worktree> \
+        --integration-head <current-main-40-hex>
 python -m tools.agent.cli plan               --file .agent/examples/tasks.dependency.example.json
 python -m tools.agent.cli worktree create    --task-id ... --branch ... --path ... --base <sha>
 python -m tools.agent.cli worktree list
 python -m tools.agent.cli worktree validate  --path .worktrees/task-a
 python -m tools.agent.cli worktree remove    --path .worktrees/task-a
 ```
+
+The trailing ``\`` above is a POSIX line continuation; in ``cmd.exe`` use ``^``,
+or put the command on one line. ``--plan`` and ``--repo`` are not optional in
+practice: without the task set there is no dependency or conflict verdict, and
+without a repository there is no Git-backed evidence. Either omission fails
+closed with ``agent.integration_context_incomplete`` rather than reporting
+``ready: true``, and ``--repo`` is additionally bound to ``config.repository``.
 
 Exit codes are the contract (AGENT-01 §55): 0 success, 2 validation error,
 3 ownership / conflict, 4 git state, 5 internal. Every failure prints the
