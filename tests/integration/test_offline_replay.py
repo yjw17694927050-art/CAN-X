@@ -13,13 +13,17 @@ reaches a transmit path.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from canx.data.parquet import segment_filename
 from canx.data.session import DataSessionService
 from canx.domain.batch import FrameBatch
 from canx.domain.frame import Direction, Frame, TimestampQuality
+from canx.project.manifest import MANIFEST_FILENAME, read_manifest, write_manifest
+from canx.project.model import MANIFEST_SCHEMA_VERSION
 from canx.project.service import ProjectHandle, ProjectService
 from canx.query.model import FrameFilter, FrameQuery
 from canx.query.service import QueryService
@@ -121,6 +125,12 @@ def _segment_path(handle: ProjectHandle, session_id: str, index: int) -> Path:
         / "segments"
         / segment_filename(index)
     )
+
+
+def _rewrite_manifest(root: Path, **changes: object) -> None:
+    """Rewrite the project manifest through the project domain's own writer."""
+    manifest = read_manifest(root / MANIFEST_FILENAME)
+    write_manifest(root / MANIFEST_FILENAME, replace(manifest, **changes))
 
 
 def test_a_recorded_session_replays_every_frame_in_order(tmp_path: Path) -> None:
@@ -353,6 +363,90 @@ def test_a_project_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
         )
 
     assert raised.value.code == "replay.invalid_project"
+
+
+def test_a_project_without_a_manifest_is_refused(tmp_path: Path) -> None:
+    """A deleted ``project.json`` leaves the database readable — and must refuse."""
+    with _project(tmp_path) as handle:
+        session_id = _record(handle)
+        (handle.root / MANIFEST_FILENAME).unlink()
+
+        # Counterfactual: the data store is still perfectly readable, so a replay
+        # that consulted only the database would accept a directory that is no
+        # longer a CAN-X project.
+        assert (
+            DataSessionService(handle.root).get_session(session_id).session_id
+            == session_id
+        )
+
+        with pytest.raises(ReplayProjectError) as raised:
+            ReplaySession.open(handle.root, session_id=session_id, sink=RecordingSink())
+
+    assert raised.value.code == "replay.project_unavailable"
+    assert raised.value.details["cause"] == "project.manifest_missing"
+
+
+def test_a_project_whose_identity_disagrees_with_its_database_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A manifest that names another project must not open as this one."""
+    with _project(tmp_path) as handle:
+        session_id = _record(handle)
+        _rewrite_manifest(handle.root, project_id=str(uuid4()))
+
+        with pytest.raises(ReplayProjectError) as raised:
+            ReplaySession.open(handle.root, session_id=session_id, sink=RecordingSink())
+
+    assert raised.value.code == "replay.project_unavailable"
+    assert raised.value.details["cause"] == "project.identity_mismatch"
+
+
+def test_a_project_with_a_corrupt_manifest_is_refused(tmp_path: Path) -> None:
+    """A manifest that cannot be read fails closed rather than being ignored."""
+    with _project(tmp_path) as handle:
+        session_id = _record(handle)
+        (handle.root / MANIFEST_FILENAME).write_text("{ not a manifest", encoding="utf-8")
+
+        with pytest.raises(ReplayProjectError) as raised:
+            ReplaySession.open(handle.root, session_id=session_id, sink=RecordingSink())
+
+    assert raised.value.code == "replay.project_unavailable"
+    assert raised.value.details["cause"] == "project.manifest_malformed"
+
+
+def test_a_project_of_an_unsupported_version_is_refused(tmp_path: Path) -> None:
+    """Replay keeps the project domain's own version authority."""
+    with _project(tmp_path) as handle:
+        session_id = _record(handle)
+        _rewrite_manifest(handle.root, schema_version=MANIFEST_SCHEMA_VERSION + 1)
+
+        with pytest.raises(ReplayProjectError) as raised:
+            ReplaySession.open(handle.root, session_id=session_id, sink=RecordingSink())
+
+    assert raised.value.code == "replay.project_unavailable"
+    assert raised.value.details["cause"] == "project.unsupported_schema_version"
+
+
+def test_the_project_handle_is_closed_once_the_replay_is_prepared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The authority's handle is released; the replay reads through its own path."""
+    opened: list[ProjectHandle] = []
+    real_open = ProjectService.open
+
+    def spying_open(service: ProjectService, root: Path) -> ProjectHandle:
+        handle = real_open(service, root)
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(ProjectService, "open", spying_open)
+
+    with _project(tmp_path) as handle:
+        session_id = _record(handle)
+        ReplaySession.open(handle.root, session_id=session_id, sink=RecordingSink())
+
+    assert len(opened) == 1
+    assert opened[0].closed is True
 
 
 def test_an_active_session_cannot_be_replayed(tmp_path: Path) -> None:
