@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-14-B",
+  "title": "Trace decoded projection",
+  "objective": "Make the Trace panel show a raw frame AND what the Runtime decoded it to, in the same row. TracePanel keeps its six raw columns in their existing order (Timestamp, Channel, ID, DLC, Data, Direction) and appends two: Message and Decoded signals. Message shows the decoded messageName, the failure's stable code when the frame failed to decode, and the frozen i18n key trace.value.none when no outcome has answered that frame yet - never an asset name and never a DBC file name. Decoded signals shows every signal of the decoded message in compact engineering form (Name=<physicalValue>[ <unit>][ (<choiceLabel>)]) joined by ', ', where the physical value is always present and the choice label only annotates it; a failed or unanswered frame shows trace.value.none for the whole column and never a path, a traceback or a raw response. Freeze must capture the raw frames AND the decoded projection as they were at the moment of the freeze: a decode response that lands after the freeze must not rewrite a frozen row, and Follow must show the newest decoded state again. Rows stay keyed by the frame's own sequence (bigint) and the message list stays virtualized. LiveTracePanel gains an optional injected decoded store so the panel never constructs one and never fetches; without it every row simply stays raw.",
+  "scope": "The Trace panel and its vitest suites.",
+  "non_goals": [
+    "Fetching, decoding or coordinating anything - the panel is a read-only projection of two injected stores",
+    "Any change to the decoding client, the coordinator, the decoded store, the workspace session, DockWorkspace or i18n",
+    "Per-signal dynamic columns, a signal registry, or any Trace-side filter/query surface"
+  ],
+  "base_sha": "32d5e17744820632c3f2f3f356ee6e82a2ede3dc",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-b",
+  "allowed_paths": [
+    "apps/desktop/src/components/trace/TracePanel.tsx",
+    "apps/desktop/src/components/trace/TracePanel.test.tsx",
+    "apps/desktop/src/components/trace/LiveTracePanel.tsx",
+    "apps/desktop/src/components/trace/LiveTracePanel.test.tsx"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src/components/LiveRealtimePanels.test.tsx",
+    "apps/desktop/src/components/plot/**",
+    "apps/desktop/src/components/dbc/**",
+    "apps/desktop/src/components/workspace/**",
+    "apps/desktop/src/workspace/**",
+    "apps/desktop/src/runtime/**",
+    "apps/desktop/src/i18n/**",
+    "apps/desktop/src-tauri/**",
+    "runtime/**",
+    ".agent/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "apps/desktop/src/workspace/decoded-realtime.ts",
+      "sha": "502ea82b718a4ec0893b93797c201c80d76adae7"
+    },
+    {
+      "path": "apps/desktop/src/i18n/config.ts",
+      "sha": "2428b19aa96f54b11ab016acb065a487f65208cf"
+    },
+    {
+      "path": "apps/desktop/src/runtime/frame-schema.ts",
+      "sha": "502ea82b718a4ec0893b93797c201c80d76adae7"
+    }
+  ],
+  "acceptance_criteria": [
+    "The six raw columns are unchanged in name, order and content; Message and Decoded signals are appended after them",
+    "Message shows the decoded messageName, or the failure's stable code, or trace.value.none while nothing has answered the frame - never an asset or file name",
+    "Decoded signals shows every signal's physical value with its unit, and a choice label only ever as an addition to the number, never as a replacement for it",
+    "A failure row shows only the stable code and the placeholder: no path, no traceback, no details dump",
+    "Freezing while a decode request is in flight captures the rows as they were; the late response does not change the frozen row, and Follow shows the new state",
+    "Row identity remains frame.sequence, and the list remains virtualized",
+    "LiveTracePanel takes the decoded store as an injected prop, constructs no store and issues no request"
+  ],
+  "required_tests": [
+    "frontend-focused-test",
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+    "Name every new test case and state the RED observation that preceded each new behaviour, including the freeze-semantics mutation that was observed to fail before being restored",
+    "State explicitly that LiveRealtimePanels.test.tsx and every file outside the four allowed paths was untouched"
+  ],
+  "risk_class": "MEDIUM",
+  "status": "HANDOFF_READY",
+  "revision": 1
+}

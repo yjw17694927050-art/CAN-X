@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "plan_id": "V0.3-14",
+  "description": "V0.3-14 Live DBC Decode, Trace & Plot Integration, executed as 1 Main Agent + 3 native Tianshu workers on a SHARED worktree (native-shared), pairwise C0. The Main Agent froze the shared contracts before dispatch - the Runtime HTTP transport (apps/desktop/src/runtime/runtime-http.ts, extracted so the decode client re-uses one failure taxonomy instead of a second one), the trace/plot/selection i18n keys (apps/desktop/src/i18n/config.ts) and the two V0.3-14 contracts the workers read (apps/desktop/src/workspace/session.ts SignalSelection, apps/desktop/src/workspace/decoded-realtime.ts DecodedRealtimeStore) - so no two workers write one file. The Main Agent keeps the workspace decode coordinator (apps/desktop/src/workspace/decode-partition.ts, decode-coordinator.ts), the workspace wiring (DockWorkspace.tsx, DbcWorkspace.tsx), components/LiveRealtimePanels.test.tsx and the cross-boundary integration flows for its own commits; each worker owns only its own modules and their test files.",
+  "tasks": [
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-14-A",
+      "title": "Typed decode-batch client",
+      "objective": "Export decodeDbcFrameBatch({ projectPath, assetId, streamId, frames }) from apps/desktop/src/runtime/dbc-decode-client.ts, re-using the shared transport in runtime-http.ts rather than declaring a second error taxonomy or a second HTTP path. Serialize all sixteen FrameWire fields in snake_case with uppercase hexadecimal data and a fail-closed bigint->number sequence guard; enforce 1..1000 client-side; validate the response field by field against the request (schema version, stream identity, frame count, outcome order, echoed frame) and treat decoded/failure as mutually exclusive; keep records[i].frame as the submitted object.",
+      "scope": "The new decode-batch client and its vitest suite.",
+      "non_goals": [
+        "Any DBC parsing, bit extraction, endianness, signed conversion, factor/offset or multiplexing logic in TypeScript",
+        "Any consumer of the client",
+        "Re-defining the three shared error types or copying readResponse"
+      ],
+      "base_sha": "2428b19aa96f54b11ab016acb065a487f65208cf",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-a",
+      "allowed_paths": [
+        "apps/desktop/src/runtime/dbc-decode-client.ts",
+        "apps/desktop/src/runtime/dbc-decode-client.test.ts"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src/runtime/runtime-http.ts",
+        "apps/desktop/src/runtime/dbc-client.ts",
+        "apps/desktop/src/i18n/**",
+        "apps/desktop/src/workspace/**",
+        "apps/desktop/src/components/**",
+        "apps/desktop/src-tauri/**",
+        "runtime/**",
+        ".agent/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        {
+          "path": "apps/desktop/src/runtime/runtime-http.ts",
+          "sha": "c631af9eb2487ca43cecea7bfefcc7342fd9ccbe"
+        }
+      ],
+      "acceptance_criteria": [
+        "All sixteen FrameWire fields are serialized in the Runtime's own snake_case spelling",
+        "data is uppercase hexadecimal, never Base64 and never a JSON byte array",
+        "A sequence beyond Number.MAX_SAFE_INTEGER refuses the request instead of losing precision",
+        "An empty batch and a batch over 1000 frames are refused before any request is sent",
+        "A response disagreeing with the request on schema version, stream, frame count, order or echoed frame refuses the whole payload",
+        "records[i].frame is the identical object submitted by the caller"
+      ],
+      "required_tests": [
+        "frontend-focused-test",
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint"
+      ],
+      "risk_class": "MEDIUM",
+      "status": "HANDOFF_READY",
+      "revision": 1
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-14-B",
+      "title": "Trace decoded projection",
+      "objective": "Keep TracePanel's six raw columns and append Message and Decoded signals. Message shows the decoded messageName, a failure's stable code, or trace.value.none while nothing has answered the frame. Decoded signals shows every signal's physical value with unit and an annotating choice label. Freeze captures the raw frames together with the decoded projection; a late decode response must not rewrite a frozen row, and Follow shows the newest state. LiveTracePanel takes the decoded store as an injected prop and constructs none.",
+      "scope": "The Trace panel and its vitest suites.",
+      "non_goals": [
+        "Fetching, decoding or coordinating anything",
+        "Any change to the decoded store, the session, DockWorkspace or i18n",
+        "Per-signal dynamic columns or a Trace-side filter surface"
+      ],
+      "base_sha": "32d5e17744820632c3f2f3f356ee6e82a2ede3dc",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-b",
+      "allowed_paths": [
+        "apps/desktop/src/components/trace/TracePanel.tsx",
+        "apps/desktop/src/components/trace/TracePanel.test.tsx",
+        "apps/desktop/src/components/trace/LiveTracePanel.tsx",
+        "apps/desktop/src/components/trace/LiveTracePanel.test.tsx"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src/components/LiveRealtimePanels.test.tsx",
+        "apps/desktop/src/components/plot/**",
+        "apps/desktop/src/components/dbc/**",
+        "apps/desktop/src/components/workspace/**",
+        "apps/desktop/src/workspace/**",
+        "apps/desktop/src/runtime/**",
+        "apps/desktop/src/i18n/**",
+        "apps/desktop/src-tauri/**",
+        "runtime/**",
+        ".agent/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        {
+          "path": "apps/desktop/src/workspace/decoded-realtime.ts",
+          "sha": "502ea82b718a4ec0893b93797c201c80d76adae7"
+        },
+        {
+          "path": "apps/desktop/src/i18n/config.ts",
+          "sha": "2428b19aa96f54b11ab016acb065a487f65208cf"
+        }
+      ],
+      "acceptance_criteria": [
+        "The six raw columns are unchanged and the two decoded columns are appended",
+        "Message shows the message name, the stable failure code, or the placeholder - never an asset or file name",
+        "Decoded signals shows the physical value with its unit, with a choice label only as an addition",
+        "A frozen row is not rewritten by a decode response that lands after the freeze",
+        "Row identity stays frame.sequence and the list stays virtualized",
+        "LiveTracePanel takes the decoded store as a prop and constructs none"
+      ],
+      "required_tests": [
+        "frontend-focused-test",
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint"
+      ],
+      "risk_class": "MEDIUM",
+      "status": "HANDOFF_READY",
+      "revision": 1
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-14-C",
+      "title": "Signal selection and signal plot",
+      "objective": "Add SignalSelectionControl, whose candidate channels come only from dbcBindings entries bound to the inspected asset, which requires an explicit channel when more than one is bound, and which writes session.selectSignal with the full four-part identity re-checked at write time. Replace buildByteSeries with the pure buildSignalSeries(records, selection, maxSamples), matching channel, asset, message and signal and emitting { time: frame.normalizedTimestamp, value: signal.physicalValue }. LivePlotPanel draws that series with a unit-bearing axis name and explicit no-selection and waiting states, and never falls back to a payload byte.",
+      "scope": "The signal-selection control, the plot series and the live plot panel, with their vitest suites.",
+      "non_goals": [
+        "Any change to DbcDatabaseView, DbcWorkspace, DockWorkspace, the session, the decoded store or i18n",
+        "Multi-signal, multi-axis, cursor, trigger or alarm behaviour",
+        "Any DBC parsing or signal-value computation in the Desktop"
+      ],
+      "base_sha": "546e6af3c84e73217a93b148f9f6cee1d3b58cdf",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-c",
+      "allowed_paths": [
+        "apps/desktop/src/components/plot/series.ts",
+        "apps/desktop/src/components/plot/series.test.ts",
+        "apps/desktop/src/components/plot/LivePlotPanel.tsx",
+        "apps/desktop/src/components/plot/LivePlotPanel.test.tsx",
+        "apps/desktop/src/components/dbc/SignalSelectionControl.tsx",
+        "apps/desktop/src/components/dbc/SignalSelectionControl.test.tsx"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src/components/LiveRealtimePanels.test.tsx",
+        "apps/desktop/src/components/trace/**",
+        "apps/desktop/src/components/dbc/DbcDatabaseView.tsx",
+        "apps/desktop/src/components/dbc/DbcWorkspace.tsx",
+        "apps/desktop/src/components/dbc/DbcBindingControl.tsx",
+        "apps/desktop/src/components/workspace/**",
+        "apps/desktop/src/workspace/**",
+        "apps/desktop/src/runtime/**",
+        "apps/desktop/src/i18n/**",
+        "apps/desktop/src-tauri/**",
+        "runtime/**",
+        ".agent/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        {
+          "path": "apps/desktop/src/workspace/session.ts",
+          "sha": "a4b04f94fd71d686db0f0436763d32d7e26e8874"
+        },
+        {
+          "path": "apps/desktop/src/workspace/decoded-realtime.ts",
+          "sha": "502ea82b718a4ec0893b93797c201c80d76adae7"
+        },
+        {
+          "path": "apps/desktop/src/i18n/config.ts",
+          "sha": "2428b19aa96f54b11ab016acb065a487f65208cf"
+        }
+      ],
+      "acceptance_criteria": [
+        "Candidate channels come only from bindings to the inspected asset",
+        "Two or more bound channels require an explicit choice and Plot is unavailable until one is named",
+        "Plot writes a selection carrying channelId, assetId, messageName and signalName, re-checked against the binding map at write time",
+        "The series matches channel, asset, message and signal, and uses physicalValue on normalizedTimestamp",
+        "The plot shows explicit no-selection and waiting states and never falls back to a byte"
+      ],
+      "required_tests": [
+        "frontend-focused-test",
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint"
+      ],
+      "risk_class": "MEDIUM",
+      "status": "HANDOFF_READY",
+      "revision": 1
+    }
+  ]
+}

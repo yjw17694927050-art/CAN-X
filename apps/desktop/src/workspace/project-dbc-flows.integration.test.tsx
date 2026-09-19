@@ -531,9 +531,8 @@ describe("V0.3-13 — DockWorkspace wiring", () => {
   it("creates exactly one session per mount and hands it to every panel root", () => {
     expect(source).toContain("useState(createWorkspaceSession)");
     expect(source).toContain("session ?? created");
-    expect(source).toContain(
-      "<WorkspaceSessionProvider store={session}>{panelContent(options.name)}</WorkspaceSessionProvider>",
-    );
+    expect(source).toContain("<WorkspaceSessionProvider store={session}>");
+    expect(source).toContain("{panelContent(options.name, decoded)}");
     // No module-level instance: the session is a mount-local value, never a singleton.
     expect(source).not.toContain("createWorkspaceSession()");
   });

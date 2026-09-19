@@ -6,6 +6,7 @@ import {
   createWorkspaceSession,
   type OpenedProject,
   type WorkspaceSessionSnapshot,
+  type WorkspaceSessionStore,
 } from "./session";
 
 function projectReadModel(displayName: string): ProjectReadModel {
@@ -100,8 +101,10 @@ describe("WorkspaceSessionStore — project switch is a reset", () => {
     session.bindChannel("can0", "asset-from-alpha");
     session.selectSignal({
       assetId: "asset-from-alpha",
+      channelId: "can0",
       messageName: "EngineSpeed",
       signalName: "EngineRpm",
+      unit: "rpm",
     });
 
     expect(session.getSnapshot().dbcBindings.get("can0")).toBe("asset-from-alpha");
@@ -294,8 +297,133 @@ describe("WorkspaceSessionStore — binding a channel", () => {
   });
 });
 
-describe("WorkspaceSessionStore — subscription", () => {
-  it("notifies every listener, across what would be separate React roots", () => {
+describe("WorkspaceSessionStore — the signal selection follows its binding", () => {
+  function withSelection(): WorkspaceSessionStore {
+    const session = createWorkspaceSession();
+    session.openProject(opened("Alpha", PROJECT_A));
+    session.bindChannel("can0", "asset-a");
+    session.bindChannel("can1", "asset-b");
+    session.selectSignal({
+      assetId: "asset-a",
+      channelId: "can0",
+      messageName: "EngineSpeed",
+      signalName: "EngineRpm",
+      unit: "rpm",
+    });
+    return session;
+  }
+
+  it("names the channel, because an asset may be bound to more than one", () => {
+    const session = withSelection();
+
+    // assetId + message + signal cannot identify a live signal on their own: the same
+    // definition can arrive on two channels, so the channel is part of the identity.
+    expect(session.getSnapshot().selectedSignal?.channelId).toBe("can0");
+    expect(session.getSnapshot().selectedSignal?.assetId).toBe("asset-a");
+  });
+
+  it("refuses a selection whose channel is not bound to the selected asset", () => {
+    const session = createWorkspaceSession();
+    session.openProject(opened("Alpha", PROJECT_A));
+    session.bindChannel("can0", "asset-a");
+
+    expect(() =>
+      session.selectSignal({
+        assetId: "asset-b",
+        channelId: "can0",
+        messageName: "EngineSpeed",
+        signalName: "EngineRpm",
+        unit: null,
+      }),
+    ).toThrow(/requires its channel to be bound to the selected asset/);
+    expect(session.getSnapshot().selectedSignal).toBeNull();
+  });
+
+  it("refuses a selection for a channel that is not bound at all", () => {
+    const session = createWorkspaceSession();
+    session.openProject(opened("Alpha", PROJECT_A));
+
+    expect(() =>
+      session.selectSignal({
+        assetId: "asset-a",
+        channelId: "can0",
+        messageName: "EngineSpeed",
+        signalName: "EngineRpm",
+        unit: null,
+      }),
+    ).toThrow(/requires its channel to be bound/);
+  });
+
+  it("survives a binding edit that does not touch its channel", () => {
+    const session = withSelection();
+
+    session.bindChannel("can2", "asset-c");
+    session.unbindChannel("can1");
+
+    expect(session.getSnapshot().selectedSignal?.signalName).toBe("EngineRpm");
+  });
+
+  it("clears when its own channel is unbound", () => {
+    const session = withSelection();
+
+    session.unbindChannel("can0");
+
+    expect(session.getSnapshot().selectedSignal).toBeNull();
+  });
+
+  it("clears when its own channel is rebound to a different asset", () => {
+    const session = withSelection();
+
+    session.bindChannel("can0", "asset-b");
+
+    expect(session.getSnapshot().selectedSignal).toBeNull();
+    expect(session.assetForChannel("can0")).toBe("asset-b");
+  });
+
+  it("clears when every binding is cleared", () => {
+    const session = withSelection();
+
+    session.clearBindings();
+
+    expect(session.getSnapshot().selectedSignal).toBeNull();
+    expect(session.getSnapshot().dbcBindings.size).toBe(0);
+  });
+
+  it("clears on a project switch, like everything else the old project chose", () => {
+    const session = withSelection();
+
+    session.openProject(opened("Beta", PROJECT_B));
+
+    expect(session.getSnapshot().selectedSignal).toBeNull();
+  });
+
+  it("can be cleared explicitly", () => {
+    const session = withSelection();
+
+    session.selectSignal(null);
+
+    expect(session.getSnapshot().selectedSignal).toBeNull();
+  });
+
+  it("treats the unit as presentation, not identity", () => {
+    const session = withSelection();
+
+    // Re-selecting the same signal with a different unit is a different object but the
+    // same live signal; the store records what it is told and compares nothing on unit.
+    session.selectSignal({
+      assetId: "asset-a",
+      channelId: "can0",
+      messageName: "EngineSpeed",
+      signalName: "EngineRpm",
+      unit: null,
+    });
+
+    expect(session.getSnapshot().selectedSignal?.unit).toBeNull();
+    expect(session.getSnapshot().selectedSignal?.signalName).toBe("EngineRpm");
+  });
+});
+
+describe("WorkspaceSessionStore — subscription", () => {  it("notifies every listener, across what would be separate React roots", () => {
     const session = createWorkspaceSession();
     const traceRoot = vi.fn();
     const dbcRoot = vi.fn();

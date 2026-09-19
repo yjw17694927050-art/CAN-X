@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-14-A",
+  "title": "Typed decode-batch client",
+  "objective": "Add the Desktop-side typed HTTP client for the Runtime's decode-batch endpoint. A new module apps/desktop/src/runtime/dbc-decode-client.ts exports decodeDbcFrameBatch({ projectPath, assetId, streamId, frames }) -> DecodeBatchResult, and re-uses the EXISTING shared transport in apps/desktop/src/runtime/runtime-http.ts (RUNTIME_URL, runtimeFetch, readResponse, RuntimeDbcApiError, RuntimeDbcTransportError, RuntimeDbcContractError) rather than declaring a second error taxonomy or a second copy of the HTTP handling. The request serializes every one of the sixteen FrameWire fields in snake_case with data as UPPERCASE hexadecimal and the sequence as a JSON number only while Number.isSafeInteger holds (otherwise it fails closed with RuntimeDbcContractError rather than truncating). The client enforces 1 <= frames.length <= 1000 itself instead of relying on the Runtime to reject. The response is validated field by field, never asserted: schema_version === 1, stream_id equal to the submitted stream id, frame_count === outcomes.length === submitted frames.length, outcome order matching the submitted order, and each echoed frame equal to the submitted frame. decoded and failure are mutually exclusive (both null or both present refuses the payload), and every decoded signal is checked for a string name, an integer raw_value, a finite physical_value and nullable choice_label/unit. records[i].frame is the very object the caller submitted, never the echo: the echoed frame exists only for validation and correlation. Failures propagate as the shared transport's typed errors.",
+  "scope": "The new decode-batch client and its vitest suite.",
+  "non_goals": [
+    "Any DBC parsing, bit extraction, endianness, signed conversion, factor/offset application or multiplexing logic in TypeScript - the Runtime is the authority for all of it",
+    "Any consumer of the client (the coordinator is the Main Agent's, apps/desktop/src/workspace/decode-coordinator.ts)",
+    "Re-defining RuntimeDbcApiError / RuntimeDbcTransportError / RuntimeDbcContractError, or copying readResponse",
+    "Any new i18n key, any new dependency, any Runtime (Python) change"
+  ],
+  "base_sha": "2428b19aa96f54b11ab016acb065a487f65208cf",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-a",
+  "allowed_paths": [
+    "apps/desktop/src/runtime/dbc-decode-client.ts",
+    "apps/desktop/src/runtime/dbc-decode-client.test.ts"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src/runtime/runtime-http.ts",
+    "apps/desktop/src/runtime/dbc-client.ts",
+    "apps/desktop/src/i18n/**",
+    "apps/desktop/src/workspace/**",
+    "apps/desktop/src/components/**",
+    "apps/desktop/src-tauri/**",
+    "runtime/**",
+    ".agent/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "apps/desktop/src/runtime/runtime-http.ts",
+      "sha": "c631af9eb2487ca43cecea7bfefcc7342fd9ccbe"
+    },
+    {
+      "path": "apps/desktop/src/runtime/frame-schema.ts",
+      "sha": "c631af9eb2487ca43cecea7bfefcc7342fd9ccbe"
+    }
+  ],
+  "acceptance_criteria": [
+    "All sixteen FrameWire fields are serialized on every request, in the Runtime's own snake_case spelling",
+    "data is encoded as uppercase hexadecimal, never Base64, never a JSON byte array",
+    "A sequence beyond Number.MAX_SAFE_INTEGER refuses the request instead of truncating, wrapping or silently losing precision",
+    "An empty batch and a batch of more than 1000 frames are both refused before any request is sent",
+    "A response whose schema_version, stream_id, frame_count, outcome order or echoed frame disagrees with the request refuses the whole payload as RuntimeDbcContractError",
+    "An outcome with both decoded and failure present, or with neither, refuses the payload",
+    "records[i].frame is the identical object submitted by the caller, not a reconstruction from the response",
+    "The client declares no error type and no HTTP handling of its own; it re-uses ./runtime-http"
+  ],
+  "required_tests": [
+    "frontend-focused-test",
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+    "Name every new test case and state the RED observation that preceded each new behaviour",
+    "State explicitly that runtime-http.ts, dbc-client.ts, i18n/**, workspace/** and every other file outside the two allowed paths was untouched"
+  ],
+  "risk_class": "MEDIUM",
+  "status": "HANDOFF_READY",
+  "revision": 1
+}

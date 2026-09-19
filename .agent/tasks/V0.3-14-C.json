@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-14-C",
+  "title": "Signal selection and signal plot",
+  "objective": "Add the explicit channel+message+signal selection that drives the Plot, replacing the byte-0 fallback entirely. A new SignalSelectionControl renders, for the asset the user is inspecting, the channels that are bound to THAT asset (derived from the session's dbcBindings and nothing else - no channel registry), a message picker and the message's signals with a Plot action per signal. With exactly one bound channel the control may stand on it while still displaying which channel it is; with two or more it must not pick for the user, and Plot stays unavailable until a channel is named. Activating Plot calls session.selectSignal with the full four-part identity (channelId, assetId, messageName, signalName) plus the unit, and the write is re-checked against the binding map at the moment it happens so a binding removed between render and click cannot produce a selection whose channel decodes nothing. With no session, no asset or no bound channel the action is disabled while the reason is shown. components/plot/series.ts replaces buildByteSeries with the pure buildSignalSeries(records, selection, maxSamples): a record contributes a sample only when its assetId, its frame's channelId, its decoded messageName and the named signal ALL match, and the sample is { time: frame.normalizedTimestamp, value: signal.physicalValue } - the physical value, never the raw one, on the frame's own timestamp, never a decode-completion time. The series stays bounded and deterministic, keeping the first and last sample. LivePlotPanel draws that series with a y-axis named '<Signal> (<unit>)' or the bare signal name, shows an explicit no-selection state and an explicit waiting state, and never falls back to a payload byte.",
+  "scope": "The signal-selection control, the plot series and the live plot panel, with their vitest suites.",
+  "non_goals": [
+    "Any change to DbcDatabaseView, DbcWorkspace, DockWorkspace, the workspace session, the decoded store, the decoding client, the coordinator or i18n - the Main Agent wires the control in",
+    "Multi-signal, multi-axis, cursor, trigger or alarm behaviour",
+    "Any DBC parsing or signal-value computation in the Desktop",
+    "Any new i18n key or dependency"
+  ],
+  "base_sha": "546e6af3c84e73217a93b148f9f6cee1d3b58cdf",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-c",
+  "allowed_paths": [
+    "apps/desktop/src/components/plot/series.ts",
+    "apps/desktop/src/components/plot/series.test.ts",
+    "apps/desktop/src/components/plot/LivePlotPanel.tsx",
+    "apps/desktop/src/components/plot/LivePlotPanel.test.tsx",
+    "apps/desktop/src/components/dbc/SignalSelectionControl.tsx",
+    "apps/desktop/src/components/dbc/SignalSelectionControl.test.tsx"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src/components/LiveRealtimePanels.test.tsx",
+    "apps/desktop/src/components/trace/**",
+    "apps/desktop/src/components/dbc/DbcDatabaseView.tsx",
+    "apps/desktop/src/components/dbc/DbcWorkspace.tsx",
+    "apps/desktop/src/components/dbc/DbcBindingControl.tsx",
+    "apps/desktop/src/components/dbc/observed-channels.ts",
+    "apps/desktop/src/components/workspace/**",
+    "apps/desktop/src/workspace/**",
+    "apps/desktop/src/runtime/**",
+    "apps/desktop/src/i18n/**",
+    "apps/desktop/src-tauri/**",
+    "runtime/**",
+    ".agent/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "apps/desktop/src/workspace/session.ts",
+      "sha": "a4b04f94fd71d686db0f0436763d32d7e26e8874"
+    },
+    {
+      "path": "apps/desktop/src/workspace/decoded-realtime.ts",
+      "sha": "502ea82b718a4ec0893b93797c201c80d76adae7"
+    },
+    {
+      "path": "apps/desktop/src/workspace/WorkspaceSessionProvider.tsx",
+      "sha": "a4b04f94fd71d686db0f0436763d32d7e26e8874"
+    },
+    {
+      "path": "apps/desktop/src/i18n/config.ts",
+      "sha": "2428b19aa96f54b11ab016acb065a487f65208cf"
+    }
+  ],
+  "acceptance_criteria": [
+    "Candidate channels come only from dbcBindings entries whose bound asset is the inspected one; no channel registry exists",
+    "One bound channel may be stood on while still being displayed; two or more require an explicit choice and Plot stays unavailable until then",
+    "Plot writes a selection carrying channelId, assetId, messageName and signalName, re-checked against the binding map at write time",
+    "The series takes a record only when channel, asset, message and signal all match, and uses physicalValue on normalizedTimestamp",
+    "The series is bounded and deterministic, retaining the first and last sample",
+    "The plot shows an explicit no-selection state and an explicit waiting state, and never falls back to a payload byte",
+    "The y-axis name includes the unit when the document declared one"
+  ],
+  "required_tests": [
+    "frontend-focused-test",
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+    "Name every new test case and state the RED observation that preceded each new behaviour, and list the byte-series tests that were removed",
+    "State explicitly that every file outside the six allowed paths was untouched, including LiveRealtimePanels.test.tsx, DbcDatabaseView.tsx and DbcWorkspace.tsx"
+  ],
+  "risk_class": "MEDIUM",
+  "status": "HANDOFF_READY",
+  "revision": 1
+}

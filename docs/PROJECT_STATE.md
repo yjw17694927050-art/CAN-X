@@ -166,8 +166,13 @@ Current Phase:  V0.3 — Professional Trace & DBC Foundation
 Latest CLOSED numbered step:    V0.3-13 — Project & DBC Workspace Product Integration PASS · CLOSED
 Previous CLOSED numbered step:  V0.3-12 — Desktop Project Open Foundation             PASS · CLOSED
 Current numbered step:          V0.3-14 — Live DBC Decode, Trace & Plot Integration
-                                READY TO START · NOT STARTED — the last product phase of V0.3;
-                                V0.3-FINAL follows it and is NOT STARTED
+                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT RE-ACCEPTANCE —
+                                independent acceptance round 1 returned NOT PASS (P0 0 · P1 3 ·
+                                P2 0) and V0.3-14-FIX-1 closed all three; the last product phase
+                                of V0.3, with V0.3-FINAL following it and NOT STARTED
+                                branch feature/v0.3-14-live-dbc-decode-trace-plot-integration ·
+                                base main 5ed3945 · product head 823e927 (V0.3-14-FIX-1) ·
+                                PR #24 OPEN, unmerged · evidence docs/acceptance/v0.3-14-…md
                                 V0.3-13 integration: reviewed head 7d1b0a3 · accepted FIX head
                                 5113491 · PR #22 · protected merge fb4d588 · post-merge main CI
                                 35428731923 SUCCESS · evidence docs/acceptance/v0.3-13-…md
@@ -226,7 +231,8 @@ remediation is preserved verbatim in the archive (§13).
 ## 6. Completed Phase Summary
 
 All numbered phases V0.1 → V0.3-13 are CLOSED. V0.3-14 — Live DBC Decode, Trace & Plot
-Integration — and V0.3-FINAL remain: V0.3-14 is READY TO START · NOT STARTED. Full detail: V0.1 →
+Integration — is IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE (pull request open,
+unmerged), and V0.3-FINAL remains NOT STARTED. Full detail: V0.1 →
 V0.3-09 in
 `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_V0.3-09.md`; V0.3-10 onward in `docs/acceptance/`;
 maintenance-phase narrative in `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md`.
@@ -254,7 +260,9 @@ V0.3-12 Desktop Project Open Foundation ...... PASS · CLOSED (project owner) �
 V0.3-13 Project & DBC Workspace Product
         Integration .......................... PASS · CLOSED (round 2; round 1 NOT PASS) — see §5
 V0.3-14 Live DBC Decode, Trace & Plot
-        Integration .......................... READY TO START · NOT STARTED
+        Integration .......................... IMPLEMENTED · SELF-VERIFIED · AWAITING
+                                               INDEPENDENT RE-ACCEPTANCE (round 1 NOT PASS,
+                                               P0 0 · P1 3 · P2 0; V0.3-14-FIX-1 head 823e927)
 V0.3-FINAL Full Regression / Integration /
         Independent Acceptance / Version
         Closure .............................. NOT STARTED
@@ -301,8 +309,21 @@ Verified against the current working tree (Runtime routers, desktop modules, Age
    selection is **not** a decode binding. Binding is session-scoped only: not persisted, no SQLite
    migration, no Runtime API.
 
-❌ DBC editor · active DBC · Trace decoded signal columns · Plot signal binding · Frontend
-   decode-batch integration · persistent channel binding · Agent dbc.* tools
+✅ Live DBC decode, Trace & Plot integration (V0.3-14) — Runtime HTTP transport extracted to one
+   shared module (`runtime/runtime-http.ts`; `dbc-client.ts` re-exports the same three failure
+   types) · typed Desktop decode-batch client (`decodeDbcFrameBatch`, all sixteen FrameWire fields,
+   uppercase-hex payload, fail-closed beyond `Number.MAX_SAFE_INTEGER`, 1..1000 enforced client-side,
+   response validated against the request and the echoed frame) · **one** workspace decode
+   coordinator (contiguous single-asset batch runs, one request in flight globally, newest viewport
+   wins, binding/stream epochs discard in-flight answers, every answered sequence remembered
+   including per-frame failures) · Trace shows the raw frame **plus** Message and Decoded signals,
+   with Freeze capturing raw and decoded together · Plot draws a **selected** signal's physical value
+   on the frame's normalized timestamp, with explicit no-selection and waiting states and no byte-0
+   fallback · signal selection is a channel-bound identity (`channelId` + `assetId` + `messageName` +
+   `signalName`) whose candidate channels are derived from the session bindings alone.
+
+❌ DBC editor · active DBC · persistent channel binding · multi-signal / multi-axis Plot · cursor ·
+   trigger · alarm · Agent dbc.* tools · offline replay decoder
 ```
 
 Runtime / hardware / platform capability that is **not** verified is listed once, in §9.
@@ -461,9 +482,10 @@ Not implemented, in scope for later increments (actual repo state, not aspiratio
 
 ```text
 DBC editor · active DBC · persistent channel binding (V0.3-13's bindings are session-scoped and
-cleared by a project switch) · project create UI · Trace decoded signal columns / live decode UI ·
-decode-batch frontend integration · Plot signal binding · asset rename / delete / replace ·
-drag & drop / multi-file import · Rust DBC domain · arbitrary renderer filesystem access ·
+cleared by a project switch) · project create UI · asset rename / delete / replace ·
+drag & drop / multi-file import · multi-signal / multi-axis Plot · cursor / trigger / alarm ·
+an offline replay decoder · decoded Parquet / decoded DuckDB persistence · Rust DBC domain ·
+arbitrary renderer filesystem access ·
 Agent dbc.* tools · durable / tamper-evident Safety audit sink · an execution path that crosses the kernel (TX,
 replay, injection, diagnostics) · a general safety "authority epoch" beyond the emergency-stop
 case · enabling strict_required_status_checks_policy on the main ruleset (ADR-0002 alt. A) ·
@@ -634,9 +656,13 @@ CLOSED: V0.3-12 · V0.3-12-FIX-2 · AGENT-02 (real pilot) — all three by proje
 the protected integration recorded above; `docs/acceptance/v0.3-12-…md` §12.1 states the
 provenance explicitly, because the repository holds no independent-review artifact for it.
 CLOSED: V0.3-13 — round 2, P0 0 · P1 0 · P2 0, on the protected merge recorded above.
-Next planned product increment: V0.3-14 — Live DBC Decode, Trace & Plot Integration —
-**READY TO START · NOT STARTED**. It is the last product development phase of V0.3; V0.3-FINAL
-(Full Regression / Integration / Independent Acceptance / Version Closure) follows it.
+Next product increment: V0.3-14 — Live DBC Decode, Trace & Plot Integration —
+**IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT RE-ACCEPTANCE** on branch
+feature/v0.3-14-live-dbc-decode-trace-plot-integration (base main 5ed3945 · product head 823e927
+after V0.3-14-FIX-1), pull request #24 OPEN and unmerged; independent acceptance round 1 returned
+NOT PASS (P0 0 · P1 3 · P2 0) and all three findings were closed by V0.3-14-FIX-1; evidence
+`docs/acceptance/v0.3-14-…md`. It is the last product development phase of V0.3; V0.3-FINAL (Full
+Regression / Integration / Independent Acceptance / Version Closure) follows it.
 NOT STARTED: V0.3-FINAL · CD-01.
 The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
 cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.

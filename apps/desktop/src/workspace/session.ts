@@ -63,19 +63,34 @@ export interface OpenedProject {
 }
 
 /**
- * A signal the user selected, reserved for the V0.3-14 decoder and Plot binding.
+ * A signal the user selected for decode-backed presentation (V0.3-14).
  *
- * Declared now, and settable now, so the shape is fixed before anything consumes it.
- * Nothing in V0.3-13 reads it: no decoder exists yet, and inventing a consumer would
- * be inventing a decode path this increment does not have.
+ * **`channelId` is part of the identity, and it is not optional.** One DBC asset may be
+ * bound to more than one CAN channel, so `assetId` + `messageName` + `signalName` does
+ * *not* name a live signal: the same message and the same signal name can arrive on
+ * `can0` and on `can1`, and a selection without a channel would silently mean "whichever
+ * one arrived". The channel is what makes the selection a single decidable thing.
+ *
+ * It is deliberately **not** called an identity of the DBC document: `assetId` names the
+ * document, `messageName` + `signalName` name the definition inside it, and `channelId`
+ * names the live stream that definition is applied to.
  */
 export interface SignalSelection {
-  /** The DBC asset the signal is defined in. */
+  /** The CAN channel whose frames this selection applies to. */
+  readonly channelId: string;
+  /** The DBC asset that must currently be bound to {@link SignalSelection.channelId}. */
   readonly assetId: string;
   /** The message the signal belongs to. */
   readonly messageName: string;
   /** The signal's name inside that message. */
   readonly signalName: string;
+  /**
+   * Presentation metadata, never identity.
+   *
+   * The unit is carried so a Plot axis can label itself without a second lookup; it is
+   * not consulted when deciding whether two selections are the same signal.
+   */
+  readonly unit: string | null;
 }
 
 /**
@@ -198,7 +213,7 @@ export class WorkspaceSessionStore {
     if (this.#snapshot.dbcBindings.get(channelId) === assetId) return;
     const bindings = new Map(this.#snapshot.dbcBindings);
     bindings.set(channelId, assetId);
-    this.#publish({ ...this.#snapshot, dbcBindings: bindings });
+    this.#publish({ ...this.#snapshot, dbcBindings: bindings, selectedSignal: this.#selectionUnder(bindings) });
   }
 
   /** Remove one channel's binding. A channel with no binding is a no-op. */
@@ -206,13 +221,18 @@ export class WorkspaceSessionStore {
     if (!this.#snapshot.dbcBindings.has(channelId)) return;
     const bindings = new Map(this.#snapshot.dbcBindings);
     bindings.delete(channelId);
-    this.#publish({ ...this.#snapshot, dbcBindings: bindings });
+    this.#publish({ ...this.#snapshot, dbcBindings: bindings, selectedSignal: this.#selectionUnder(bindings) });
   }
 
-  /** Remove every binding, keeping the open project and the browse selection. */
+  /**
+   * Remove every binding, keeping the open project and the browse selection.
+   *
+   * The signal selection goes with them: a selection is a statement about a channel's
+   * current binding, and with no bindings there is nothing left for it to be true about.
+   */
   clearBindings(): void {
-    if (this.#snapshot.dbcBindings.size === 0) return;
-    this.#publish({ ...this.#snapshot, dbcBindings: NO_BINDINGS });
+    if (this.#snapshot.dbcBindings.size === 0 && this.#snapshot.selectedSignal === null) return;
+    this.#publish({ ...this.#snapshot, dbcBindings: NO_BINDINGS, selectedSignal: null });
   }
 
   /**
@@ -227,13 +247,27 @@ export class WorkspaceSessionStore {
   }
 
   /**
-   * Record the selected signal. Reserved for V0.3-14 — nothing in V0.3-13 sets it.
+   * Record the signal the user selected for decode-backed presentation (V0.3-14).
    *
-   * Kept here rather than added later so the session's shape is fixed before the
-   * increment that consumes it, and so a signal selection is cleared by the same
-   * project switch that clears everything else.
+   * A selection is a statement about a **live binding**, so it is only accepted while it
+   * is true: the named channel must currently be bound to the named asset. Anything else
+   * is refused rather than stored, because a selection that names an unbound channel (or
+   * a channel bound to a different document) is not a signal selection at all — it is a
+   * reference to something that would never decode.
+   *
+   * Once accepted it is **involuntarily** dropped the moment it stops being true:
+   * unbinding its channel, rebinding that channel to another asset, clearing the
+   * bindings, or switching project all clear it. The caller never has to remember to.
+   *
+   * Throws:
+   *   `Error` when `selection` is non-null and its channel is not bound to its asset.
    */
   selectSignal(selection: SignalSelection | null): void {
+    if (selection !== null && this.assetForChannel(selection.channelId) !== selection.assetId) {
+      throw new Error(
+        "A signal selection requires its channel to be bound to the selected asset.",
+      );
+    }
     if (this.#snapshot.selectedSignal === selection) return;
     this.#publish({ ...this.#snapshot, selectedSignal: selection });
   }
@@ -242,6 +276,20 @@ export class WorkspaceSessionStore {
     if (this.#snapshot.openedProject === null) {
       throw new Error(`A workspace session cannot ${action} without an open project.`);
     }
+  }
+
+  /**
+   * The current selection as it stands under a binding map that is about to be published.
+   *
+   * A selection survives a binding edit only while the channel it names is *still* bound
+   * to the asset it names. Every other edit — unbinding a different channel, binding an
+   * unrelated one — leaves it exactly where it was. That is the whole rule: the selection
+   * follows the binding it was made against, and nothing else.
+   */
+  #selectionUnder(bindings: DecodeBindings): SignalSelection | null {
+    const selection = this.#snapshot.selectedSignal;
+    if (selection === null) return null;
+    return bindings.get(selection.channelId) === selection.assetId ? selection : null;
   }
 
   #publish(snapshot: WorkspaceSessionSnapshot): void {
