@@ -34,15 +34,18 @@ One endpoint is a write, and it is the one that carries a security boundary:
 Four properties are load-bearing:
 
 * **The decoder is not duplicated.** Each request loads the asset through
-  ``ProjectDbcService.load_asset`` and compiles a fresh ``DbcDecoder`` from the
-  canonical database it returns. There is no second decode path and no cached
-  "current DBC" — a decoder held between requests would be exactly the active-DBC
-  global this increment does not have.
+  ``ProjectDbcService.load_decoder``, which reads and verifies the project-owned
+  bytes every time and compiles a ``DbcDecoder`` only when that verified content
+  has not been seen before. There is no second decode path and no global "current
+  DBC": a compiled decoder is reached only by presenting one asset's verified
+  content identity, is scoped to its project, and a replaced or edited file fails
+  integrity before the cache could ever be consulted.
 * **The request body is bounded.** A batch is capped at
   :data:`MAX_BATCH_FRAMES`; the cap is an HTTP guard on this endpoint, not a
   property of the ``FrameBatch`` domain, whose own limits are untouched.
-* **Nothing blocking runs on the event loop.** Loading an asset reads a file,
-  verifies a hash, decodes text and parses it; decoding compiles and runs a plan.
+* **Nothing blocking runs on the event loop.** Loading an asset reads a file and
+  verifies a hash, and — the first time a given verified content is seen — decodes
+  text, parses it and compiles a decoder; decoding then runs that decoder's plan.
   All of it is offloaded with ``asyncio.to_thread`` so a DBC request can never
   stall the realtime WebSocket served by the same loop.
 * **A frame's failure is data, not the request's failure.** ``decode_batch``
@@ -71,7 +74,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from canx.api.errors import ApiRequestError, ErrorResponse
 from canx.api.frame import FrameWire, FrameWireError, frame_to_wire, wire_to_frame
 from canx.dbc.asset import DbcAsset
-from canx.dbc.decode import DbcDecoder
 from canx.dbc.decode_model import (
     DecodedFrame,
     DecodedFrameBatch,
@@ -655,15 +657,18 @@ def _load_document(project_path: str, asset_id: str) -> DbcDocument:
 
 
 def _decode_one(project_path: str, asset_id: str, payload: DbcFramePayload) -> DecodedFrame:
-    """Load the asset, compile a decoder and decode one frame. Blocking by design.
+    """Load the asset's decoder and decode one frame. Blocking by design.
 
-    The decoder is compiled per request and never cached. A decoder is a compiled
-    view of one asset, and keeping one alive between requests would be the
-    "current DBC" global this increment deliberately does not have.
+    The project-owned bytes are read and verified on every request; the compile that
+    turns them into a decoder is reused while the verified content is unchanged (see
+    :meth:`~canx.dbc.project_service.ProjectDbcService.load_decoder`). The decoder is
+    a compiled view of one asset's content, never a "current DBC": it is reached only
+    by presenting that asset's verified identity, and a tampered file is refused
+    before any cache is consulted.
     """
     frame = _canonical_frame(payload)
-    document = ProjectDbcService(Path(project_path)).load_asset(asset_id)
-    return DbcDecoder(document.database).decode_frame(frame)
+    decoder = ProjectDbcService(Path(project_path)).load_decoder(asset_id)
+    return decoder.decode_frame(frame)
 
 
 def _decode_batch(
@@ -672,7 +677,7 @@ def _decode_batch(
     stream_id: str,
     payloads: list[DbcFramePayload],
 ) -> DecodedFrameBatch:
-    """Build the canonical batch, load the asset and decode. Blocking by design.
+    """Build the canonical batch, load the asset's decoder and decode. Blocking.
 
     The batch is decoded by ``DbcDecoder.decode_batch`` and not by a loop here:
     the domain already defines what a batch outcome is — one outcome per frame,
@@ -682,8 +687,8 @@ def _decode_batch(
     batch = FrameBatch.create(
         stream_id=stream_id, frames=[_canonical_frame(payload) for payload in payloads]
     )
-    document = ProjectDbcService(Path(project_path)).load_asset(asset_id)
-    return DbcDecoder(document.database).decode_batch(batch)
+    decoder = ProjectDbcService(Path(project_path)).load_decoder(asset_id)
+    return decoder.decode_batch(batch)
 
 
 def _canonical_frame(payload: DbcFramePayload) -> Frame:
