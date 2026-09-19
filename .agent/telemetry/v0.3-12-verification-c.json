@@ -1,0 +1,53 @@
+{
+  "task_id": "V0.3-12-VERIFY-C",
+  "surface": "apps/desktop/src/orchestration/project-open.ts + its unit and integration suites (V0.3-12-C, project-open flow)",
+  "mode": "read-only independent verification",
+  "files_read": [
+    "apps/desktop/src/orchestration/project-open.ts",
+    "apps/desktop/src/orchestration/project-open.test.ts",
+    "apps/desktop/src/orchestration/project-open.integration.test.ts",
+    "apps/desktop/src/desktop/project-directory-bridge.ts",
+    "apps/desktop/src/runtime/project-client.ts"
+  ],
+  "commands": [
+    { "command": "date +%s >> .rivet/scratch/rerun-heartbeat/C.hb", "exit_code": 0 },
+    { "command": "grep -n \"^import\\|require(\" apps/desktop/src/orchestration/project-open.ts", "exit_code": 1 },
+    { "command": "grep -n \"URLSearchParams\\|encodeURIComponent\\|searchParams\\|new URL\\|RUNTIME_URL\\|PROJECT_INSPECT_PATH\" apps/desktop/src/runtime/project-client.ts", "exit_code": 0 },
+    { "command": "cd apps/desktop && npx vitest run src/orchestration/project-open.test.ts src/orchestration/project-open.integration.test.ts --reporter=basic", "exit_code": 2 },
+    { "command": "cd apps/desktop && npx vitest run src/orchestration/project-open.test.ts src/orchestration/project-open.integration.test.ts", "exit_code": 0 },
+    { "command": "cd apps/desktop && node -e '<URL parse of encoded vs concatenated query>'", "exit_code": 0 }
+  ],
+  "claims": [
+    {
+      "claim": "1. openProjectFromNativeDialog takes both boundaries by injection and the project read model as a generic type parameter, and imports no Runtime client",
+      "verdict": "confirmed",
+      "evidence": "apps/desktop/src/orchestration/project-open.ts L87 `export async function openProjectFromNativeDialog<P>(` with parameters `selectDirectory: ProjectDirectorySelector` and `inspectProject: ProjectInspector<P>` (L88-L89) — both boundaries are arguments, neither is imported. The read model is the type parameter `P`, carried through both `ProjectOpenOutcome<P>` and `ProjectInspector<P>`, both declared locally in this file. No import exists at all: three independent checks agree — ast_grep pattern `import $$$` over the file returned 0 matches, read_file of the whole file shows no import statement, and `grep -n '^import\\|require('` exited 1 (no match). The unit suite pins the same property from the code text: project-open.test.ts `does not import the Runtime project client` asserts the comment-stripped source has no `from \"../runtime/` and `does not reach for Tauri or a dialog of its own` asserts no `@tauri-apps` and no `invoke`."
+    },
+    {
+      "claim": "2. a cancelled selection returns { status: 'cancelled' } without calling the inspector",
+      "verdict": "confirmed",
+      "evidence": "project-open.ts: `const projectPath = await selectDirectory(); if (projectPath === null) { return { status: 'cancelled' }; }` returns before the only call to `inspectProject`, so a null selection cannot reach the inspector in any code path (there is no try/catch and no second call site). Unit suite asserts it three ways: `reports a dismissed picker as a cancelled outcome` (resolves to exactly `{ status: 'cancelled' }`), `never inspects when the picker was dismissed` (recorded `seen` is empty), `carries nothing but the status in a cancelled outcome` (`Object.keys(outcome)` is `['status']`). Integration suite asserts the cross-boundary half: `returns cancelled and never asks the Runtime when the user dismisses the picker` — call count 1 for the stubbed `invoke` and `expect(fetchMock).not.toHaveBeenCalled()`."
+    },
+    {
+      "claim": "3. the selected path is forwarded character for character",
+      "verdict": "confirmed",
+      "evidence": "project-open.ts: the value from `selectDirectory()` is bound once to `const projectPath`, tested against `null`, and handed to `inspectProject(projectPath)` and returned as `projectPath` with no transformation anywhere in the file — no trim, no separator rewrite, no case folding, no `resolve()`, no `replace()`. Unit suite pins it with `forwards the selected directory character for character` (`expect(inspection.seen[0]).toBe(PROJECT_PATH)`, strict identity, plus `toEqual`) and `normalises nothing about the selected directory` on a hostile input with leading/trailing spaces, mixed case and a `\\n` sequence. The integration suite carries a hostile-but-legal path (`HOSTILE_PROJECT_PATH` with spaces, `&`, `?`, `#`, `..`) through the real bridge and the real client and asserts `outcome.projectPath` is that exact string."
+    },
+    {
+      "claim": "4. the integration test exercises the real bridge, the real orchestration and the real Runtime client, stubbing only the Tauri invoke and fetch",
+      "verdict": "confirmed",
+      "evidence": "project-open.integration.test.ts imports the real modules by value and makes no module mock of them: `selectProjectDirectory` / `SELECT_PROJECT_DIRECTORY_COMMAND` / `ProjectDirectoryBridgeError` from `../desktop/project-directory-bridge`, `inspectProject` / `RuntimeProjectApiError` / `RuntimeProjectTransportError` from `../runtime/project-client`, `openProjectFromNativeDialog` from `./project-open`. Exactly two seams are stubbed, confirmed by grep for `vi.mock|vi.stubGlobal|vi.hoisted`: one `vi.hoisted` + `vi.mock('@tauri-apps/api/core', ...)` at L30/L32 and one `vi.stubGlobal('fetch', fetchMock)` at L73 (undone by `vi.unstubAllGlobals()` at L77). There is no `vi.mock` for either local module, so the chain selectProjectDirectory -> openProjectFromNativeDialog -> inspectProject is the production chain with only its two outermost adapters replaced; the Runtime/storage and the OS picker are not mocked away by a build-time fake of the modules themselves. Ran it: `npx vitest run src/orchestration/project-open.test.ts src/orchestration/project-open.integration.test.ts` → exit 0, `Test Files 2 passed (2)`, `Tests 25 passed (25)` (integration file 9 tests, unit file 16 tests)."
+    },
+    {
+      "claim": "5. would the integration test's path-forwarding assertion fail if the client concatenated the query string instead of encoding it?",
+      "verdict": "confirmed — yes, the it-block goes RED; but the kill is driven by `&` and `#`, not by encoding style as such",
+      "evidence": "client side: apps/desktop/src/runtime/project-client.ts L224-L225 `const query = new URLSearchParams({ project_path: projectPath }).toString(); return `${RUNTIME_URL}${PROJECT_INSPECT_PATH}?${query}`;`. Assertions under test: project-open.integration.test.ts L123 `expect(url.searchParams.get('project_path')).toBe(HOSTILE_PROJECT_PATH)`, L125 `expect(url.hash).toBe('')` (plus L121 pathname, L124 getAll length, L120 origin). Reproduced independently with node against the fixture string `C:\\canx\\Projects\\Mixed Case & more?\\#tag\\..\\Vehicle_Bus`: encoded query (`URLSearchParams`) → value identity true, hash '' true; raw concatenation (`'?project_path=' + path`) → `url.searchParams.get('project_path')` returns only `'C:\\canx\\Projects\\Mixed Case '` (& terminates the value) — identity false, `url.hash` becomes `'#tag\\..\\Vehicle_Bus'` — false. So the first failing assertion would be L123, and L125 is independently broken too; L120/L121/L124 still pass, i.e. only the two assertions that carry the hostile characters do the killing. Also probed `encodeURI(P)` (which leaves `&` and `#` alone): identity false, hash non-empty — still RED. `encodeURIComponent(P)` on the value: passes. Conclusion: the assertion does discriminate concatenation from encoding, but only because HOSTILE_PROJECT_PATH was deliberately built to contain `&` and `#`; a path of only spaces/case/`..` would be asserted-equal under both implementations, since `URLSearchParams.get` decodes, so this test is not sensitive to `%20` vs `+` style differences."
+    }
+  ],
+  "not_confirmable": [
+    "The native OS directory picker itself (the Rust `select_project_directory` command and the real filesystem dialog) — the integration suite stubs `invoke` and the file itself states the OS selection edge is owned by the Rust module's focused tests; those Rust tests were not read or run in this verification.",
+    "The real Python Runtime's HTTP answer for `GET /project/inspect?project_path=…` — `fetch` is stubbed, so the request URL is asserted but no live sidecar response was observed.",
+    "Whether the Rust half and the TypeScript half agree on the command name was only read statically (the integration suite's `the Rust and TypeScript halves name the same command` test does a source-text assertion against apps/desktop/src-tauri/src/lib.rs and project_directory_bridge.rs); no cargo test was executed. Its behaviour was verified only insofar as the suite passed."
+  ],
+  "verification_status": "25/25 tests passed in the two files under study (exit 0). No file outside .agent/telemetry/v0.3-12-verification-c.json was created or modified."
+}
