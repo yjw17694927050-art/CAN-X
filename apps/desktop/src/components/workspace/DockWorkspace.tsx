@@ -6,10 +6,13 @@ import { useTranslation } from "react-i18next";
 
 import { LiveTracePanel } from "../trace/LiveTracePanel";
 import { startVirtualCapture, stopCapture } from "../../runtime/capture-client";
-import { useRealtimeStream } from "../../runtime/realtime-stream";
+import { decodeDbcFrameBatch } from "../../runtime/dbc-decode-client";
+import { realtimeStream, useRealtimeStream } from "../../runtime/realtime-stream";
 import { LivePlotPanel } from "../plot/LivePlotPanel";
 import { DbcWorkspace } from "../dbc/DbcWorkspace";
 import { ProjectControls } from "../project/ProjectControls";
+import { createDecodedRealtimeStore, type DecodedRealtimeStore } from "../../workspace/decoded-realtime";
+import { WorkspaceDecodeCoordinator } from "../../workspace/decode-coordinator";
 import { createWorkspaceSession } from "../../workspace/session";
 import type { WorkspaceSessionStore } from "../../workspace/session";
 import { WorkspaceSessionProvider } from "../../workspace/WorkspaceSessionProvider";
@@ -23,19 +26,24 @@ class WorkspacePanelRenderer implements IContentRenderer {
     options: CreateComponentOptions,
     session: WorkspaceSessionStore,
     queryClient: QueryClient,
+    decoded: DecodedRealtimeStore,
   ) {
     this.element.className = "workspace-panel";
     this.element.dataset.panel = options.name;
     this.#root = createRoot(this.element);
     // Every Dockview panel is rendered into its own React root, so the provider that
-    // wraps `<App />` does not reach it. Two app-wide singletons are therefore handed
-    // across explicitly, and both are the *same instance* in every panel: the app's
-    // QueryClient (one server-state cache) and the workspace's one WorkspaceSessionStore
-    // (one selection/binding authority). A panel that built its own session would be a
-    // second authority, which is exactly what sharing here prevents.
+    // wraps `<App />` does not reach it. Three app-wide singletons are therefore handed
+    // across explicitly, and each is the *same instance* in every panel: the app's
+    // QueryClient (one server-state cache), the workspace's one WorkspaceSessionStore
+    // (one selection/binding authority) and the workspace's one DecodedRealtimeStore
+    // (one set of decode outcomes). A panel that built its own session or its own decoded
+    // store would be a second authority, which is exactly what sharing here prevents —
+    // and Plot and Trace reading different outcomes is the bug this closes.
     this.#root.render(
       <QueryClientProvider client={queryClient}>
-        <WorkspaceSessionProvider store={session}>{panelContent(options.name)}</WorkspaceSessionProvider>
+        <WorkspaceSessionProvider store={session}>
+          {panelContent(options.name, decoded)}
+        </WorkspaceSessionProvider>
       </QueryClientProvider>,
     );
   }
@@ -47,10 +55,10 @@ class WorkspacePanelRenderer implements IContentRenderer {
   }
 }
 
-function panelContent(name: string): ReactNode {
+function panelContent(name: string, decoded: DecodedRealtimeStore): ReactNode {
   if (name === "project") return <ProjectControls />;
-  if (name === "trace") return <LiveTracePanel />;
-  if (name === "plot") return <LivePlotPanel />;
+  if (name === "trace") return <LiveTracePanel decoded={decoded} />;
+  if (name === "plot") return <LivePlotPanel decoded={decoded} />;
   if (name === "dbc") return <DbcWorkspace />;
   return <div className="workspace-panel-placeholder" />;
 }
@@ -61,9 +69,14 @@ export interface DockWorkspaceProps {
    * creates exactly one per mount; a test passes one to observe what the panels read.
    */
   readonly session?: WorkspaceSessionStore;
+  /**
+   * The workspace's one decoded store, injected. Omitted in production, where the workspace
+   * creates exactly one per mount; a test passes one to observe what the panels read.
+   */
+  readonly decoded?: DecodedRealtimeStore;
 }
 
-export function DockWorkspace({ session }: DockWorkspaceProps = {}) {
+export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspaceProps = {}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -74,6 +87,27 @@ export function DockWorkspace({ session }: DockWorkspaceProps = {}) {
   // project change instead of being torn down and rebuilt for one.
   const [created] = useState(createWorkspaceSession);
   const store = session ?? created;
+  // One decoded store, same rule: created once per mount, never per project. A project
+  // change is an epoch *inside* the coordinator (which clears the store), not a reason to
+  // build a new pipeline — and rebuilding would tear down the realtime subscription the
+  // Trace and Plot roots hold.
+  const [ownDecoded] = useState(createDecodedRealtimeStore);
+  const decodedStore = injectedDecoded ?? ownDecoded;
+
+  /**
+   * The one decode loop. It subscribes to the same realtime store the panels do, so it is a
+   * subscriber of the pipeline rather than a second pipeline: no socket, no Worker, no store
+   * is created here.
+   */
+  useEffect(() => {
+    const coordinator = new WorkspaceDecodeCoordinator({
+      decode: decodeDbcFrameBatch,
+      decoded: decodedStore,
+      realtime: realtimeStream,
+      session: store,
+    });
+    return coordinator.start();
+  }, [decodedStore, store]);
 
   useEffect(() => {
     let ownsCapture = false;
@@ -95,7 +129,8 @@ export function DockWorkspace({ session }: DockWorkspaceProps = {}) {
     }
 
     const api = createDockview(container, {
-      createComponent: (options) => new WorkspacePanelRenderer(options, store, queryClient),
+      createComponent: (options) =>
+        new WorkspacePanelRenderer(options, store, queryClient, decodedStore),
     });
 
     api.addPanel({ component: "project", id: "project", title: t("workspace.project") });
@@ -127,13 +162,13 @@ export function DockWorkspace({ session }: DockWorkspaceProps = {}) {
     });
 
     return () => api.dispose();
-    // `store` and `queryClient` are stable identities for the whole mount, so this
-    // layout is built exactly once. Project state deliberately does NOT appear here: it
+    // `store`, `decodedStore` and `queryClient` are stable identities for the whole mount, so
+    // this layout is built exactly once. Project state deliberately does NOT appear here: it
     // reaches the panels through the session (a subscription), so opening or switching a
     // project updates panels in place rather than disposing and rebuilding every panel —
     // and therefore never tears down the Trace/Plot roots that hold the realtime
     // subscription, nor restarts the capture lifecycle.
-  }, [t, queryClient, store]);
+  }, [t, queryClient, store, decodedStore]);
 
   return (
     <main aria-label={t("workspace.label")} className="workspace-shell">

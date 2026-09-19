@@ -169,37 +169,35 @@ export function SignalSelectionControl({ assetId, database }: SignalSelectionCon
             </select>
           </div>
 
-          <table
+          {/* A list, not a table: this is a set of pickable signals, and a second `table`
+              with the same role as the definition table above would make both ambiguous to
+              a screen reader — and to any query that asks for a row by name. */}
+          <ul
             aria-label={t("dbc.signal.label", { name: activeMessage.name })}
-            className="dbc-selection-signal-table"
+            className="dbc-selection-signal-list"
           >
-            <thead>
-              <tr>
-                <th scope="col">{t("dbc.signal.column.name")}</th>
-                <th scope="col">{t("dbc.signal.column.unit")}</th>
-                <th scope="col" />
-              </tr>
-            </thead>
-            <tbody>
-              {activeMessage.signals.map((signal) => (
-                <tr data-signal-name={signal.name} key={signal.name}>
-                  <td>{signal.name}</td>
-                  <td>{signal.unit ?? t("dbc.value.none")}</td>
-                  <td>
-                    <button
-                      disabled={!canPlot}
-                      onClick={() => {
-                        plot(activeMessage, signal);
-                      }}
-                      type="button"
-                    >
-                      {t("dbc.signal.plot")}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+            {activeMessage.signals.map((signal) => (
+              <li
+                className="dbc-selection-signal"
+                data-signal-name={signal.name}
+                key={signal.name}
+              >
+                <span className="dbc-selection-signal-name">{signal.name}</span>
+                <span className="dbc-selection-signal-unit">
+                  {signal.unit ?? t("dbc.value.none")}
+                </span>
+                <button
+                  disabled={!canPlot}
+                  onClick={() => {
+                    plot(activeMessage, signal);
+                  }}
+                  type="button"
+                >
+                  {t("dbc.signal.plot")}
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>

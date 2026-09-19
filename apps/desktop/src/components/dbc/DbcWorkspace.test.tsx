@@ -490,7 +490,7 @@ describe("DbcWorkspace — database inspection", () => {
 
   it("renders Intel and Motorola signal byte order", async () => {
     await openPowertrain();
-    fireEvent.click(screen.getByText("EngineSpeed"));
+    fireEvent.click(messageRow("EngineSpeed"));
 
     const rpm = await screen.findByRole("row", { name: /EngineRpm/ });
     expect(within(rpm).getByText("Intel (little-endian)")).toBeInTheDocument();
@@ -501,7 +501,7 @@ describe("DbcWorkspace — database inspection", () => {
 
   it("renders signed and unsigned signals", async () => {
     await openPowertrain();
-    fireEvent.click(screen.getByText("EngineSpeed"));
+    fireEvent.click(messageRow("EngineSpeed"));
 
     expect(within(await screen.findByRole("row", { name: /EngineRpm/ })).getByText("Unsigned")).toBeInTheDocument();
     expect(within(screen.getByRole("row", { name: /GearSelector/ })).getByText("Signed")).toBeInTheDocument();
@@ -509,7 +509,7 @@ describe("DbcWorkspace — database inspection", () => {
 
   it("renders factor, offset, bounds and unit", async () => {
     await openPowertrain();
-    fireEvent.click(screen.getByText("EngineSpeed"));
+    fireEvent.click(messageRow("EngineSpeed"));
 
     const rpm = within(await screen.findByRole("row", { name: /EngineRpm/ }));
     expect(rpm.getByText("0.25")).toBeInTheDocument();
@@ -521,7 +521,7 @@ describe("DbcWorkspace — database inspection", () => {
 
   it("renders receivers and value choices", async () => {
     await openPowertrain();
-    fireEvent.click(screen.getByText("EngineSpeed"));
+    fireEvent.click(messageRow("EngineSpeed"));
 
     expect(within(await screen.findByRole("row", { name: /EngineRpm/ })).getByText("ECM, TCM")).toBeInTheDocument();
     expect(
@@ -532,10 +532,10 @@ describe("DbcWorkspace — database inspection", () => {
   it("renders multiplexing metadata", async () => {
     await openPowertrain();
 
-    fireEvent.click(screen.getByText("EngineSpeed"));
+    fireEvent.click(messageRow("EngineSpeed"));
     expect(within(await screen.findByRole("row", { name: /GearSelector/ })).getByText("Multiplexer")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("DiagnosticResponse"));
+    fireEvent.click(messageRow("DiagnosticResponse"));
     const probe = await screen.findByRole("row", { name: /VoltageProbe/ });
     expect(within(probe).getByText("GearSelector = 0, 1")).toBeInTheDocument();
     expect(within(probe).getByText("Float")).toBeInTheDocument();
@@ -553,7 +553,7 @@ describe("DbcWorkspace — database inspection", () => {
       within(screen.getByRole("group", { name: "Version" })).getAllByText("—").length,
     ).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByText("DoorState"));
+    fireEvent.click(messageRow("DoorState"));
     expect(within(await screen.findByRole("row", { name: /DoorOpen/ })).getAllByText("—").length).toBeGreaterThan(0);
   });
 
@@ -575,7 +575,7 @@ describe("DbcWorkspace — database inspection", () => {
     expect(view.container.querySelector("img")).toBeNull();
     expect(view.container.querySelector("i")).toBeNull();
 
-    fireEvent.click(screen.getByText("<img src=x>.msg"));
+    fireEvent.click(messageRow("<img src=x>.msg"));
     expect(await screen.findByText("<script>alert(1)</script>")).toBeInTheDocument();
     expect(view.container.querySelector("script")).toBeNull();
   });

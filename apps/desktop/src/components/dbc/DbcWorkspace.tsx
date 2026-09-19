@@ -17,6 +17,7 @@ import {
 import { DbcBindingControl } from "./DbcBindingControl";
 import { DbcDatabaseView } from "./DbcDatabaseView";
 import { DbcImportControl } from "./DbcImportControl";
+import { SignalSelectionControl } from "./SignalSelectionControl";
 
 /**
  * The read-only DBC workspace — a project-scoped view of one project's DBC assets, with
@@ -173,11 +174,16 @@ export function DbcWorkspace({ projectPath }: DbcWorkspaceProps = {}) {
         ) : databaseData === undefined ? (
           <p className="dbc-notice">{t("dbc.database.loading")}</p>
         ) : (
-          <DbcDatabaseView
-            asset={selectedAsset}
-            database={databaseData}
-            key={`${effectivePath}:${selectedAsset.assetId}`}
-          />
+          <>
+            <DbcDatabaseView
+              asset={selectedAsset}
+              database={databaseData}
+              key={`${effectivePath}:${selectedAsset.assetId}`}
+            />
+            {/* Below the document it selects from: the user reads the signals first and picks
+                one to plot, rather than choosing a name with nothing on screen behind it. */}
+            <SignalSelectionControl assetId={selectedAsset.assetId} database={databaseData} />
+          </>
         )}
       </div>
     </section>
