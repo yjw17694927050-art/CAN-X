@@ -10,33 +10,49 @@ import {
   getDbcDatabase,
   listDbcAssets,
 } from "../../runtime/dbc-client";
+import {
+  useWorkspaceSessionSnapshot,
+  useWorkspaceSessionStore,
+} from "../../workspace/WorkspaceSessionProvider";
+import { DbcBindingControl } from "./DbcBindingControl";
 import { DbcDatabaseView } from "./DbcDatabaseView";
+import { DbcImportControl } from "./DbcImportControl";
 
 /**
- * The read-only DBC workspace — a project-scoped view of one project's DBC assets.
+ * The read-only DBC workspace — a project-scoped view of one project's DBC assets, with
+ * the actions that used to be missing: import a document, and bind a channel to one.
  *
  * ```text
- * projectPath (a prop, never a global)
+ * projectPath (a prop, or the workspace session when none is given)
  *   ↓ listDbcAssets(projectPath)              GET /dbc/assets?project_path=…
- *   asset list  →  local selection
+ *   asset list  →  selection (the session's, or this component's own)
  *   ↓ getDbcDatabase(projectPath, assetId)    GET /dbc/assets/{id}/database?…
  *   message list  →  message detail  →  signal definitions
+ *   + DbcImportControl      import a document into this project
+ *   + DbcBindingControl     channelId -> assetId, explicitly
  * ```
  *
- * Four properties are deliberate:
+ * Six properties are deliberate:
  *
- * * **The project is a prop.** Nothing here reads a store, a module-level path or a
- *   "current project". When no project is open the caller passes `null` and the
- *   workspace shows a real empty state instead of guessing a path or inventing a
- *   picker. That is what lets a future Project Workspace supply the path without this
- *   component having to learn how projects are chosen.
- * * **Selection is UI-local.** `selectedAssetId` says which asset *this panel* is
- *   looking at. It is not an active DBC, not a channel binding and not a decode
- *   target; it is never lifted into a module-level store, and it resets the moment the
- *   project changes so one project's selection cannot leak into another's.
- * * **Runtime state is TanStack Query's.** Server state lives in the shared query
- *   cache keyed by `(projectPath)` and `(projectPath, assetId)` — no second HTTP cache
- *   is built here, and no database is fetched until its asset is actually selected.
+ * * **The project comes from one authority, chosen once.** An explicit `projectPath` prop
+ *   wins, because a caller that names a project means it; otherwise the workspace
+ *   session's opened project is read. There is no "current project" fallback, no
+ *   module-level path and no picker invented for the empty case — with neither input the
+ *   workspace renders a real empty state.
+ * * **Selection is UI-local — or the workspace's, when there is a workspace.** With a
+ *   session above it, the inspected asset is the session's `browsedAssetId`, so two panels
+ *   in two React roots inspect the same asset instead of each keeping a private copy.
+ *   Without one the component keeps its own state, which is what lets it be rendered
+ *   standalone. Either way the selection resets when the project changes.
+ * * **Inspecting is not binding.** `browsedAssetId` says which asset this panel is looking
+ *   at. It is not an active DBC, not a channel binding and not a decode target; the
+ *   binding changes only when a user activates Bind in {@link DbcBindingControl}.
+ * * **Runtime state is TanStack Query's.** Server state lives in the shared query cache,
+ *   keyed by `(projectPath)` and `(projectPath, assetId)` — no second HTTP cache is built
+ *   here, and no database is fetched until its asset is actually selected.
+ * * **The project switch resets everything.** A new project path discards the previous
+ *   selection before it can reach a paint, so a database is never requested under the
+ *   wrong project; the session discards its bindings in the same switch.
  * * **Failures are reported, not dumped.** A structured Runtime failure is shown as a
  *   human message plus its stable code, with a retry. Its `details`, the project path,
  *   the request and the raw body stay where they belong — out of the UI.
@@ -44,39 +60,55 @@ import { DbcDatabaseView } from "./DbcDatabaseView";
 
 export interface DbcWorkspaceProps {
   /**
-   * The CAN-X project whose DBC assets are inspected, or `null` when no project is
-   * open. Required and explicit: there is no implicit "current" project.
+   * The CAN-X project whose DBC assets are inspected.
+   *
+   * Omitted in production, where the workspace session's opened project supplies it. Given
+   * explicitly, it wins — which is how this panel is rendered standalone in a test without
+   * a workspace above it.
    */
-  readonly projectPath: string | null;
+  readonly projectPath?: string | null;
 }
 
-export function DbcWorkspace({ projectPath }: DbcWorkspaceProps) {
+export function DbcWorkspace({ projectPath }: DbcWorkspaceProps = {}) {
   const { t } = useTranslation();
-  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  const [selectionProject, setSelectionProject] = useState(projectPath);
+  const sessionStore = useWorkspaceSessionStore();
+  const session = useWorkspaceSessionSnapshot(sessionStore);
+  const effectivePath =
+    projectPath !== undefined ? projectPath : (session.openedProject?.projectPath ?? null);
+
+  const [localAssetId, setLocalAssetId] = useState<string | null>(null);
+  const [selectionProject, setSelectionProject] = useState(effectivePath);
 
   // A project switch invalidates any selection made against the old project. Adjusting
   // during render (rather than in an effect) keeps the stale selection from ever
   // reaching a paint, so a database is never requested under the wrong project.
-  if (selectionProject !== projectPath) {
-    setSelectionProject(projectPath);
-    setSelectedAssetId(null);
+  if (selectionProject !== effectivePath) {
+    setSelectionProject(effectivePath);
+    setLocalAssetId(null);
   }
 
+  // With a session above it the inspection is the workspace's, so a sibling panel in
+  // another React root sees the same asset. Without one, this component owns it.
+  const selectedAssetId = sessionStore === null ? localAssetId : session.browsedAssetId;
+  const inspectAsset = (assetId: string | null): void => {
+    if (sessionStore === null) setLocalAssetId(assetId);
+    else sessionStore.browseAsset(assetId);
+  };
+
   const assets = useQuery({
-    enabled: projectPath !== null,
-    queryFn: () => listDbcAssets(requireProjectPath(projectPath)),
-    queryKey: ["dbc", "assets", projectPath],
+    enabled: effectivePath !== null,
+    queryFn: () => listDbcAssets(requireProjectPath(effectivePath)),
+    queryKey: ["dbc", "assets", effectivePath],
   });
 
   const database = useQuery({
-    enabled: projectPath !== null && selectedAssetId !== null,
+    enabled: effectivePath !== null && selectedAssetId !== null,
     queryFn: () =>
-      getDbcDatabase(requireProjectPath(projectPath), requireAssetId(selectedAssetId)),
-    queryKey: ["dbc", "database", projectPath, selectedAssetId],
+      getDbcDatabase(requireProjectPath(effectivePath), requireAssetId(selectedAssetId)),
+    queryKey: ["dbc", "database", effectivePath, selectedAssetId],
   });
 
-  if (projectPath === null) {
+  if (effectivePath === null) {
     return (
       <section aria-label={t("dbc.title")} className="dbc-workspace dbc-notice">
         <p className="dbc-notice-title">{t("dbc.noProject.title")}</p>
@@ -101,6 +133,7 @@ export function DbcWorkspace({ projectPath }: DbcWorkspaceProps) {
   if (collection.length === 0) {
     return (
       <section aria-label={t("dbc.title")} className="dbc-workspace dbc-notice">
+        <DbcImportControl projectPath={effectivePath} />
         <p>{t("dbc.assets.empty")}</p>
       </section>
     );
@@ -111,13 +144,15 @@ export function DbcWorkspace({ projectPath }: DbcWorkspaceProps) {
 
   return (
     <section aria-label={t("dbc.title")} className="dbc-workspace">
+      <DbcImportControl projectPath={effectivePath} />
+
       <div aria-label={t("dbc.assets.label")} className="dbc-asset-list" role="listbox">
         {collection.map((asset) => (
           <button
             aria-selected={asset.assetId === selectedAssetId}
             className="dbc-asset"
             key={asset.assetId}
-            onClick={() => setSelectedAssetId(asset.assetId)}
+            onClick={() => inspectAsset(asset.assetId)}
             role="option"
             type="button"
           >
@@ -130,6 +165,7 @@ export function DbcWorkspace({ projectPath }: DbcWorkspaceProps) {
       </div>
 
       <div className="dbc-detail">
+        <DbcBindingControl assets={collection} />
         {selectedAsset === null ? (
           <p className="dbc-select-prompt">{t("dbc.database.selectPrompt")}</p>
         ) : database.isError ? (
@@ -140,7 +176,7 @@ export function DbcWorkspace({ projectPath }: DbcWorkspaceProps) {
           <DbcDatabaseView
             asset={selectedAsset}
             database={databaseData}
-            key={`${projectPath}:${selectedAsset.assetId}`}
+            key={`${effectivePath}:${selectedAsset.assetId}`}
           />
         )}
       </div>
