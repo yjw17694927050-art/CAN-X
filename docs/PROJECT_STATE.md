@@ -27,10 +27,17 @@
 > Verdict source: project owner / independent reviewer (external acceptance conversation) — the
 > repository holds **no** GitHub Review artifact for it. Full record:
 > `docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md` §9. **V0.3-FINAL — Full
-> Regression / Integration / Independent Acceptance / Version Closure — IMPLEMENTED ·
-> SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**; **V0.3 is NOT YET CLOSED**. Evidence:
-> `docs/acceptance/v0.3-final.md`.)
-> **Current Phase**: V0.3 — Professional Trace & DBC Foundation
+> Regression / Integration / Independent Acceptance / Version Closure — Final Acceptance: PASS ·
+> Status: CLOSED** (P0 0 · P1 0 · P2 1 accepted non-blocking) after protected integration: evidence
+> PR #26, accepted head aa37b1d, merge `28e49bccaaa3105816c4f81f3fc486afb58b6158` (merge commit, no
+> bypass, ruleset unmodified), post-merge main CI 35437083325 SUCCESS; version-level FULL CI
+> 35434770352 (workflow_dispatch @ ac9742f) with all four domains green. **V0.3 — Professional Trace
+> & DBC Foundation — Version Acceptance: PASS · Status: CLOSED**. Next: **V0.3-CODE-AUDIT — V0.1–V0.3
+> Full Repository Code Audit — READY TO START**; V0.4 NOT STARTED. Evidence:
+> `docs/acceptance/v0.3-final.md` §16.)
+> **Current Phase**: none open — **V0.3 — Professional Trace & DBC Foundation** is CLOSED.
+> Next gate: **V0.3-CODE-AUDIT** (maintenance / qualification, not a product milestone) ·
+> **V0.4**: NOT STARTED
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
 This answers **"where is CAN-X now?"**, not "what happened at every step". The full narrative —
@@ -174,18 +181,29 @@ Do not swap these without a SPEC change.
 
 ```text
 Current Phase:  V0.3 — Professional Trace & DBC Foundation
-Latest CLOSED numbered step:    V0.3-14 — Live DBC Decode, Trace & Plot Integration  PASS · CLOSED
+                Version Acceptance: PASS · Status: CLOSED (project-owner / independent-reviewer
+                verdict; provenance in docs/acceptance/v0.3-final.md §16)
+Latest CLOSED numbered step:    V0.3-FINAL — Full Regression / Integration / Independent
+                                Acceptance / Version Closure                      PASS · CLOSED
+Previous CLOSED numbered step:  V0.3-14 — Live DBC Decode, Trace & Plot Integration  PASS · CLOSED
 Previous CLOSED numbered step:  V0.3-13 — Project & DBC Workspace Product Integration PASS · CLOSED
 Previous CLOSED numbered step:  V0.3-12 — Desktop Project Open Foundation             PASS · CLOSED
-Current numbered step:          V0.3-FINAL — Full Regression / Integration / Independent
-                                Acceptance / Version Closure
-                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE —
-                                V0.3's last quality gate. It asks whether the whole V0.3 product on
-                                main can be closed as one complete, internally consistent, runnable
-                                version; it added no product capability and closes nothing by itself
-                                V0.3-FINAL base V0_3_FINAL_BASE_SHA = ac9742f (the V0.3-14 closeout)
-                                branch docs/v0.3-final-full-regression · evidence
-                                docs/acceptance/v0.3-final.md · V0.3 NOT YET CLOSED
+Current numbered step:          none — no product increment is open
+                                NEXT: **V0.3-CODE-AUDIT — V0.1–V0.3 Full Repository Code Audit**
+                                READY TO START. A maintenance / qualification audit, not a product
+                                milestone: source quality, architecture consistency, lifecycle and
+                                boundedness, dead code, duplicated contracts, safety boundaries,
+                                test blind spots and repository hygiene across V0.1–V0.3, before
+                                V0.4 begins. It does not reopen V0.3 unless it finds a P0/P1 defect.
+                                Its baseline is the version-closed main SHA this closeout produced
+                                (V0_3_CLOSED_MAIN_SHA) — the merge commit of the
+                                docs/v0.3-final-closeout change in the Git history
+                                V0.4 — NOT STARTED, blocked only by that planned audit (a process
+                                choice, not a V0.3 failure)
+                                V0.3-FINAL integration: evidence PR #26 · accepted head aa37b1d ·
+                                protected merge 28e49bc · post-merge main CI 35437083325 SUCCESS ·
+                                version FULL CI 35434770352 · evidence
+                                docs/acceptance/v0.3-final.md §16
                                 V0.3-14 integration: accepted head a10d760 · PR #24 · protected
                                 merge 14fd38d · post-merge main CI 35434232483 SUCCESS ·
                                 closeout PR #25 → merge ac9742f · post-closeout main CI 35434708031
@@ -231,6 +249,16 @@ V0.3-14         PASS · CLOSED (round 2)        accepted head a10d760; PR #24 �
                                                main CI 35434232483 SUCCESS. Round 1 NOT PASS
                                                (P0 0 · P1 3 · P2 0), closed by V0.3-14-FIX-1
                                                (d608495 · 823e927 · a10d760); round 2 PASS (0/0/0).
+V0.3-FINAL      PASS · CLOSED (independent)    version-level gate. accepted evidence head aa37b1d;
+                                               PR #26 → main 28e49bc (merge commit, no bypass, ruleset
+                                               unmodified); post-merge main CI 35437083325 SUCCESS.
+                                               P0 0 · P1 0 · P2 1 accepted non-blocking
+                                               (pnpm tauri dev port mismatch — NOT fixed in V0.3;
+                                               carried into V0.3-CODE-AUDIT / pre-V0.4 maintenance).
+                                               Version-level FULL CI 35434770352 (workflow_dispatch
+                                               @ ac9742f; Runtime + Frontend + Rust + Quality Gate all
+                                               green). Closes V0.3 — evidence
+                                               docs/acceptance/v0.3-final.md §16.
 CI-01           PASS · CLOSED (independent)    run IDs in §14
 CI-02           PASS · CLOSED (independent)    ruleset main-protected-integration (23600372), active
 SAFETY-01       PASS · CLOSED (independent)    main c05debf9; post-merge main CI 35295673078 green
@@ -249,9 +277,10 @@ remediation is preserved verbatim in the archive (§13).
 
 ## 6. Completed Phase Summary
 
-All numbered phases V0.1 → V0.3-14 are CLOSED. V0.3-FINAL — Full Regression / Integration /
-Independent Acceptance / Version Closure — is IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT
-ACCEPTANCE, so **V0.3 itself is not yet closed**. Full detail: V0.1 →
+All numbered phases V0.1 → V0.3-14 are CLOSED, and **V0.3 is CLOSED as a version**: V0.3-FINAL —
+Full Regression / Integration / Independent Acceptance / Version Closure — returned
+`Final Acceptance: PASS` (P0 0 · P1 0 · P2 1 accepted non-blocking) and carried the
+`Version Acceptance: PASS` for V0.3 as a whole. Full detail: V0.1 →
 V0.3-09 in
 `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_V0.3-09.md`; V0.3-10 onward in `docs/acceptance/`;
 maintenance-phase narrative in `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md`.
@@ -283,10 +312,17 @@ V0.3-14 Live DBC Decode, Trace & Plot
                                                P1 3 · P2 0) — see §5
 V0.3-FINAL Full Regression / Integration /
         Independent Acceptance / Version
-        Closure .............................. IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT
-                                               ACCEPTANCE — the last quality gate before V0.3 can be
-                                               closed as a version; evidence
-                                               docs/acceptance/v0.3-final.md
+        Closure .............................. PASS · CLOSED (independent) — closed V0.3 as a
+                                               version; evidence docs/acceptance/v0.3-final.md
+
+V0.3    Professional Trace & DBC Foundation ... Version Acceptance: PASS · Status: CLOSED
+                                               (the whole version, closed by V0.3-FINAL — see §5)
+
+V0.3-CODE-AUDIT V0.1–V0.3 Full Repository
+        Code Audit ........................... NOT STARTED — READY TO START (maintenance /
+                                               qualification gate, not a product milestone)
+V0.4    Plot / Recorder / Replay ............  NOT STARTED — blocked only by the planned
+                                               version-level code audit
 ```
 
 What each phase added is in §7 (capability matrix) and §8 (architecture). V0.3-07 preceded
@@ -699,17 +735,33 @@ Just CLOSED — V0.3-14, Live DBC Decode, Trace & Plot Integration (the last pro
   Evidence: `docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md` (§7 round 1 and
   V0.3-14-FIX-1, §9 round 2 and the protected integration).
 
-Next — V0.3-FINAL, Full Regression / Integration / Independent Acceptance / Version Closure
-  IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE. It starts from
-  origin/main ac9742f (V0_3_FINAL_BASE_SHA) and is V0.3's last quality gate: it asks whether the
-  whole V0.3 product on main can be closed as one complete, internally consistent, runnable
-  version. It added no product capability. All self-verification gates passed — Runtime 2795 passed
-  / 1 skipped · ruff · mypy 98 files · Frontend 31 files / 482 tests · lint / typecheck / build ·
-  Rust 42 + 3 with the real sidecar · workflow_dispatch FULL CI 35434770352 (all three domain jobs
-  green) · a live packaged-runtime decode-batch round trip · a real desktop run with the Runtime it
-  spawned. One P2 finding is recorded and deliberately **not** repaired: `pnpm tauri dev` cannot
-  start the desktop because vite.config.ts never binds the port tauri.conf.json declares (port
-  1420). Evidence, findings and the NOT VERIFIED list: docs/acceptance/v0.3-final.md.
+Just CLOSED — V0.3-FINAL, and with it V0.3 as a version
+  V0.3-FINAL  Final Acceptance: PASS · Status: CLOSED   (P0 0 · P1 0 · P2 1 accepted non-blocking)
+  V0.3        Version Acceptance: PASS · Status: CLOSED
+  Verdict source: project owner / independent reviewer, external acceptance conversation. GitHub
+  Review artifact: NONE — the repository holds none for this verdict and none is claimed.
+  Accepted evidence head aa37b1d88d6433645e7137be9cfffa16a7f7d570 · evidence PR #26 · protected
+  merge 28e49bccaaa3105816c4f81f3fc486afb58b6158 (merge commit; no bypass — the ruleset declares
+  bypass_actors: []; ruleset unmodified) · post-merge main CI 35437083325 SUCCESS.
+  Version-level FULL CI — the regression authority for this gate — run 35434770352,
+  workflow_dispatch at ac9742f2097e2c0f6ad5c0a75c7e346c75a209ae: Change Classification,
+  Runtime / Python, Frontend / TypeScript, Desktop System / Rust and Quality Gate all SUCCESS.
+  The one P2 is accepted non-blocking and deliberately left unfixed: `pnpm tauri dev` cannot start
+  the desktop because apps/desktop/vite.config.ts never binds the port tauri.conf.json declares
+  (1420). It does not reopen V0.3; it is carried into V0.3-CODE-AUDIT / the pre-V0.4 maintenance
+  step that audit decides on.
+  Full record: docs/acceptance/v0.3-final.md §16.
+
+NEXT: V0.3-CODE-AUDIT — V0.1–V0.3 Full Repository Code Audit
+  READY TO START. Baseline: V0_3_CLOSED_MAIN_SHA, the main SHA this closeout produced (the merge
+  commit of `docs/v0.3-final-closeout`). A maintenance / qualification audit, not a product
+  milestone: it audits V0.1–V0.3 source quality, architecture consistency, lifecycle and
+  boundedness, dead code, duplicated contracts, safety boundaries, test blind spots and repository
+  hygiene before V0.4 begins. It does not reopen V0.3 unless it finds a P0/P1 defect.
+  It is **not** a PRD roadmap entry — V0.4 in the PRD remains Plot / Recorder / Replay.
+
+V0.4 — NOT STARTED. Blocked only by the planned version-level code audit; that is a process choice,
+not a V0.3 acceptance failure.
 NOT STARTED: CD-01.
 The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
 cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.
@@ -748,7 +800,8 @@ docs/acceptance/v0.3-final.md   V0.3-FINAL — the version-level regression evid
     workflow_dispatch FULL CI, the live packaged-runtime decode-batch round trip with its mutation
     proof, the real desktop run and virtual-CAN observation, per-domain regression coverage, the
     current-truth audit, the V0.3 scope audit, the P2 finding and the NOT VERIFIED list.
-    IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE — the verdict is not in this file
+    PASS · CLOSED — §16 carries the independent verdict, its provenance, the accepted-head protected
+    integration of the evidence (PR #26 → 28e49bc) and the version-level FULL CI
 docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md   RELIABILITY-01 record (§19)
 docs/CONTEXT_INDEX.md · docs/engineering/AGENT_CONTEXT_GOVERNANCE.md   context routing + layers
 .github/workflows/ci.yml · docs/engineering/INTEGRATION_POLICY.md   CI baseline §14 + policy §15
