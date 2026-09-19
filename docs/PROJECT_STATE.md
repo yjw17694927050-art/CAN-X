@@ -18,7 +18,15 @@
 > post-merge main CI 35428731923 SUCCESS. Independent acceptance round 1 returned NOT PASS
 > (P0 0 · P1 2 · P2 0) on truth-surface findings only; round 2, after V0.3-13-FIX-1, returned
 > **PASS · P0 0 · P1 0 · P2 0**. Verdict provenance and the full record:
-> `docs/acceptance/v0.3-13-project-dbc-workspace-product-integration.md`.)
+> `docs/acceptance/v0.3-13-project-dbc-workspace-product-integration.md`. **V0.3-14 — Live DBC
+> Decode, Trace & Plot Integration — Final Acceptance: PASS · Status: CLOSED** after protected
+> integration: accepted head a10d760, PR #24, merge
+> `14fd38de99ecb203cdc2a3c285a5a699c938b955` (merge commit, no bypass, ruleset unmodified),
+> post-merge main CI 35434232483 SUCCESS. Independent acceptance round 1 returned NOT PASS
+> (P0 0 · P1 3 · P2 0); round 2, after V0.3-14-FIX-1, returned **PASS · P0 0 · P1 0 · P2 0**.
+> Verdict source: project owner / independent reviewer (external acceptance conversation) — the
+> repository holds **no** GitHub Review artifact for it. Full record:
+> `docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md` §9.)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -163,19 +171,19 @@ Do not swap these without a SPEC change.
 
 ```text
 Current Phase:  V0.3 — Professional Trace & DBC Foundation
-Latest CLOSED numbered step:    V0.3-13 — Project & DBC Workspace Product Integration PASS · CLOSED
+Latest CLOSED numbered step:    V0.3-14 — Live DBC Decode, Trace & Plot Integration  PASS · CLOSED
+Previous CLOSED numbered step:  V0.3-13 — Project & DBC Workspace Product Integration PASS · CLOSED
 Previous CLOSED numbered step:  V0.3-12 — Desktop Project Open Foundation             PASS · CLOSED
-Current numbered step:          V0.3-14 — Live DBC Decode, Trace & Plot Integration
-                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT RE-ACCEPTANCE —
-                                independent acceptance round 1 returned NOT PASS (P0 0 · P1 3 ·
-                                P2 0) and V0.3-14-FIX-1 closed all three; the last product phase
-                                of V0.3, with V0.3-FINAL following it and NOT STARTED
-                                branch feature/v0.3-14-live-dbc-decode-trace-plot-integration ·
-                                base main 5ed3945 · product head 823e927 (V0.3-14-FIX-1) ·
-                                PR #24 OPEN, unmerged · evidence docs/acceptance/v0.3-14-…md
-                                V0.3-13 integration: reviewed head 7d1b0a3 · accepted FIX head
-                                5113491 · PR #22 · protected merge fb4d588 · post-merge main CI
-                                35428731923 SUCCESS · evidence docs/acceptance/v0.3-13-…md
+Current numbered step:          V0.3-FINAL — Full Regression / Integration / Independent
+                                Acceptance / Version Closure
+                                READY TO START · NOT STARTED — V0.3's last quality gate. It asks
+                                whether the whole V0.3 product on main can be closed as one
+                                complete, internally consistent, runnable version; it adds no
+                                product capability and closes nothing by itself
+                                starts from origin/main 14fd38d (the V0.3-14 closeout)
+                                V0.3-14 integration: accepted head a10d760 · PR #24 · protected
+                                merge 14fd38d · post-merge main CI 35434232483 SUCCESS ·
+                                evidence docs/acceptance/v0.3-14-…md §9
 
 Closed engineering infrastructure (not numbered product phases) — independently accepted, CLOSED:
   Maintenance CI-01   Continuous Integration Baseline Foundation .............. §14
@@ -212,6 +220,11 @@ V0.3-13         PASS · CLOSED (round 2)        reviewed head 7d1b0a3 · accepte
                                                post-merge main CI 35428731923 SUCCESS.
                                                Round 1 NOT PASS (P0 0 · P1 2 · P2 0,
                                                truth-surface findings); round 2 PASS (0/0/0).
+V0.3-14         PASS · CLOSED (round 2)        accepted head a10d760; PR #24 → main 14fd38d (merge
+                                               commit, no bypass, ruleset unmodified); post-merge
+                                               main CI 35434232483 SUCCESS. Round 1 NOT PASS
+                                               (P0 0 · P1 3 · P2 0), closed by V0.3-14-FIX-1
+                                               (d608495 · 823e927 · a10d760); round 2 PASS (0/0/0).
 CI-01           PASS · CLOSED (independent)    run IDs in §14
 CI-02           PASS · CLOSED (independent)    ruleset main-protected-integration (23600372), active
 SAFETY-01       PASS · CLOSED (independent)    main c05debf9; post-merge main CI 35295673078 green
@@ -230,9 +243,9 @@ remediation is preserved verbatim in the archive (§13).
 
 ## 6. Completed Phase Summary
 
-All numbered phases V0.1 → V0.3-13 are CLOSED. V0.3-14 — Live DBC Decode, Trace & Plot
-Integration — is IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE (pull request open,
-unmerged), and V0.3-FINAL remains NOT STARTED. Full detail: V0.1 →
+All numbered phases V0.1 → V0.3-14 are CLOSED. V0.3-FINAL — Full Regression / Integration /
+Independent Acceptance / Version Closure — is READY TO START · NOT STARTED, so **V0.3 itself is not
+yet closed**. Full detail: V0.1 →
 V0.3-09 in
 `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_V0.3-09.md`; V0.3-10 onward in `docs/acceptance/`;
 maintenance-phase narrative in `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md`.
@@ -260,12 +273,12 @@ V0.3-12 Desktop Project Open Foundation ...... PASS · CLOSED (project owner) �
 V0.3-13 Project & DBC Workspace Product
         Integration .......................... PASS · CLOSED (round 2; round 1 NOT PASS) — see §5
 V0.3-14 Live DBC Decode, Trace & Plot
-        Integration .......................... IMPLEMENTED · SELF-VERIFIED · AWAITING
-                                               INDEPENDENT RE-ACCEPTANCE (round 1 NOT PASS,
-                                               P0 0 · P1 3 · P2 0; V0.3-14-FIX-1 head 823e927)
+        Integration .......................... PASS · CLOSED (round 2; round 1 NOT PASS, P0 0 ·
+                                               P1 3 · P2 0) — see §5
 V0.3-FINAL Full Regression / Integration /
         Independent Acceptance / Version
-        Closure .............................. NOT STARTED
+        Closure .............................. READY TO START · NOT STARTED — the last quality gate
+                                               before V0.3 can be closed as a version
 ```
 
 What each phase added is in §7 (capability matrix) and §8 (architecture). V0.3-07 preceded
@@ -656,14 +669,28 @@ CLOSED: V0.3-12 · V0.3-12-FIX-2 · AGENT-02 (real pilot) — all three by proje
 the protected integration recorded above; `docs/acceptance/v0.3-12-…md` §12.1 states the
 provenance explicitly, because the repository holds no independent-review artifact for it.
 CLOSED: V0.3-13 — round 2, P0 0 · P1 0 · P2 0, on the protected merge recorded above.
-Next product increment: V0.3-14 — Live DBC Decode, Trace & Plot Integration —
-**IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT RE-ACCEPTANCE** on branch
-feature/v0.3-14-live-dbc-decode-trace-plot-integration (base main 5ed3945 · product head 823e927
-after V0.3-14-FIX-1), pull request #24 OPEN and unmerged; independent acceptance round 1 returned
-NOT PASS (P0 0 · P1 3 · P2 0) and all three findings were closed by V0.3-14-FIX-1; evidence
-`docs/acceptance/v0.3-14-…md`. It is the last product development phase of V0.3; V0.3-FINAL (Full
-Regression / Integration / Independent Acceptance / Version Closure) follows it.
-NOT STARTED: V0.3-FINAL · CD-01.
+
+Just CLOSED — V0.3-14, Live DBC Decode, Trace & Plot Integration (the last product phase of V0.3)
+  Final Acceptance: PASS · Status: CLOSED (round 2). Round 1 returned NOT PASS (P0 0 · P1 3 · P2 0);
+  V0.3-14-FIX-1 closed all three — d608495 (the decode-batch request/response contract enforced at
+  the client boundary), 823e927 (duplicate suppression bounded by the viewport), a10d760
+  (documentation / current truth) — and round 2 returned PASS with P0 0 · P1 0 · P2 0.
+  Accepted head a10d760ef34985a478e2402e4e372db5be02f1d9 · PR #24 · protected merge commit
+  14fd38de99ecb203cdc2a3c285a5a699c938b955 (merge commit; no bypass — the ruleset declares
+  bypass_actors: []; ruleset unmodified, updated_at unchanged) · head CI 35432324500 SUCCESS ·
+  post-merge main CI 35434232483 SUCCESS (classification runtime+frontend; Desktop System / Rust
+  legitimately skipped — no src-tauri/** file in the diff).
+  Verdict source: project owner / independent reviewer, external acceptance conversation. GitHub
+  Review artifact: NONE — PR #24's review list is empty at closeout; none is claimed.
+  Evidence: `docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md` (§7 round 1 and
+  V0.3-14-FIX-1, §9 round 2 and the protected integration).
+
+Next — V0.3-FINAL, Full Regression / Integration / Independent Acceptance / Version Closure
+  READY TO START · NOT STARTED. It starts from origin/main 14fd38d and is V0.3's last quality gate:
+  it asks whether the whole V0.3 product on main can be closed as one complete, internally
+  consistent, runnable version. It adds no product capability, and a product defect found there
+  stops the phase and is reported rather than quietly fixed.
+NOT STARTED: CD-01.
 The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
 cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
@@ -692,6 +719,10 @@ docs/acceptance/v0.3-12-desktop-project-open-foundation.md   V0.3-12 + the first
 docs/acceptance/v0.3-13-project-dbc-workspace-product-integration.md   V0.3-13 — the acceptance
     evidence report required by docs/acceptance/README.md. PASS · CLOSED (round 2, P0 0 · P1 0 ·
     P2 0 over the protected merge fb4d588); round 1's NOT PASS and both P1 findings preserved
+docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md   V0.3-14 — PASS · CLOSED
+    (round 2, P0 0 · P1 0 · P2 0 over the protected merge 14fd38d); round 1's NOT PASS, all three
+    P1 findings and V0.3-14-FIX-1 preserved unedited; §9 carries the round-2 verdict provenance, the
+    protected-integration record and the post-merge main CI result
 docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md   RELIABILITY-01 record (§19)
 docs/CONTEXT_INDEX.md · docs/engineering/AGENT_CONTEXT_GOVERNANCE.md   context routing + layers
 .github/workflows/ci.yml · docs/engineering/INTEGRATION_POLICY.md   CI baseline §14 + policy §15
