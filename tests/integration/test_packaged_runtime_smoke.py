@@ -871,3 +871,240 @@ async def test_packaged_runtime_serves_the_project_read_model_api(tmp_path: Path
         assert proc.returncode == 0
     finally:
         _terminate(proc)
+
+
+#: The V0.3-FINAL live proof of the decode-batch envelope (see the test below).
+#:
+#: V0.3-14 recorded "live Runtime sidecar decode-batch round trip" as NOT VERIFIED,
+#: because every decode assertion in that phase — including its round-2 FIX — ran
+#: against a stubbed transport. The Desktop's own contract tests still pin what the
+#: *client requires*; nothing there can say what the *runtime produces*. This test is
+#: that second, independent observation, taken from the frozen executable over real
+#: HTTP, and it is the only place the whole envelope is asserted end to end:
+#: ``schema_version`` / ``stream_id`` / ``first_sequence`` / ``last_sequence`` /
+#: ``frame_count`` / outcome order / decoded message / raw value / physical value /
+#: unit / choice label / per-frame failure.
+#:
+#: Two fixtures, because no single one carries both a unit and a ``VAL_`` table:
+#: ``basic_standard.dbc`` has scaled, unit-bearing signals and an id that is absent
+#: from it (for the failure outcome), ``choices.dbc`` has the value tables.
+_CHOICES_FIXTURE = _REPO_ROOT / "tests" / "fixtures" / "dbc" / "choices.dbc"
+_DOOR_STATUS_ID = 0x300
+_DOOR_DATA = "01010000"
+
+
+@pytest.mark.skipif(
+    packaged_runtime() is None, reason="packaged canx-runtime.exe has not been built"
+)
+async def test_packaged_runtime_answers_the_full_decode_batch_envelope(
+    tmp_path: Path,
+) -> None:
+    """V0.3-FINAL: open project → import → list → database → decode → batch.
+
+    The executable is handed an *empty* project and nothing else: both DBCs are
+    imported into it over HTTP, so the asset registration, the canonical ``.dbc``
+    on disk and every decoded value below are produced inside that process. The
+    source tree only creates the project and reads the fixture bytes.
+
+    The mid-batch undecodable frame is the point of the batch contract, not an
+    afterthought: a caller must receive it as *data about one frame* while the
+    request as a whole still succeeds, otherwise one bad identifier at the end of a
+    viewport would take the whole viewport's decode down with it.
+    """
+    exe = packaged_runtime()
+    assert exe is not None
+    project_root = tmp_path / "v030final-live.canx"
+    with ProjectService().create(project_root, display_name="V0.3-FINAL live"):
+        pass
+
+    engine_bytes = _DBC_FIXTURE.read_bytes()
+    door_bytes = _CHOICES_FIXTURE.read_bytes()
+
+    port = _free_port()
+    token = "v030final-live-token"
+    proc = subprocess.Popen(
+        [str(exe), "--host", "127.0.0.1", "--port", str(port), "--session-token", token],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30) as client:
+            await _await_health(client)
+
+            inspected = await client.get(
+                "/project/inspect", params={"project_path": str(project_root)}
+            )
+            assert inspected.status_code == 200, inspected.text
+            assert inspected.json()["display_name"] == "V0.3-FINAL live"
+
+            assets: dict[str, str] = {}
+            for fixture, blob in (
+                (_DBC_FIXTURE, engine_bytes),
+                (_CHOICES_FIXTURE, door_bytes),
+            ):
+                created = await client.post(
+                    "/dbc/assets",
+                    json={
+                        "project_path": str(project_root),
+                        "source_name": fixture.name,
+                        "content_base64": base64.b64encode(blob).decode("ascii"),
+                    },
+                )
+                assert created.status_code == 201, created.text
+                asset = created.json()
+                assert asset["sha256"] == hashlib.sha256(blob).hexdigest()
+                assert asset["size_bytes"] == len(blob)
+                assert asset["encoding"] == "utf-8-sig"
+                assets[fixture.name] = asset["asset_id"]
+
+            assert set(assets) == {_DBC_FIXTURE.name, _CHOICES_FIXTURE.name}
+            engine_id = assets[_DBC_FIXTURE.name]
+            door_id = assets[_CHOICES_FIXTURE.name]
+
+            listed = await client.get(
+                "/dbc/assets", params={"project_path": str(project_root)}
+            )
+            assert listed.status_code == 200, listed.text
+            assert {item["asset_id"] for item in listed.json()["assets"]} == set(assets.values())
+
+            engine_db = await client.get(
+                f"/dbc/assets/{engine_id}/database",
+                params={"project_path": str(project_root)},
+            )
+            assert engine_db.status_code == 200, engine_db.text
+            assert [message["name"] for message in engine_db.json()["messages"]] == [
+                "EngineData"
+            ]
+
+            door_db = await client.get(
+                f"/dbc/assets/{door_id}/database",
+                params={"project_path": str(project_root)},
+            )
+            assert door_db.status_code == 200, door_db.text
+            door_messages = door_db.json()["messages"]
+            assert [message["name"] for message in door_messages] == ["DoorStatus"]
+            door_state = next(
+                signal for signal in door_messages[0]["signals"] if signal["name"] == "DoorState"
+            )
+            assert [(entry["value"], entry["label"]) for entry in door_state["choices"]] == [
+                (0, "Closed"),
+                (1, "Open"),
+                (2, "Error"),
+            ]
+
+            single = await client.post(
+                f"/dbc/assets/{engine_id}/decode",
+                json={
+                    "project_path": str(project_root),
+                    "frame": _dbc_frame(_DBC_ENGINE_DATA),
+                },
+            )
+            assert single.status_code == 200, single.text
+            assert single.json()["message_name"] == "EngineData"
+            assert single.json()["signals"][0]["physical_value"] == 750.0
+
+            batch = await client.post(
+                f"/dbc/assets/{engine_id}/decode-batch",
+                json={
+                    "project_path": str(project_root),
+                    "stream_id": "v030final-live",
+                    "frames": [
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=1),
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=2, arbitration_id=0x7FF),
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=3),
+                    ],
+                },
+            )
+            assert batch.status_code == 200, batch.text
+            envelope = batch.json()
+            assert set(envelope) == {
+                "schema_version",
+                "stream_id",
+                "first_sequence",
+                "last_sequence",
+                "frame_count",
+                "outcomes",
+            }
+            assert envelope["schema_version"] == 1
+            assert envelope["stream_id"] == "v030final-live"
+            assert envelope["first_sequence"] == 1
+            assert envelope["last_sequence"] == 3
+            assert envelope["frame_count"] == 3
+
+            outcomes = envelope["outcomes"]
+            assert [outcome["frame"]["sequence"] for outcome in outcomes] == [1, 2, 3]
+            assert [outcome["decoded"] is not None for outcome in outcomes] == [True, False, True]
+            # ``decoded`` and ``failure`` are mutually exclusive on every outcome.
+            assert all(
+                outcome["decoded"] is None or outcome["failure"] is None
+                for outcome in outcomes
+            )
+
+            decoded_first = outcomes[0]["decoded"]
+            assert decoded_first["message_name"] == "EngineData"
+            speed = next(
+                signal for signal in decoded_first["signals"] if signal["name"] == "EngineSpeed"
+            )
+            assert speed["raw_value"] == 3000
+            assert speed["physical_value"] == 750.0
+            assert speed["unit"] == "rpm"
+            assert speed["choice_label"] is None
+
+            failure = outcomes[1]["failure"]
+            assert set(failure) == {"code", "message", "details", "recoverable", "source"}
+            assert failure["code"] == "dbc.message_not_found"
+            assert failure["source"] == "dbc"
+            assert failure["recoverable"] is False
+            # The frame is echoed whether or not it decoded, so a caller can align
+            # outcomes to its own submission without trusting the order.
+            assert outcomes[1]["frame"]["arbitration_id"] == 0x7FF
+
+            door_batch = await client.post(
+                f"/dbc/assets/{door_id}/decode-batch",
+                json={
+                    "project_path": str(project_root),
+                    "stream_id": "v030final-live",
+                    "frames": [
+                        _dbc_frame(_DOOR_DATA, sequence=10, arbitration_id=_DOOR_STATUS_ID)
+                    ],
+                },
+            )
+            assert door_batch.status_code == 200, door_batch.text
+            door_envelope = door_batch.json()
+            assert door_envelope["first_sequence"] == 10
+            assert door_envelope["last_sequence"] == 10
+            assert door_envelope["frame_count"] == 1
+            door_message = door_envelope["outcomes"][0]["decoded"]
+            assert door_message["message_name"] == "DoorStatus"
+            assert {
+                signal["name"]: signal["choice_label"] for signal in door_message["signals"]
+            } == {"DoorState": "Open", "LockState": "Locked"}
+
+            # A batch that is not one contiguous run is refused by the shipped
+            # runtime itself — not only by the Desktop client that builds batches.
+            non_contiguous = await client.post(
+                f"/dbc/assets/{engine_id}/decode-batch",
+                json={
+                    "project_path": str(project_root),
+                    "stream_id": "v030final-live",
+                    "frames": [
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=1),
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=3),
+                    ],
+                },
+            )
+            assert non_contiguous.status_code == 422, non_contiguous.text
+            refused = non_contiguous.json()
+            assert refused["code"] == "api.request_validation_failed"
+            assert refused["source"] == "api"
+            assert refused["recoverable"] is False
+
+            shutdown = await client.post(
+                "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
+            )
+            assert shutdown.status_code == 202
+
+        proc.wait(timeout=30)
+        assert proc.returncode == 0
+    finally:
+        _terminate(proc)
