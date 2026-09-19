@@ -31,7 +31,7 @@ import inspect
 from pathlib import Path
 
 import pytest
-from agent_git_sandbox import SandboxRepository, git, make_repository
+from agent_git_sandbox import GIT_IDENTITY, SandboxRepository, git, make_repository
 
 from tools.agent.config import AgentConfig, load_config
 from tools.agent.contracts import (
@@ -61,10 +61,15 @@ def config() -> AgentConfig:
 def unrelated_root_commit(repo: SandboxRepository) -> str:
     """A real commit that shares no history with the branch checked out.
 
-    Built with plumbing so the working tree is never touched.
+    Built with plumbing so the working tree is never touched, and with the
+    sandbox's **explicit** committer identity. `git commit-tree` needs one, and
+    relying on an ambient `user.email` made these three tests pass on a
+    developer machine and fail on a runner that has none — which is how they
+    first failed in CI. The identity is the one `agent_git_sandbox` already
+    pins, not a second copy of it.
     """
     tree = git(repo.root, ["rev-parse", "HEAD^{tree}"])
-    return git(repo.root, ["commit-tree", tree, "-m", "unrelated root"])
+    return git(repo.root, [*GIT_IDENTITY, "commit-tree", tree, "-m", "unrelated root"])
 
 
 def native_shared_task(repo: SandboxRepository, base_sha: str, **overrides: object) -> TaskContract:
