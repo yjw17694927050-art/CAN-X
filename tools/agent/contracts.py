@@ -43,8 +43,8 @@ BRANCH_SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$
 TEST_RESULTS: Final[frozenset[str]] = frozenset({"passed", "failed", "skipped", "not_run"})
 
 #: A task may not silently mutate these once it is under way (AGENT-01 §36).
-#: ``integration_paths`` is part of the ownership surface, so it is frozen with
-#: the rest of it (V0.3-12-FIX-1).
+#: ``integration_paths`` widens the delivery range, so it is frozen with the rest
+#: of the surface it belongs to (V0.3-12-FIX-1).
 FROZEN_FIELDS: Final[tuple[str, ...]] = (
     "objective",
     "allowed_paths",
@@ -289,10 +289,16 @@ class TaskContract:
     risk_class: RiskClass = RiskClass.LOW
     status: TaskStatus = TaskStatus.PLANNED
     revision: int = 1
-    #: ``NATIVE_SHARED`` only: Main-Agent-owned paths that may legitimately sit
-    #: inside this task's delivery commit range. Empty for an isolated task, may
-    #: never reach a protected/public-truth/safety path, and participates in
-    #: conflict classification like any other ownership surface.
+    #: ``NATIVE_SHARED`` only: repository-relative exact *files* (never globs) that
+    #: the **Main Agent** reviewed and permitted to coexist inside this task's
+    #: delivery commit range — a cross-boundary integration test, for example.
+    #:
+    #: It widens which paths the range may contain; it is **not** a claim about who
+    #: wrote them. A shared worktree records a file's presence in a commit range,
+    #: not its author, so this field proves nothing about per-file provenance. Empty
+    #: for an isolated task, may never reach a protected/public-truth/safety path,
+    #: and participates in conflict classification like any other delivery surface
+    #: (V0.3-12-FIX-2).
     integration_paths: tuple[str, ...] = ()
     execution_mode: ExecutionMode = ExecutionMode.ISOLATED_WORKTREE
     schema_version: int = SCHEMA_VERSION
@@ -412,19 +418,24 @@ class TaskContract:
         return {name: full[name] for name in FROZEN_FIELDS}
 
     def ownership_surface(self) -> tuple[str, ...]:
-        """Every pattern this task's *delivery* may touch (V0.3-12-FIX-1).
+        """Every path this task's *delivery range* may contain (V0.3-12-FIX-1).
 
-        For an isolated task this is exactly ``allowed_paths``. For a
-        native-shared task it additionally admits the declared
-        ``integration_paths`` — the Main-Agent-owned paths that legitimately sit
-        inside the same delivery commit (a cross-boundary integration test, for
-        example).
+        ``allowed_paths`` is the **worker's declared permission surface**. For a
+        native-shared task the surface additionally admits the declared
+        ``integration_paths`` — the repository-relative files the **Main Agent**
+        reviewed and permitted to coexist inside the same delivery commit range (a
+        cross-boundary integration test, for example).
 
-        It widens what the *commit range* may contain, never the worker's own
-        permission surface: ``validate_task`` refuses any ``integration_paths``
-        that can reach a protected, public-truth or safety path, or that overlaps
-        the task's own ``forbidden_paths``, and ``classify_pair`` treats the
-        surface like any other when it classifies two tasks against each other.
+        Those are two different kinds of declaration, and conflating them is what
+        FIX-2 corrects. ``allowed_paths`` says what the worker may edit;
+        ``integration_paths`` says which additional files a reviewer allowed the
+        *range* to contain. What the surface decides is whether the range is
+        composed only of paths some task was permitted to touch — it is not
+        evidence of who wrote each file, which a shared worktree cannot record.
+        ``validate_task`` still constrains the declared integration paths: each must
+        be an exact repository-relative file, disjoint from every governed path and
+        from the task's own ``forbidden_paths``, and ``classify_pair`` treats the
+        whole surface like any other when it classifies two tasks.
         """
         if self.execution_mode is ExecutionMode.NATIVE_SHARED:
             return (*self.allowed_paths, *self.integration_paths)

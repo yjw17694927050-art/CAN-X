@@ -71,7 +71,7 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
       "default": [],
-      "description": "native-shared only. Main-Agent-owned paths that may legitimately sit inside this task's delivery commit range (a cross-boundary integration test, for example). Empty for an isolated task. May never reach a protected, public-truth or safety path, nor overlap the task's own forbidden_paths, and it participates in conflict classification like allowed_paths."
+      "description": "native-shared only. Repository-relative exact file paths (never globs) that the Main Agent reviewed and permitted to coexist inside this task's delivery commit range - a cross-boundary integration test, for example. It widens which paths the range may contain; it is NOT evidence of who wrote them, because a shared worktree records a file's presence in a commit range, not its writer. Empty for an isolated task. May never reach a protected, public-truth or safety path, nor overlap the task's own forbidden_paths, and it participates in conflict classification like allowed_paths."
     },
     "owner": {
       "type": "string",

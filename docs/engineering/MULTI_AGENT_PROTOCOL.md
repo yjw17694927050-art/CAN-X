@@ -1090,13 +1090,34 @@ rule is not stylistic: a declared branch Git cannot resolve is exactly the
 defect that made the pilot's first three handoffs fail with
 `agent.git_state_error` before the delivery was ever inspected.
 
-`integration_paths` names Main-Agent-owned paths that sit inside a worker's
-delivery commit — in a shared worktree the Main Agent's cross-boundary
-integration test shares the worker's commit. It is refused when it can reach a
-protected, public-truth or safety path, or when it overlaps the task's own
-`forbidden_paths`; and `classify_pair` classifies two tasks using each one's
+`integration_paths` names the additional files a reviewer permitted to sit inside a
+worker's delivery **range** — in a shared worktree the Main Agent's cross-boundary
+integration test shares the worker's commit. Each entry must be an **exact
+repository-relative file** (a glob is refused: the field says "these named files may
+coexist", and `apps/desktop/src/**` says something much larger). It is refused when
+it can reach a protected, public-truth or safety path, or when it overlaps the task's
+own `forbidden_paths`; and `classify_pair` classifies two tasks using each one's
 full **ownership surface**, so a delivery that reaches another task's surface is
 visible instead of reading as C0.
+
+What the field does and does not prove (V0.3-12-FIX-2):
+
+```text
+allowed_paths        the worker's declared permission surface
+integration_paths    Main-Agent-reviewed additional paths permitted to coexist in
+                     the task's delivery range
+Git gate proves      the delivery range's composition, and that no governed path
+                     was reached
+Git gate does NOT    prove per-file writer provenance inside a shared worktree - a
+                     commit range records that a file is present, not who wrote it
+```
+
+**Preferred rule for future native-shared development.** The worker's implementation
+commit comes first, and the Main Agent adds its integration changes in a **separate
+Main-Agent commit**, so the worker's delivery range contains only worker paths and no
+`integration_paths` declaration is needed. The field is retained for the compatibility
+case it was introduced for — V0.3-12-C's historical commit — which is kept as history
+and is not read as evidence of who wrote each file.
 
 ### 20.2 What `base_sha` means
 

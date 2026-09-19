@@ -15,10 +15,12 @@ architectural gap, not an operator mistake.
   nothing to be wrong — the integration coordinates are read from the repository;
 * the delivery is a real commit range on the integration branch, and
   ``history_touched_paths`` over that range stays the ownership authority;
-* ``integration_paths`` names the Main-Agent-owned paths that legitimately sit
-  inside a worker's delivery commit (for example a cross-boundary test), and it
-  can never reach a protected, public-truth or safety path, nor another task's
-  surface.
+* ``integration_paths`` names the repository-relative files (exact paths, never
+  globs) that the **Main Agent** reviewed and permitted to coexist inside this
+  task's delivery *range* (for example a cross-boundary test), and it can never
+  reach a protected, public-truth or safety path, nor another task's surface. It
+  widens what the range may contain; it is not evidence of who wrote each file,
+  which a shared worktree cannot record (V0.3-12-FIX-2).
 
 Every refusal below is asserted on the **error code**, so a test cannot pass on
 "some error happened to be raised".
@@ -179,6 +181,29 @@ def test_integration_paths_may_not_overlap_the_tasks_own_forbidden_surface() -> 
 def test_integration_paths_must_be_repository_relative() -> None:
     with pytest.raises(PathInvalidError):
         validate_task(native_shared(integration_paths=("../outside.md",)), config())
+
+
+@pytest.mark.parametrize(
+    "glob",
+    [
+        "apps/desktop/src/orchestration/*.test.ts",
+        "apps/desktop/src/orchestration/**",
+        "apps/desktop/src/orchestration/project-open?.integration.test.ts",
+    ],
+)
+def test_integration_paths_must_be_exact_file_paths_not_globs(glob: str) -> None:
+    """A glob would let a delivery range widen past the one file it named.
+
+    The field says "these named Main-Agent paths may coexist in this delivery
+    range"; `apps/desktop/src/**` says something much larger. It is refused even
+    when the glob happens to reach nothing governed, because the point is what
+    the declaration *permits*, not what it touched this time.
+    """
+
+    with pytest.raises(TaskInvalidError) as raised:
+        validate_task(native_shared(integration_paths=(glob,)), config())
+
+    assert raised.value.code == "agent.task_invalid"
 
 
 def test_a_valid_integration_path_is_accepted() -> None:

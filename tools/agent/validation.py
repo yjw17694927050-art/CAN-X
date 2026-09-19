@@ -54,6 +54,7 @@ from tools.agent.graph import TaskGraph
 from tools.agent.lifecycle import TaskStatus, requires_conflict_replan
 from tools.agent.orchestration import OrchestrationPlan, plan
 from tools.agent.paths import (
+    is_glob,
     is_within,
     matching_pattern,
     normalize_repo_path,
@@ -185,12 +186,15 @@ def _validate_execution_coordinates(task: TaskContract, config: AgentConfig) -> 
 
 
 def ownership_surface(task: TaskContract) -> tuple[str, ...]:
-    """Every pattern this task's *delivery* may touch (V0.3-12-FIX-1).
+    """Every path this task's *delivery range* may contain (V0.3-12-FIX-1).
 
-    Delegates to :meth:`TaskContract.ownership_surface`. For an isolated task this
-    is exactly ``allowed_paths``; for a native-shared task it additionally admits
-    the declared ``integration_paths``. ``validate_task`` constrains those to be
-    disjoint from every governed path and from the task's own forbidden set.
+    Delegates to :meth:`TaskContract.ownership_surface`. ``allowed_paths`` is the
+    worker's declared permission surface; for a native-shared task the surface also
+    admits the ``integration_paths`` the Main Agent reviewed and permitted to
+    coexist in the delivery range. ``validate_task`` constrains those to be exact
+    repository-relative files, disjoint from every governed path and from the task's
+    own forbidden set — so the surface stays a statement about which paths the range
+    may contain, never a claim about who wrote each of them (V0.3-12-FIX-2).
     """
     return task.ownership_surface()
 
@@ -272,6 +276,17 @@ def validate_task(task: TaskContract, config: AgentConfig) -> None:
                         "forbidden": blocked,
                     },
                 )
+        # Ordered after the governed-path check on purpose: a `**` is refused as a
+        # *governed-path conflict* (it can reach protected/public-truth/safety
+        # paths), which is the stronger and more specific refusal, while a glob
+        # that reaches nothing governed is still refused for being a glob. Either
+        # way the field names an exact repository-relative file, never a pattern
+        # that would widen the range past the files it named (V0.3-12-FIX-2).
+        if is_glob(pattern):
+            raise TaskInvalidError(
+                f"integration path {pattern!r} must be an exact file path, not a glob",
+                details={"field": "integration_paths", "value": pattern},
+            )
     for ref in task.shared_contracts:
         normalize_repo_path(ref.path, field="shared_contracts[].path")
         if ref.sha is not None:

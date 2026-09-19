@@ -104,9 +104,8 @@ def classify_pair(left: TaskContract, right: TaskContract, config: AgentConfig) 
 
     The comparison uses each task's full **ownership surface** — ``allowed_paths``
     plus, for a native-shared task, its declared ``integration_paths``. Those are
-    Main-Agent-owned paths inside the task's delivery commit, so a delivery that
-    reaches another task's surface must classify as a conflict rather than slip
-    past as C0 (V0.3-12-FIX-1).
+    delivery-range paths, so a delivery that reaches another task's surface must
+    classify as a conflict rather than slip past as C0 (V0.3-12-FIX-1).
     """
     shared = _shared_contract_paths(left, right)
     overlaps: list[str] = []

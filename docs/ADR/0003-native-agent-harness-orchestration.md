@@ -328,12 +328,30 @@ Three consequences, each deliberate:
   `agent.base_stale`, and the repository stage remains mandatory — without a
   repository the verdict is `agent.integration_context_incomplete`, never
   `ready`.
-* **`integration_paths` names Main-Agent-owned paths inside a worker's delivery
-  commit.** In a shared worktree the Main Agent's cross-boundary integration test
-  lands in the same commit as the worker's module. The field exists so that is
-  declared rather than smuggled: it is refused if it can reach a protected,
-  public-truth or safety path, or the task's own `forbidden_paths`, and it
-  participates in conflict classification exactly like `allowed_paths`.
+* **`integration_paths` names the additional paths a reviewer permitted inside a
+  worker's delivery *range*.** In a shared worktree the Main Agent's cross-boundary
+  integration test lands in the same commit as the worker's module. The field exists
+  so that coexistence is declared rather than smuggled: each entry must be an exact
+  repository-relative file (never a glob), it is refused if it can reach a protected,
+  public-truth or safety path or the task's own `forbidden_paths`, and it participates
+  in conflict classification exactly like `allowed_paths`.
+
+  Two declarations are being kept apart here, and the distinction is the point.
+  `allowed_paths` is the **worker's declared permission surface** — what the worker
+  may edit. `integration_paths` is the **Main-Agent-reviewed addition** to the
+  delivery *range* — which further files a reviewer allowed to sit in the same commit
+  range. The Git gate proves the range's composition, and that no governed path was
+  reached; it does **not** prove per-file writer provenance, because a shared worktree
+  records *that* a file is present in a commit range, never *who* wrote it. FIX-2
+  corrected an earlier phrasing that claimed more than the mechanism can show.
+
+  **Preferred rule for future native-shared work.** Commit the worker's implementation
+  first and let the Main Agent add its integration changes in a **separate
+  Main-Agent commit**, so the worker's delivery range contains only worker paths and no
+  declaration is needed at all. `integration_paths` is retained for the compatibility
+  case it was introduced for — V0.3-12-C's historical commit, which carries the Main
+  Agent's integration test alongside the worker's module — and that history is kept as
+  history, not as a claim about who wrote what.
 
 ### What is NOT relaxed
 
