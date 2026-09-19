@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "plan_id": "V0.4-WAVE1",
+  "description": "V0.4 Wave 1 (V0.4-00 + V0.4-01 + V0.4-04 + V0.4-08): parallel development, serial integration. The Main Agent owns V0.4-00 (Desktop Development Preflight & Dev-Port Closure) on the shared worktree. Three Sub-Agents each own one bounded Runtime domain in its own isolated worktree: A = Recorder Control Plane & Session API (runtime/canx/recorder/**, the new runtime/canx/api/recorder.py, and the recorder mount seam in runtime/canx/api/app.py plus an observability seam in runtime/canx/runtime/service.py); B = Historical Signal Query + Downsampling Foundation (runtime/canx/query/** plus the new runtime/canx/plot/** domain package); C = Offline Replay Domain + Deterministic Scheduler (the new runtime/canx/replay/** domain package). Ownership surfaces are disjoint: B has no api/**, A has no query/plot/replay/**, C has no api/recorder/query write surface. All four branch from V0_4_WAVE1_BASE_SHA 127ee2ff3ba0600afc3c7826e879981ef0a64867. Integration order is fixed V0.4-00 -> V0.4-01 -> V0.4-04 -> V0.4-08, each rebased onto the new current main after the previous merge; no PR is merged before independent acceptance.",
+  "tasks": [
+    {
+      "schema_version": 1,
+      "task_id": "V0.4-00",
+      "title": "Desktop Development Preflight & Dev-Port Closure",
+      "objective": "Close the V0.3 P2 accepted non-blocking defect where apps/desktop/src-tauri/tauri.conf.json declares devUrl http://localhost:1420 but apps/desktop/vite.config.ts does not pin the Vite dev server port, so pnpm tauri dev cannot reliably connect to the declared port. The fix is minimal and fail-closed: vite.config.ts must set server.port = 1420 and server.strictPort = true, so if 1420 is occupied Vite refuses to start rather than silently moving to 1421 while Tauri waits on 1420. No product architecture, Runtime API, recorder, Plot, Replay, dependency or proxy change is permitted. A regression guard (a machine-checkable contract test that reads the REAL configs, not a string grep) locks Tauri devUrl port == 1420 == Vite server.port and Vite strictPort == true going forward. A real pnpm tauri dev native smoke proves Vite listens on 1420, the Tauri dev shell and the CAN-X window start, the Runtime sidecar starts from the Desktop, /health and /runtime/status are reachable, the WebView loads the frontend, and closing the Desktop shuts the Runtime down without leaving an orphan canx-runtime or a stray Vite/Tauri process.",
+      "scope": "apps/desktop/vite.config.ts and the Desktop preflight smoke/test surface, plus the V0.4-00 acceptance document.",
+      "non_goals": [
+        "Any product architecture, Runtime API, recorder, Plot or Replay change",
+        "Any dependency, lockfile or package manifest change",
+        "Introducing a new dev server, a proxy workaround or an alternate port",
+        "Touching the Rust/Tauri source unless the real smoke proves it is required (and then only with a recorded reason)"
+      ],
+      "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "main",
+      "allowed_paths": [
+        "apps/desktop/vite.config.ts",
+        "apps/desktop/src/smoke/**",
+        "apps/desktop/src/test/**",
+        "docs/acceptance/v0.4-00-development-preflight.md"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src-tauri/**",
+        "apps/desktop/src/components/**",
+        "apps/desktop/src/runtime/**",
+        "apps/desktop/src/workspace/**",
+        "apps/desktop/package.json",
+        "runtime/**",
+        ".github/**",
+        ".agent/**",
+        "SPEC.md",
+        "PRD.md",
+        "AGENTS.md",
+        "docs/PROJECT_STATE.md",
+        "docs/CONTEXT_INDEX.md",
+        "pyproject.toml",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        { "path": "apps/desktop/src-tauri/tauri.conf.json" },
+        { "path": "apps/desktop/vite.config.ts" }
+      ],
+      "acceptance_criteria": [
+        "apps/desktop/vite.config.ts sets server.port = 1420 and server.strictPort = true",
+        "A machine-checkable test reads the real tauri.conf.json and vite.config.ts and asserts 1420 == 1420 and strictPort === true, so the two can never drift again",
+        "Tauri devUrl port and Vite server.port are proven equal by reading the configs, not by a substring grep",
+        "pnpm tauri dev starts Vite on 1420 and the Tauri window connects (recorded as a real native smoke, or explicitly NOT VERIFIED with the environment reason)",
+        "No file outside the allowed surface is modified"
+      ],
+      "required_tests": [
+        "frontend-focused-test",
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint",
+        "frontend-build"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for the focused preflight test, pnpm test, pnpm typecheck, pnpm lint and pnpm build",
+        "Report the real pnpm tauri dev smoke evidence, or state explicitly that it could not run in this environment and why",
+        "State that no file outside allowed_paths was touched"
+      ],
+      "risk_class": "LOW",
+      "status": "READY",
+      "revision": 1
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.4-01",
+      "title": "Recorder Control Plane & Session API",
+      "objective": "Upgrade the existing, mature recorder persistence/lifecycle (ProjectRecorder, DataSessionWriter, DataSessionService, the RuntimeService capture lifecycle, /capture/start, /capture/stop, /runtime/status) into an observable, queryable, session-based Recorder control plane, WITHOUT rewriting the recorder and WITHOUT creating a second recorder start/stop authority: the Capture Runtime still owns recording ingress lifecycle. Add a typed Recorder control/service model that can report active/inactive, stream identity, data_session_id, recorder lifecycle state, recorded frame count, failure, finalization pending/settled and durable session state; and a persisted session query surface that lists sessions in a validated CAN-X project, reads one session's durable metadata/state, distinguishes ACTIVE / COMPLETED / FAILED, rejects a nonexistent session, rejects an invalid project and returns bounded deterministic results. Only expose data that has durable authority; never scan all Parquet data to guess a value SQLite does not hold. Expose a typed, bounded, headless, UI-independent HTTP surface in a new runtime/canx/api/recorder.py, mounting it (and its typed error surface) into the existing runtime/canx/api/app.py without refactoring app.py. All SQLite/filesystem blocking work runs via asyncio.to_thread. Reuse DataSessionService / DataSessionWriter / ProjectService / SQLite metadata; do not copy SQLite query logic, Parquet integrity logic or session-state logic into the recorder module.",
+      "scope": "runtime/canx/recorder/**, the new runtime/canx/api/recorder.py, the recorder-mount seam in runtime/canx/api/app.py, an observability-only seam in runtime/canx/runtime/service.py if required, and their tests, plus the V0.4-01 acceptance document.",
+      "non_goals": [
+        "Rewriting the recorder or building a second recorder start/stop authority alongside /capture/start",
+        "Changing capture ordering, the broker, cleanup or existing stop semantics",
+        "Copying SQLite query logic, Parquet integrity logic or session-state logic into the recorder module",
+        "Reading or writing runtime/canx/data/**, runtime/canx/query/**, runtime/canx/dbc/**, runtime/canx/safety/** or apps/desktop/**",
+        "Refactoring app.py beyond mounting the recorder router and wiring a typed error surface",
+        "Any V0.4-02 (Recorder Desktop Workspace) or V0.4-03 (long-run reliability) work"
+      ],
+      "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+      "branch": "agent/V0.4-01-recorder-control-plane",
+      "worktree": ".worktrees/v0.4-01-recorder",
+      "execution_mode": "isolated-worktree",
+      "owner": "sub-a",
+      "allowed_paths": [
+        "runtime/canx/recorder/**",
+        "runtime/canx/api/recorder.py",
+        "runtime/canx/api/app.py",
+        "runtime/canx/runtime/service.py",
+        "tests/unit/recorder/**",
+        "tests/unit/api/test_recorder_api.py",
+        "tests/integration/test_recorder_control_plane.py",
+        "docs/acceptance/v0.4-01-recorder-control-plane.md"
+      ],
+      "forbidden_paths": [
+        "runtime/canx/data/**",
+        "runtime/canx/query/**",
+        "runtime/canx/plot/**",
+        "runtime/canx/replay/**",
+        "runtime/canx/dbc/**",
+        "runtime/canx/safety/**",
+        "runtime/canx/domain/**",
+        "runtime/canx/api/dbc.py",
+        "runtime/canx/api/frame.py",
+        "runtime/canx/api/project.py",
+        "runtime/canx/api/trace.py",
+        "runtime/canx/api/errors.py",
+        "apps/**",
+        ".agent/**",
+        ".github/**",
+        "SPEC.md",
+        "AGENTS.md",
+        "PRD.md",
+        "pyproject.toml",
+        "package.json"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        { "path": "runtime/canx/data/session.py" },
+        { "path": "runtime/canx/data/model.py" },
+        { "path": "runtime/canx/project/service.py" },
+        { "path": "runtime/canx/runtime/service.py" }
+      ],
+      "acceptance_criteria": [
+        "A typed Recorder observability model reports active/inactive, stream identity, data_session_id, recorder lifecycle state, recorded frame count, failure, finalization pending/settled and durable session state",
+        "A persisted session query surface lists sessions in a validated project, reads one session's durable metadata/state, distinguishes ACTIVE / COMPLETED / FAILED, rejects a nonexistent session and rejects an invalid project with bounded deterministic results",
+        "The recorder API query path does not change recorder state and does not own CAN capture",
+        "A FAILED session is never described as COMPLETED; a PENDING finalization is never guessed as FAILED or COMPLETED",
+        "Every SQLite/filesystem operation runs off the event loop via asyncio.to_thread",
+        "runtime/canx/api/app.py changes are limited to mounting the recorder router and its typed error surface",
+        "runtime/canx/runtime/service.py changes, if any, only ADD an observability seam and do not alter capture ordering, the broker, cleanup or existing stop semantics",
+        "No storage logic is duplicated: DataSessionService / DataSessionWriter / ProjectService remain the authority"
+      ],
+      "required_tests": [
+        "runtime-pytest",
+        "runtime-ruff",
+        "runtime-mypy",
+        "recorder-control-plane-focused"
+      ],
+      "handoff_requirements": [
+        "RED evidence first: the failing test and its real output before each new behaviour",
+        "Exact commands and results for the targeted recorder/API tests, pytest -q, ruff and mypy",
+        "State explicitly that runtime/canx/data/**, runtime/canx/query/**, runtime/canx/dbc/** and runtime/canx/safety/** are byte-identical to base_sha, and that no file outside allowed_paths was touched",
+        "State whether the packaged runtime smoke was run (recorder endpoint exposed in the packaged sidecar), or that it was not"
+      ],
+      "risk_class": "HIGH",
+      "status": "READY",
+      "revision": 1
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.4-04",
+      "title": "Historical Signal Query + Downsampling Foundation",
+      "objective": "Build the bounded signal-series query and deterministic downsampling foundation a historical Plot will consume, on top of the existing persisted CAN DataSession + Query + DBC decode, WITHOUT creating a second historical data engine and WITHOUT building the Plot UI. Signal identity is never just a signal name: it carries channel_id, asset_id, message identity and signal identity, semantically consistent with the V0.3 realtime Plot SignalSelection, and two same-named signals on different channels are never merged into one series. The source of truth is Project -> registered DataSession -> verified Parquet segments -> QueryService / QueryEngine -> canonical Frame -> verified project-owned DBC -> DbcDecoder -> signal series; no frontend cache as authority, no loading a whole project into pandas, no loading a whole DataSession, no bypassing segment integrity, no globbing project files and assuming trust. Historical reads are paged/chunked/bounded/deterministic, so memory does not grow linearly with the dataset. Add a Runtime-side deterministic downsampling that maps a large dataset to a bounded PlotSample series preserving first point, last point and significant extrema better than a blind stride, with stable deterministic output, a strict maximum result bound and ordered timestamps. Streaming must use bounded page -> decode -> online/bucket aggregation -> discard, so working memory tracks page size + sample budget, not dataset size. Downsampling lives in the Runtime, not only the frontend; the realtime series.ts stride is not simply copied as the large-data answer.",
+      "scope": "runtime/canx/query/** and the new runtime/canx/plot/** domain package, their tests, and the V0.4-04 acceptance document.",
+      "non_goals": [
+        "Any full Plot UI (V0.4-05), zoom/pan/cursor (V0.4-06) or marker/overlay (V0.4-07)",
+        "Any HTTP/public API surface (the domain/service contract is frozen first; a Desktop consumer is deferred)",
+        "Any complex WebGL renderer or React dependency",
+        "Modifying runtime/canx/api/**, runtime/canx/recorder/**, runtime/canx/replay/**, runtime/canx/safety/** or apps/desktop/**",
+        "Writing runtime/canx/dbc/** (read-only dependency): a DBC change is BLOCK-and-replan, not an in-place edit"
+      ],
+      "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+      "branch": "agent/V0.4-04-historical-plot-query",
+      "worktree": ".worktrees/v0.4-04-plot-query",
+      "execution_mode": "isolated-worktree",
+      "owner": "sub-b",
+      "allowed_paths": [
+        "runtime/canx/query/**",
+        "runtime/canx/plot/**",
+        "tests/unit/query/**",
+        "tests/unit/plot/**",
+        "tests/integration/test_plot_query.py",
+        "tests/performance/test_plot_downsampling.py",
+        "docs/acceptance/v0.4-04-historical-plot-query.md"
+      ],
+      "forbidden_paths": [
+        "runtime/canx/api/**",
+        "runtime/canx/recorder/**",
+        "runtime/canx/replay/**",
+        "runtime/canx/dbc/**",
+        "runtime/canx/safety/**",
+        "runtime/canx/domain/**",
+        "apps/**",
+        ".agent/**",
+        ".github/**",
+        "SPEC.md",
+        "AGENTS.md",
+        "PRD.md",
+        "pyproject.toml",
+        "package.json"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        { "path": "runtime/canx/query/service.py" },
+        { "path": "runtime/canx/query/model.py" },
+        { "path": "runtime/canx/data/model.py" },
+        { "path": "runtime/canx/dbc/decode.py" }
+      ],
+      "acceptance_criteria": [
+        "Historical signal identity carries channel_id, asset_id, message identity and signal identity; same-named signals on different channels stay separate series",
+        "Historical reads are paged/chunked/bounded and deterministic; a very large session does not grow memory linearly with dataset size",
+        "Downsampling preserves first point, last point and a significant spike better than a blind stride, is deterministic across repeats and strictly bounds output_count <= requested sample budget",
+        "Output timestamps are ordered; channel/asset/message/signal isolation is preserved",
+        "An invalid or tampered DBC asset fails closed; an invalid project/session and a window with no matching signal are handled explicitly",
+        "CAN FD frames are handled",
+        "No HTTP/public API surface is added and no full Plot UI is built"
+      ],
+      "required_tests": [
+        "runtime-pytest",
+        "runtime-ruff",
+        "runtime-mypy",
+        "plot-query-focused"
+      ],
+      "handoff_requirements": [
+        "RED evidence first for each new behaviour",
+        "Exact commands and results for the targeted query/plot tests, pytest -q, ruff and mypy",
+        "The large-data test proving output_count <= requested sample budget and that the working set is not the whole input dataset; benchmark numbers where they are stable, without brittle wall-clock CI thresholds",
+        "State explicitly that no file outside allowed_paths was touched and that runtime/canx/dbc/** and runtime/canx/api/** are byte-identical to base_sha"
+      ],
+      "risk_class": "HIGH",
+      "status": "READY",
+      "revision": 1
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.4-08",
+      "title": "Offline Replay Domain + Deterministic Scheduler",
+      "objective": "Build CAN-X's first Replay domain, strictly OFFLINE. The source is a persisted DataSession; the output is an offline replay event/sink, never adapter.send(). This task must not add CanAdapter.send, python-can TX, hardware TX, a Safety Kernel authorization implementation, ARM state or a real bus replay; offline replay does not require TX authorization and real CAN replay (with a TX Safety Gate) is a later phase. Replay uses canonical recorded timing based on Frame.normalized_timestamp: relative_offset(frame_n) = normalized_timestamp(frame_n) - normalized_timestamp(first_frame), with speed defaulting to 1.0 (speed multiplier / pause / resume / step / loop / range belong to V0.4-09). A deterministic scheduler is built on an injectable clock abstraction (ReplayClock with monotonic() and sleep_until()/sleep()), with the production path using the real monotonic clock and tests using a fake clock, so deterministic tests never depend on asyncio.sleep(1.0) or wall-clock jitter. The same DataSession + replay configuration + clock behaviour must produce the same frame order, relative schedule, replay event order and terminal state. The canonical Frame is preserved in full (sequence, channel_id, arbitration_id, is_extended, is_fd, BRS, ESI, DLC, data, direction, timestamps, flags); offline replay never rebuilds an information-reduced Frame. Large sessions are read through the existing bounded QueryService pagination (DataSession -> bounded page -> scheduler -> sink -> next page), never loading a whole DataSession into memory. A minimal lifecycle is established: IDLE / RUNNING / COMPLETED / FAILED (an explicit STOPPED/CANCELLED may be added with stated semantics), with PAUSED / LOOPING / TRIGGER_WAIT left to later phases. The failure model covers an invalid project, an unknown session, a FAILED/incomplete session policy, a query failure, corrupted persisted data, a sink failure, a scheduler failure and cancellation, leaving no orphan replay task and never disguising a partial replay as COMPLETED.",
+      "scope": "the new runtime/canx/replay/** domain package, its tests, and the V0.4-08 acceptance document.",
+      "non_goals": [
+        "Any real CAN TX path, redirecting through a device adapter, or Safety Kernel authorization/ARM implementation",
+        "Replay speed/pause/resume/step/loop/range (V0.4-09), channel mapping/trigger/TX preparation (V0.4-10) or a Replay Desktop Workspace (V0.4-11)",
+        "Modifying runtime/canx/query/**, runtime/canx/recorder/**, runtime/canx/api/**, runtime/canx/devices/**, runtime/canx/safety/** or apps/desktop/**",
+        "Loading a whole DataSession into memory"
+      ],
+      "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+      "branch": "agent/V0.4-08-offline-replay-core",
+      "worktree": ".worktrees/v0.4-08-replay",
+      "execution_mode": "isolated-worktree",
+      "owner": "sub-c",
+      "allowed_paths": [
+        "runtime/canx/replay/**",
+        "tests/unit/replay/**",
+        "tests/integration/test_offline_replay.py",
+        "tests/performance/test_replay_bounded_memory.py",
+        "docs/acceptance/v0.4-08-offline-replay-core.md"
+      ],
+      "forbidden_paths": [
+        "runtime/canx/query/**",
+        "runtime/canx/recorder/**",
+        "runtime/canx/api/**",
+        "runtime/canx/devices/**",
+        "runtime/canx/safety/**",
+        "runtime/canx/domain/**",
+        "runtime/canx/data/**",
+        "runtime/canx/dbc/**",
+        "apps/**",
+        ".agent/**",
+        ".github/**",
+        "SPEC.md",
+        "AGENTS.md",
+        "PRD.md",
+        "pyproject.toml",
+        "package.json"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        { "path": "runtime/canx/query/service.py" },
+        { "path": "runtime/canx/query/model.py" },
+        { "path": "runtime/canx/domain/frame.py" },
+        { "path": "runtime/canx/data/model.py" }
+      ],
+      "acceptance_criteria": [
+        "Replay is offline only: no CanAdapter.send, no python-can TX, no hardware TX, no ARM state, no Safety Kernel authorization implementation, no real bus replay",
+        "Relative timing is computed from Frame.normalized_timestamp; speed defaults to 1.0",
+        "An injectable ReplayClock (monotonic / sleep_until / sleep) is used with a real monotonic clock in production and a fake clock in tests; deterministic tests do not depend on wall-clock sleeps",
+        "Identical DataSession + configuration + clock behaviour produces identical frame order, relative schedule, replay event order and terminal state",
+        "The canonical Frame is preserved in full (sequence, channel_id, arbitration_id, is_extended, is_fd, BRS, ESI, DLC, data, direction, timestamps, flags)",
+        "Large sessions are read through bounded QueryService pagination; replay memory stays bounded",
+        "Lifecycle IDLE / RUNNING / COMPLETED / FAILED is established, no orphan replay task survives a failure or cancellation, and a partial replay is never reported as COMPLETED",
+        "A negative test proves the replay code has no adapter.send() call and no real CAN TX execution dependency"
+      ],
+      "required_tests": [
+        "runtime-pytest",
+        "runtime-ruff",
+        "runtime-mypy",
+        "replay-fake-clock-suite"
+      ],
+      "handoff_requirements": [
+        "RED evidence first for each new behaviour",
+        "Exact commands and results for the targeted replay tests, the deterministic fake-clock suite, pytest -q, ruff and mypy",
+        "The negative test proving no adapter.send() call and no real CAN TX execution dependency",
+        "State explicitly that runtime/canx/query/**, runtime/canx/api/**, runtime/canx/safety/** and runtime/canx/devices/** are byte-identical to base_sha, and that no file outside allowed_paths was touched"
+      ],
+      "risk_class": "HIGH",
+      "status": "READY",
+      "revision": 1
+    }
+  ]
+}
