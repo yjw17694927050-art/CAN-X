@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-04",
+  "agent": "sub-b",
+  "branch": "agent/V0.4-04-historical-plot-query",
+  "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+  "head_sha": "cb8931d3c4a5088caf1ce0fa4c61895c9b80dfa1",
+  "commits": [
+    "cb8931d3c4a5088caf1ce0fa4c61895c9b80dfa1 feat(plot): add the historical signal query and deterministic downsampling foundation (V0.4-04)"
+  ],
+  "changed_files": [
+    "docs/acceptance/v0.4-04-historical-plot-query.md",
+    "runtime/canx/plot/__init__.py",
+    "runtime/canx/plot/downsample.py",
+    "runtime/canx/plot/errors.py",
+    "runtime/canx/plot/model.py",
+    "runtime/canx/plot/service.py",
+    "tests/integration/test_plot_query.py",
+    "tests/performance/test_plot_downsampling.py",
+    "tests/unit/plot/test_plot_downsample.py",
+    "tests/unit/plot/test_plot_model.py"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {"name": "plot-query-focused", "command": "pytest tests/unit/plot tests/integration/test_plot_query.py -q -> 70 passed", "result": "passed"},
+    {"name": "plot-downsampling-benchmark", "command": "pytest tests/performance/test_plot_downsampling.py -q -> 3 passed (output_count <= sample budget; working set bounded)", "result": "passed"},
+    {"name": "runtime-pytest", "command": "pytest -q -> 2968 passed, 8 skipped, exit 0", "result": "passed"},
+    {"name": "runtime-ruff", "command": "ruff check . -> All checks passed!", "result": "passed"},
+    {"name": "runtime-mypy", "command": "mypy runtime tools -> Success: no issues found in 108 source files", "result": "passed"}
+  ],
+  "lint": "ruff check . - All checks passed (re-run by the Main Agent in the worktree)",
+  "typecheck": "mypy runtime tools - Success, 108 source files (re-run by the Main Agent in the worktree)",
+  "ci": "not run: no GitHub CI on this worktree branch in this environment",
+  "dependencies": [],
+  "known_issues": [
+    "Provenance: the Sub-Agent implemented the code and its tests and ran the targeted, performance, ruff and mypy gates green, then exhausted its turn budget before the full pytest -q and the commit. The Main Agent re-ran the full suite and completed the delivery. Every number here is a Main Agent re-run in the task worktree.",
+    "tests/performance/test_plot_downsampling.py wall-clock numbers are environment-dependent and are not used as CI thresholds.",
+    "tests/integration/test_packaged_runtime_smoke.py skips in the worktree (no packaged canx-runtime.exe built) - environment, not a failure.",
+    "GitHub CI / Quality Gate not verified; independent acceptance and the protected merge remain outstanding."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}

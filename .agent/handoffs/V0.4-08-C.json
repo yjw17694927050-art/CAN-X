@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-08",
+  "agent": "sub-c",
+  "branch": "agent/V0.4-08-offline-replay-core",
+  "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+  "head_sha": "384990b374d9123e89eed5e228c5b453caafacff",
+  "commits": [
+    "384990b374d9123e89eed5e228c5b453caafacff feat(replay): add the offline replay domain and deterministic scheduler (V0.4-08)"
+  ],
+  "changed_files": [
+    "docs/acceptance/v0.4-08-offline-replay-core.md",
+    "runtime/canx/replay/__init__.py",
+    "runtime/canx/replay/cancellation.py",
+    "runtime/canx/replay/clock.py",
+    "runtime/canx/replay/errors.py",
+    "runtime/canx/replay/model.py",
+    "runtime/canx/replay/session.py",
+    "runtime/canx/replay/sink.py",
+    "runtime/canx/replay/source.py",
+    "tests/integration/test_offline_replay.py",
+    "tests/performance/test_replay_bounded_memory.py",
+    "tests/unit/replay/test_replay_clock.py",
+    "tests/unit/replay/test_replay_model.py",
+    "tests/unit/replay/test_replay_offline_only.py",
+    "tests/unit/replay/test_replay_scheduler.py",
+    "tests/unit/replay/test_replay_source.py"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {"name": "replay-fake-clock-suite", "command": "pytest tests/unit/replay tests/integration/test_offline_replay.py -q -> 124 passed", "result": "passed"},
+    {"name": "replay-bounded-memory", "command": "pytest tests/performance/test_replay_bounded_memory.py -q -> passed (peak page frames <= page size)", "result": "passed"},
+    {"name": "replay-offline-only (negative no-TX)", "command": "pytest tests/unit/replay/test_replay_offline_only.py -q -> passed (no CanAdapter/send/python-can TX in the replay path)", "result": "passed"},
+    {"name": "runtime-pytest", "command": "pytest -q -> 3026 passed, 8 skipped, exit 0", "result": "passed"},
+    {"name": "runtime-ruff", "command": "ruff check . -> All checks passed!", "result": "passed"},
+    {"name": "runtime-mypy", "command": "mypy runtime tools -> Success: no issues found in 111 source files", "result": "passed"}
+  ],
+  "lint": "ruff check . - All checks passed (re-run by the Main Agent in the worktree)",
+  "typecheck": "mypy runtime tools - Success, 111 source files (re-run by the Main Agent in the worktree)",
+  "ci": "not run: no GitHub CI on this worktree branch in this environment",
+  "dependencies": [],
+  "known_issues": [
+    "Provenance: the Sub-Agent implemented the replay domain and its tests and ran the targeted, ruff and mypy gates green, then exhausted its turn budget before the full pytest -q, the acceptance document and the commit. The Main Agent re-ran the full suite and completed the delivery. Every number here is a Main Agent re-run in the task worktree.",
+    "Offline only: no CanAdapter.send, no python-can TX, no hardware TX, no ARM state, no Safety Kernel authorization. tests/unit/replay/test_replay_offline_only.py asserts this structurally.",
+    "tests/performance/* wall-clock numbers are environment-dependent and are not CI thresholds.",
+    "GitHub CI / Quality Gate not verified; independent acceptance and the protected merge remain outstanding."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}

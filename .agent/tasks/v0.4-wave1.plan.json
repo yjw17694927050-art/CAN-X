@@ -48,8 +48,12 @@
       ],
       "dependencies": [],
       "shared_contracts": [
-        { "path": "apps/desktop/src-tauri/tauri.conf.json" },
-        { "path": "apps/desktop/vite.config.ts" }
+        {
+          "path": "apps/desktop/src-tauri/tauri.conf.json"
+        },
+        {
+          "path": "apps/desktop/vite.config.ts"
+        }
       ],
       "acceptance_criteria": [
         "apps/desktop/vite.config.ts sets server.port = 1420 and server.strictPort = true",
@@ -127,10 +131,18 @@
       ],
       "dependencies": [],
       "shared_contracts": [
-        { "path": "runtime/canx/data/session.py" },
-        { "path": "runtime/canx/data/model.py" },
-        { "path": "runtime/canx/project/service.py" },
-        { "path": "runtime/canx/runtime/service.py" }
+        {
+          "path": "runtime/canx/data/session.py"
+        },
+        {
+          "path": "runtime/canx/data/model.py"
+        },
+        {
+          "path": "runtime/canx/project/service.py"
+        },
+        {
+          "path": "runtime/canx/runtime/service.py"
+        }
       ],
       "acceptance_criteria": [
         "A typed Recorder observability model reports active/inactive, stream identity, data_session_id, recorder lifecycle state, recorded frame count, failure, finalization pending/settled and durable session state",
@@ -155,7 +167,7 @@
         "State whether the packaged runtime smoke was run (recorder endpoint exposed in the packaged sidecar), or that it was not"
       ],
       "risk_class": "HIGH",
-      "status": "READY",
+      "status": "HANDOFF_READY",
       "revision": 1
     },
     {
@@ -203,10 +215,18 @@
       ],
       "dependencies": [],
       "shared_contracts": [
-        { "path": "runtime/canx/query/service.py" },
-        { "path": "runtime/canx/query/model.py" },
-        { "path": "runtime/canx/data/model.py" },
-        { "path": "runtime/canx/dbc/decode.py" }
+        {
+          "path": "runtime/canx/query/service.py"
+        },
+        {
+          "path": "runtime/canx/query/model.py"
+        },
+        {
+          "path": "runtime/canx/data/model.py"
+        },
+        {
+          "path": "runtime/canx/dbc/decode.py"
+        }
       ],
       "acceptance_criteria": [
         "Historical signal identity carries channel_id, asset_id, message identity and signal identity; same-named signals on different channels stay separate series",
@@ -230,7 +250,7 @@
         "State explicitly that no file outside allowed_paths was touched and that runtime/canx/dbc/** and runtime/canx/api/** are byte-identical to base_sha"
       ],
       "risk_class": "HIGH",
-      "status": "READY",
+      "status": "HANDOFF_READY",
       "revision": 1
     },
     {
@@ -277,10 +297,18 @@
       ],
       "dependencies": [],
       "shared_contracts": [
-        { "path": "runtime/canx/query/service.py" },
-        { "path": "runtime/canx/query/model.py" },
-        { "path": "runtime/canx/domain/frame.py" },
-        { "path": "runtime/canx/data/model.py" }
+        {
+          "path": "runtime/canx/query/service.py"
+        },
+        {
+          "path": "runtime/canx/query/model.py"
+        },
+        {
+          "path": "runtime/canx/domain/frame.py"
+        },
+        {
+          "path": "runtime/canx/data/model.py"
+        }
       ],
       "acceptance_criteria": [
         "Replay is offline only: no CanAdapter.send, no python-can TX, no hardware TX, no ARM state, no Safety Kernel authorization implementation, no real bus replay",
@@ -305,7 +333,7 @@
         "State explicitly that runtime/canx/query/**, runtime/canx/api/**, runtime/canx/safety/** and runtime/canx/devices/** are byte-identical to base_sha, and that no file outside allowed_paths was touched"
       ],
       "risk_class": "HIGH",
-      "status": "READY",
+      "status": "HANDOFF_READY",
       "revision": 1
     }
   ]

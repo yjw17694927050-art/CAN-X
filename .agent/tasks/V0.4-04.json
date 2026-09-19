@@ -78,6 +78,6 @@
     "State explicitly that no file outside allowed_paths was touched and that runtime/canx/dbc/** and runtime/canx/api/** are byte-identical to base_sha"
   ],
   "risk_class": "HIGH",
-  "status": "READY",
+  "status": "HANDOFF_READY",
   "revision": 1
 }

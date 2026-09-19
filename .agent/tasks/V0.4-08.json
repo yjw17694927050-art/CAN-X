@@ -78,6 +78,6 @@
     "State explicitly that runtime/canx/query/**, runtime/canx/api/**, runtime/canx/safety/** and runtime/canx/devices/** are byte-identical to base_sha, and that no file outside allowed_paths was touched"
   ],
   "risk_class": "HIGH",
-  "status": "READY",
+  "status": "HANDOFF_READY",
   "revision": 1
 }

@@ -87,6 +87,6 @@
     "State whether the packaged runtime smoke was run (recorder endpoint exposed in the packaged sidecar), or that it was not"
   ],
   "risk_class": "HIGH",
-  "status": "READY",
+  "status": "HANDOFF_READY",
   "revision": 1
 }
