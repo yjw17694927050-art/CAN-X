@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
-  DecodeBatchResult,
-  DecodeFrameBatchInput,
+  DecodeFrameSetInput,
+  DecodedFrameSetResult,
   DecodedSignalValue,
 } from "../runtime/dbc-decode-client";
 import type { RuntimeFrame } from "../runtime/frame-schema";
@@ -68,21 +68,34 @@ function snapshot(frames: readonly RuntimeFrame[], streamId = "s1"): FrameViewpo
   return { decodeMs: 0, droppedViewFrames: 0, frames, sequenceGaps: 0, streamId };
 }
 
+/**
+ * The frames at the given indices, as a list.
+ *
+ * `noUncheckedIndexedAccess` makes `frames[i]` possibly-undefined, and these tests want the
+ * *same objects* the viewport published — a fresh `frame(n, …)` would not be the frame the
+ * coordinator submitted. This picks them out without an unchecked-index cast.
+ */
+function pick(frames: readonly RuntimeFrame[], ...indices: number[]): RuntimeFrame[] {
+  return indices.map((index) => {
+    const picked = frames[index];
+    if (picked === undefined) throw new Error(`no frame at index ${index}`);
+    return picked;
+  });
+}
+
 const SIGNALS: readonly DecodedSignalValue[] = [
   { choiceLabel: null, name: "EngineSpeed", physicalValue: 1500, rawValue: 3000, unit: "rpm" },
 ];
 
-/** One batch result for the given frames, all decoded (or all failed when `signals` is null). */
+/** One work-set answer for the given frames, all decoded (or all failed when `signals` is null). */
 function decodedResult(
   streamId: string,
   frames: readonly RuntimeFrame[],
   messageName = "EngineData",
   signals: readonly DecodedSignalValue[] | null = SIGNALS,
-): DecodeBatchResult {
+): DecodedFrameSetResult {
   return {
-    firstSequence: frames[0]?.sequence ?? 0n,
     frameCount: frames.length,
-    lastSequence: frames[frames.length - 1]?.sequence ?? 0n,
     records: frames.map((f) => ({
       frame: f,
       outcome:
@@ -90,20 +103,21 @@ function decodedResult(
           ? { decoded: null, failure: { code: "dbc.message_not_found" } }
           : { decoded: { messageName, signals }, failure: null },
     })),
+    sequences: frames.map((f) => f.sequence),
     streamId,
   };
 }
 
 interface Deferred {
-  readonly promise: Promise<DecodeBatchResult>;
+  readonly promise: Promise<DecodedFrameSetResult>;
   reject(cause: unknown): void;
-  resolve(result: DecodeBatchResult): void;
+  resolve(result: DecodedFrameSetResult): void;
 }
 
 function deferred(): Deferred {
-  let resolve!: (result: DecodeBatchResult) => void;
+  let resolve!: (result: DecodedFrameSetResult) => void;
   let reject!: (cause: unknown) => void;
-  const promise = new Promise<DecodeBatchResult>((res, rej) => {
+  const promise = new Promise<DecodedFrameSetResult>((res, rej) => {
     resolve = res;
     reject = rej;
   });
@@ -114,9 +128,9 @@ interface Harness {
   readonly coordinator: WorkspaceDecodeCoordinator;
   readonly decoded: DecodedRealtimeStore;
   readonly realtime: FakeRealtime;
-  readonly requests: DecodeFrameBatchInput[];
+  readonly requests: DecodeFrameSetInput[];
   /** Answer the oldest unanswered request. */
-  answer(index: number, result: DecodeBatchResult): void;
+  answer(index: number, result: DecodedFrameSetResult): void;
   /** Reject the request at `index`. */
   fail(index: number, cause: unknown): void;
   readonly session: ReturnType<typeof createWorkspaceSession>;
@@ -134,7 +148,7 @@ function harness(): Harness {
   const realtime = new FakeRealtime();
   const session = createWorkspaceSession();
   const decoded = createDecodedRealtimeStore(64);
-  const requests: DecodeFrameBatchInput[] = [];
+  const requests: DecodeFrameSetInput[] = [];
   const pending: Deferred[] = [];
   const coordinator = new WorkspaceDecodeCoordinator({
     decode: (input) => {
@@ -212,7 +226,7 @@ describe("WorkspaceDecodeCoordinator", () => {
     h.stop();
   });
 
-  it("partitions interleaved assets into one request per contiguous run, one at a time", async () => {
+  it("issues one request per asset, not one per contiguous run, one at a time", async () => {
     const h = harness();
     openProject(h.session, "/p");
     h.session.bindChannel("can0", "assetA");
@@ -231,32 +245,22 @@ describe("WorkspaceDecodeCoordinator", () => {
     // Exactly one request is in flight; the coordinator never fans out.
     expect(h.requests).toHaveLength(1);
     expect(h.requests[0]?.assetId).toBe("assetA");
-    expect(h.requests[0]?.frames.map((f) => f.sequence)).toEqual([1n]);
+    // assetA's whole viewport in one request, the gap at sequence 2 included.
+    expect(h.requests[0]?.frames.map((f) => f.sequence)).toEqual([1n, 3n, 4n]);
 
-    h.answer(0, decodedResult("s1", [frame(1, "can0")]));
+    h.answer(0, decodedResult("s1", pick(frames, 0, 2, 3)));
     await settle();
 
     expect(h.requests).toHaveLength(2);
     expect(h.requests[1]?.assetId).toBe("assetB");
-    expect(h.requests[1]?.frames.map((f) => f.sequence)).toEqual([2n]);
+    expect(h.requests[1]?.frames.map((f) => f.sequence)).toEqual([2n, 5n]);
 
-    h.answer(1, decodedResult("s1", [frame(2, "can1")]));
+    h.answer(1, decodedResult("s1", pick(frames, 1, 4)));
     await settle();
 
-    expect(h.requests).toHaveLength(3);
-    expect(h.requests[2]?.assetId).toBe("assetA");
-    // The pair 3,4 is contiguous within assetA, so it travels as one batch.
-    expect(h.requests[2]?.frames.map((f) => f.sequence)).toEqual([3n, 4n]);
-
-    h.answer(2, decodedResult("s1", [frame(3, "can0"), frame(4, "can0")]));
-    await settle();
-
-    expect(h.requests).toHaveLength(4);
-    expect(h.requests[3]?.assetId).toBe("assetB");
-    expect(h.requests[3]?.frames.map((f) => f.sequence)).toEqual([5n]);
-
-    h.answer(3, decodedResult("s1", [frame(5, "can1")]));
-    await settle();
+    // Two requests for five frames, and none left over.
+    expect(h.requests).toHaveLength(2);
+    expect(h.decoded.getSnapshot().entries.size).toBe(5);
     h.stop();
   });
 

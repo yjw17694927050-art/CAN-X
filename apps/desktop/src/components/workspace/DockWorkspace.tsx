@@ -12,7 +12,7 @@ import { useTranslation } from "react-i18next";
 import { LiveTracePanel } from "../trace/LiveTracePanel";
 import { startVirtualCapture, stopCapture } from "../../runtime/capture-client";
 import { createCaptureLifecycle, type CapturePhase } from "../../runtime/capture-lifecycle";
-import { decodeDbcFrameBatch } from "../../runtime/dbc-decode-client";
+import { decodeDbcFrameSet } from "../../runtime/dbc-decode-client";
 import { realtimeStream, useRealtimeStream } from "../../runtime/realtime-stream";
 import { LivePlotPanel } from "../plot/LivePlotPanel";
 import { DbcWorkspace } from "../dbc/DbcWorkspace";
@@ -134,7 +134,7 @@ export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspa
    */
   useEffect(() => {
     const coordinator = new WorkspaceDecodeCoordinator({
-      decode: decodeDbcFrameBatch,
+      decode: decodeDbcFrameSet,
       decoded: decodedStore,
       realtime: realtimeStream,
       session: store,
