@@ -166,12 +166,13 @@ Current Phase:  V0.3 — Professional Trace & DBC Foundation
 Latest CLOSED numbered step:    V0.3-13 — Project & DBC Workspace Product Integration PASS · CLOSED
 Previous CLOSED numbered step:  V0.3-12 — Desktop Project Open Foundation             PASS · CLOSED
 Current numbered step:          V0.3-14 — Live DBC Decode, Trace & Plot Integration
-                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE —
-                                the last product phase of V0.3; V0.3-FINAL follows it and is
-                                NOT STARTED
+                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT RE-ACCEPTANCE —
+                                independent acceptance round 1 returned NOT PASS (P0 0 · P1 3 ·
+                                P2 0) and V0.3-14-FIX-1 closed all three; the last product phase
+                                of V0.3, with V0.3-FINAL following it and NOT STARTED
                                 branch feature/v0.3-14-live-dbc-decode-trace-plot-integration ·
-                                base main 5ed3945 · head a2771c0 · pull request OPEN, unmerged ·
-                                evidence docs/acceptance/v0.3-14-…md
+                                base main 5ed3945 · product head 823e927 (V0.3-14-FIX-1) ·
+                                PR #24 OPEN, unmerged · evidence docs/acceptance/v0.3-14-…md
                                 V0.3-13 integration: reviewed head 7d1b0a3 · accepted FIX head
                                 5113491 · PR #22 · protected merge fb4d588 · post-merge main CI
                                 35428731923 SUCCESS · evidence docs/acceptance/v0.3-13-…md
@@ -259,8 +260,9 @@ V0.3-12 Desktop Project Open Foundation ...... PASS · CLOSED (project owner) �
 V0.3-13 Project & DBC Workspace Product
         Integration .......................... PASS · CLOSED (round 2; round 1 NOT PASS) — see §5
 V0.3-14 Live DBC Decode, Trace & Plot
-        Integration .......................... IMPLEMENTED · SELF-VERIFIED ·
-                                               AWAITING INDEPENDENT ACCEPTANCE (head a2771c0)
+        Integration .......................... IMPLEMENTED · SELF-VERIFIED · AWAITING
+                                               INDEPENDENT RE-ACCEPTANCE (round 1 NOT PASS,
+                                               P0 0 · P1 3 · P2 0; V0.3-14-FIX-1 head 823e927)
 V0.3-FINAL Full Regression / Integration /
         Independent Acceptance / Version
         Closure .............................. NOT STARTED
@@ -480,9 +482,10 @@ Not implemented, in scope for later increments (actual repo state, not aspiratio
 
 ```text
 DBC editor · active DBC · persistent channel binding (V0.3-13's bindings are session-scoped and
-cleared by a project switch) · project create UI · Trace decoded signal columns / live decode UI ·
-decode-batch frontend integration · Plot signal binding · asset rename / delete / replace ·
-drag & drop / multi-file import · Rust DBC domain · arbitrary renderer filesystem access ·
+cleared by a project switch) · project create UI · asset rename / delete / replace ·
+drag & drop / multi-file import · multi-signal / multi-axis Plot · cursor / trigger / alarm ·
+an offline replay decoder · decoded Parquet / decoded DuckDB persistence · Rust DBC domain ·
+arbitrary renderer filesystem access ·
 Agent dbc.* tools · durable / tamper-evident Safety audit sink · an execution path that crosses the kernel (TX,
 replay, injection, diagnostics) · a general safety "authority epoch" beyond the emergency-stop
 case · enabling strict_required_status_checks_policy on the main ruleset (ADR-0002 alt. A) ·
@@ -654,11 +657,12 @@ the protected integration recorded above; `docs/acceptance/v0.3-12-…md` §12.1
 provenance explicitly, because the repository holds no independent-review artifact for it.
 CLOSED: V0.3-13 — round 2, P0 0 · P1 0 · P2 0, on the protected merge recorded above.
 Next product increment: V0.3-14 — Live DBC Decode, Trace & Plot Integration —
-**IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE** on branch
-feature/v0.3-14-live-dbc-decode-trace-plot-integration (base main 5ed3945 · head a2771c0), pull
-request OPEN and unmerged; evidence `docs/acceptance/v0.3-14-…md`. It is the last product
-development phase of V0.3; V0.3-FINAL (Full Regression / Integration / Independent Acceptance /
-Version Closure) follows it.
+**IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT RE-ACCEPTANCE** on branch
+feature/v0.3-14-live-dbc-decode-trace-plot-integration (base main 5ed3945 · product head 823e927
+after V0.3-14-FIX-1), pull request #24 OPEN and unmerged; independent acceptance round 1 returned
+NOT PASS (P0 0 · P1 3 · P2 0) and all three findings were closed by V0.3-14-FIX-1; evidence
+`docs/acceptance/v0.3-14-…md`. It is the last product development phase of V0.3; V0.3-FINAL (Full
+Regression / Integration / Independent Acceptance / Version Closure) follows it.
 NOT STARTED: V0.3-FINAL · CD-01.
 The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
 cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.
