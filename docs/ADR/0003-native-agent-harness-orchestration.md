@@ -234,8 +234,9 @@ engineering move is to define the seam with it, not to re-implement it behind th
 - **A real pilot is still unproven.** This ADR changes the *architecture of the pilot*,
   not its status: `REAL PILOT NOT STARTED`. No worker has run against a CAN-X
   TaskContract yet, and nothing here may be cited as a pilot result.
-- **Nothing is merged by this ADR.** It lands on `maintenance/agent-02-preparation`
-  (PR #18), which stays open for independent re-acceptance.
+- **Integrated through protected PR #18.** Head `cd44abc` → `main` `d652b4c` (entry: protected merge,
+  no bypass), post-merge main CI `35415938987` SUCCESS (classification `full`). The ADR's own status is
+  `Accepted`; the real pilot it enables remains **NOT STARTED**.
 
 ## Migration / compatibility implications
 

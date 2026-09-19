@@ -159,6 +159,13 @@ Closed engineering infrastructure (not numbered product phases) — independentl
   RELIABILITY-01      Capture / DataSession Finalization Timing ............. §19
   DOC-GOV-01          Documentation & Agent Context Governance .............. §12
                       PASS · CLOSED (independent re-acceptance, head 38914b6 → main e183c53)
+  AGENT-CONTEXT-PROTECTION  Context Governance Protected Truth Surface ...... §12
+                      PASS · CLOSED (external acceptance, head cd44abc → main d652b4c)
+  AGENT-02-PREP-01    Readiness Audit + Real Pilot Design ................... §12
+                      PASS · CLOSED (external acceptance, head cd44abc → main d652b4c)
+  AGENT-02-NATIVE-HARNESS-PIVOT  Native Tianshu Harness Orchestration ....... §12
+                      PASS · CLOSED (external acceptance, head cd44abc → main d652b4c)
+                      Real AGENT-02 pilot: NOT STARTED · V0.3-12: NOT STARTED
 ```
 
 Closed-phase ledger — accepted heads, merges and post-merge CI, kept for traceability (full
@@ -429,28 +436,32 @@ Earlier CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
   → `main` e183c53 (protected merge, no bypass) · post-merge CI 35361083707 SUCCESS on attempt 1.
   Docs-only: no product code, runtime, safety, schema, API, dependency or CI-semantics change.
 
-Prerequisite task — AGENT-CONTEXT-PROTECTION (Context Governance Protected Truth Surface)
-  Status: IMPLEMENTED · INDEPENDENT ENGINEERING ACCEPTANCE: PASS · NOT YET MERGED
-          (branch maintenance/agent-02-preparation, PR #18; integration on HOLD)
+Earlier CLOSED — AGENT-CONTEXT-PROTECTION, Context Governance Protected Truth Surface
+  Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · PR #18 · head cd44abc
+  → `main` d652b4c (protected merge, no bypass) · post-merge main CI 35415938987 SUCCESS on attempt 1
+  (classification full).
   docs/CONTEXT_INDEX.md and docs/engineering/AGENT_CONTEXT_GOVERNANCE.md now enter
   .agent/config.json protected_paths **and** public_truth_paths — two independent invariants over one
   surface, exact paths only (no `docs/**` widening). Regression coverage:
   tests/unit/agent_tools/test_context_protection.py (A1–A9) and
   tests/integration/test_agent_context_protection.py (git-backed transient-touch: a modify-then-restore
-  leaves the net diff clean and is still refused). Not self-accepted — the verdict is external.
+  leaves the net diff clean and is still refused). The verdict is external, never self-asserted.
 
-Preparation task — AGENT-02-PREP-01 (Readiness Audit + Real Pilot Design)
-  Status: PREPARATION COMPLETE · ENGINEERING ACCEPTANCE: PASS (head `17305d6`) · INTEGRATION: HOLD ·
-          REAL PILOT NOT STARTED
+Earlier CLOSED — AGENT-02-PREP-01, Readiness Audit + Real Pilot Design
+  Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · PR #18 · head cd44abc
+  → `main` d652b4c (protected merge, no bypass) · post-merge main CI 35415938987 SUCCESS on attempt 1.
   Readiness audited R01–R50 against real executable behaviour: 48 READY · 2 PARTIAL matrix rows (R29 the
   handoff write half is untested and unwired; R49 the stale local `main` ref can refuse a legitimate
   cleanup) · 4 P2-like observations (O-1…O-4) · 0 BLOCKED · 0 NOT IMPLEMENTED · no P0/P1-like blocker.
   Pilot designed as 1 Main Agent + 2 workers, C0 verified with the shipped classifier, ownership-disjoint,
   both contracts `PLANNED` in .agent/tasks/. See docs/engineering/AGENT_02_READINESS.md.
+  REAL PILOT NOT STARTED.
 
-Pivot task — AGENT-02-NATIVE-HARNESS-PIVOT (Adopt Tianshu Native Multi-Agent Orchestration)
-  Status: ARCHITECTURE PIVOT COMPLETE · NATIVE TIANSHU HARNESS SELECTED FOR ORCHESTRATION ·
-          REAL PILOT NOT STARTED · AWAITING INDEPENDENT RE-ACCEPTANCE
+Earlier CLOSED — AGENT-02-NATIVE-HARNESS-PIVOT, Adopt Tianshu Native Multi-Agent Orchestration
+  Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · PR #18 · head cd44abc
+  → `main` d652b4c (protected merge, no bypass) · post-merge main CI 35415938987 SUCCESS on attempt 1
+  (classification full).
+  NATIVE TIANSHU HARNESS SELECTED FOR ORCHESTRATION · REAL PILOT NOT STARTED.
   The execution environment is itself a multi-agent orchestrator (Tianshu 3.22.0, product
   `tianshu-desktop`, mode `code`): native `/team` · `/scout` · `/council`, worker sessions, parallel
   scheduling, context isolation and model routing — verified by reading the installed runtime, not the
@@ -461,19 +472,27 @@ Pivot task — AGENT-02-NATIVE-HARNESS-PIVOT (Adopt Tianshu Native Multi-Agent O
   boundary. AGENT-01 is not deleted: its components are classified KEEP / ADAPT / HARNESS-OWNED /
   DEPRECATE-LATER, and no large deletion is performed in this task. The pilot is re-specified to run
   through native `/team` (1 Main Agent + 2 native workers) while still using the C0, disjoint
-  .agent/tasks/AGENT-02-{A,B}.json contracts as the worker governance brief. Long-duration context
-  endurance: NOT VERIFIED. Not merged; PR #18 remains open.
+  .agent/tasks/AGENT-02-{A,B}.json contracts as the worker governance brief.
+  Long-duration context endurance: NOT VERIFIED. Integrated via protected PR #18 (no bypass).
   Decision: docs/ADR/0003-native-agent-harness-orchestration.md ·
   Plan: docs/engineering/AGENT_02_PILOT_PLAN.md · Audit: docs/engineering/AGENT_02_READINESS.md §3.
 
+Architecture in force — native orchestration boundary:
+  Tianshu Harness = agent runtime · orchestration · worker spawning · scheduling · context isolation ·
+                    model routing · native /team · /scout · /council
+  CAN-X          = repository governance · Task ownership · protected/public-truth/safety classes ·
+                    Git evidence · stale-base protection · Quality Gate · protected integration ·
+                    independent acceptance boundary
+
 Immediate next engineering task — AGENT-02, real native-harness pilot (1 Main Agent + 2 workers via /team)
-  Status: NOT STARTED · prerequisite AGENT-CONTEXT-PROTECTION implemented (above) · pilot DESIGNED only
+  Status: NOT STARTED · foundation integrated and CLOSED (above) · pilot DESIGNED only · `/team` NOT used
   Read first when it starts: docs/ADR/0003-native-agent-harness-orchestration.md,
   docs/engineering/MULTI_AGENT_PROTOCOL.md, docs/ADR/0002-parallel-development-serial-integration.md,
   docs/engineering/INTEGRATION_POLICY.md, docs/engineering/AGENT_02_READINESS.md,
   docs/engineering/AGENT_02_PILOT_PLAN.md.
 
 NOT STARTED: AGENT-02 (real pilot) · V0.3-12 · CD-01.
+V0.3-12 is READY TO START but NOT STARTED — its development brief must arrive as its own explicit task.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
 ```
 
@@ -605,16 +624,20 @@ Level 1  Local Automated Verification          DONE
 Level 2  Repository Continuous Integration     DONE
 Level 3  Protected Integration Workflow        DONE
 Safety Foundation (SAFETY-01)                  DONE · CLOSED (§17)
-Level 4  Multi-Agent Orchestration             FOUNDATION CLOSED — AGENT-01 externally accepted
-                                               (P0: 0, P1: 0, P2: 0), merged as 951e202,
-                                               post-merge CI green; the real AGENT-02 pilot is
-                                               NOT STARTED, so the level is not fully validated
+Level 4  Multi-Agent Orchestration             GOVERNANCE FOUNDATION CLOSED — AGENT-01 externally
+                                               accepted (merged as 951e202); the AGENT-02 governance
+                                               foundation (context protection · readiness · native
+                                               harness pivot) is externally accepted and CLOSED
+                                               (head cd44abc → main d652b4c); the real AGENT-02
+                                               pilot is NOT STARTED, so the level is not fully
+                                               validated
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
 Every row is an external verdict, not a conclusion this document reached on its own. The Level 4 row
-records that the AGENT-01 *foundation* is accepted, merged and closed; it does **not** claim the full
-level is validated — the AGENT-02 real 1 Main + 4 Sub-Agent pilot has not started.
+records that the AGENT-01 *foundation* and the AGENT-02 *governance foundation* are accepted, merged and
+closed; it does **not** claim the full level is validated — the real AGENT-02 pilot (native `/team`
+workers under CAN-X governance) has not started.
 
 ---
 

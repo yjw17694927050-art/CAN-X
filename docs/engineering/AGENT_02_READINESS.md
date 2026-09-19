@@ -2,10 +2,9 @@
 
 > **Document**: `docs/engineering/AGENT_02_READINESS.md`
 > **Scope**: Can a first real AGENT-02 pilot start on the AGENT-01 foundation as it stands?
-> **Status**: PREPARATION COMPLETE · ARCHITECTURE PIVOTED to native harness orchestration ·
-> awaiting independent re-acceptance.
-> **Not claimed**: `Final Acceptance: PASS`, `Status: CLOSED`, "multi-agent verified",
-> long-duration context endurance (**NOT VERIFIED**).
+> **Status**: **CLOSED** — Final Acceptance: PASS (external / independent reviewer) · PR #18 · head
+> `cd44abc` → `main` `d652b4c` (protected merge, no bypass) · post-merge main CI `35415938987` SUCCESS.
+> **Not claimed**: "multi-agent verified"; long-duration context endurance (**NOT VERIFIED**).
 > **Audited head**: `maintenance/agent-02-preparation` @ `63a1b26` (from `origin/main` `bf88873`);
 > the native-harness boundary was established at the AGENT-02-NATIVE-HARNESS-PIVOT task head.
 > **Related**: `docs/ADR/0003-native-agent-harness-orchestration.md` (the boundary),
