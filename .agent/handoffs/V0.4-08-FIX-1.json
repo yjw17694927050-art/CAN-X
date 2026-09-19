@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-08-FIX-1",
+  "agent": "sub-c",
+  "execution_mode": "native-shared",
+  "branch": "fix/v0.4-wave1-fix1-staging",
+  "base_sha": "481be34c7c671bdac32c2bc8535b8f4eb67c2cb3",
+  "head_sha": "29b376b8af05d64336160559637806cd77ce2051",
+  "commits": [
+    "29b376b8af05d64336160559637806cd77ce2051 fix(replay): route ReplaySession.open through the project authority (V0.4-08-FIX-1)"
+  ],
+  "changed_files": [
+    "docs/acceptance/v0.4-08-offline-replay-core.md",
+    "runtime/canx/replay/errors.py",
+    "runtime/canx/replay/session.py",
+    "tests/integration/test_offline_replay.py"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "replay-project-authority-red",
+      "command": "pytest tests/integration/test_offline_replay.py -k \"manifest or identity or unsupported\" -q -> pre-fix 4 failed (DID NOT RAISE ReplayProjectError); post-fix green",
+      "result": "passed"
+    },
+    {
+      "name": "replay-targeted",
+      "command": "pytest tests/unit/replay tests/integration/test_offline_replay.py -q -> 129 passed (Main Agent independent re-run on the joint staging tree)",
+      "result": "passed"
+    },
+    {
+      "name": "replay-performance",
+      "command": "pytest tests/performance/test_replay_bounded_memory.py -q -> 7 passed",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-pytest",
+      "command": "pytest -q (joint staging tree) -> 3147 passed, 1 skipped, exit 0",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-ruff",
+      "command": "ruff check . -> All checks passed",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-mypy",
+      "command": "mypy runtime tools -> Success, 118 source files",
+      "result": "passed"
+    }
+  ],
+  "lint": "ruff check . - All checks passed (Main Agent re-run on the joint staging tree)",
+  "typecheck": "mypy runtime tools - Success, 118 source files (Main Agent re-run on the joint staging tree)",
+  "ci": "PR #33 run 35453311291 - Runtime/Python pass (7m48s), Quality Gate pass. The joint staging ref fix/v0.4-wave1-fix1-staging itself has NO GitHub Actions run.",
+  "dependencies": [],
+  "known_issues": [
+    "Provenance: the Sub-Agent wrote the fix and ran the targeted suite, ruff and mypy green. The Main Agent independently re-ran the replay suites on the joint staging tree, reviewed the diff and confirmed the delivery range 481be34c..29b376b touches only Replay ownership. All numbers here are the Main Agent's own runs.",
+    "R4 covers only an unsupported manifest schema_version; the database user_version-too-new path relies on the same _translate_project_error branch and was not given a dedicated test.",
+    "_close_project translates project.close_failed into ReplayProjectError and replaces the parse exception (fail-closed); that branch was not exercised under lock contention / load.",
+    "Offline only: no CanAdapter.send, no python-can TX, no Safety authorization, no ARM. tests/unit/replay/test_replay_offline_only.py asserts it structurally and stays green."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}

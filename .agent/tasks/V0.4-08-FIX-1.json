@@ -81,6 +81,6 @@
     "The negative no-TX assertion still holds"
   ],
   "risk_class": "HIGH",
-  "status": "READY",
-  "revision": 1
+  "status": "HANDOFF_READY",
+  "revision": 2
 }
