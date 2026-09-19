@@ -33,7 +33,9 @@ from canx.api.errors import (
     status_for,
 )
 from canx.api.project import create_project_router
+from canx.api.recorder import create_recorder_router, data_error_envelope, data_error_status
 from canx.api.trace import create_trace_router
+from canx.data.errors import DataError
 from canx.dbc.errors import DbcError
 from canx.devices.virtual import VirtualAdapterConfig
 from canx.metrics.models import MetricsSnapshot
@@ -202,6 +204,22 @@ def create_app(
             status_code=status_for(error), content=error_envelope(error).model_dump()
         )
 
+    @app.exception_handler(DataError)
+    async def _data_failure(_request: Request, error: DataError) -> JSONResponse:
+        """Report a typed data-domain failure as the shared envelope.
+
+        A session query that names an unknown session, or a malformed one, is a
+        diagnosis the data domain already carries — distinct code, message, details,
+        recoverability and source — so the boundary only has to pick an honest
+        status for it. Registering it app-wide is what keeps the recorder's session
+        surface on one error protocol with every other domain, instead of letting a
+        domain ``DataError`` reach the caller as an opaque 500.
+        """
+        return JSONResponse(
+            status_code=data_error_status(error),
+            content=data_error_envelope(error).model_dump(),
+        )
+
     @app.exception_handler(RequestValidationError)
     async def _request_validation_failure(
         _request: Request, error: RequestValidationError
@@ -249,6 +267,11 @@ def create_app(
     app.include_router(create_trace_router())
     app.include_router(create_dbc_router())
     app.include_router(create_project_router())
+    # The recorder surface is bound to this runtime because its status endpoint
+    # observes this runtime's recorder; its session endpoints need no runtime at
+    # all. Mounting it here is what keeps the desktop from guessing a data session
+    # or reading the project database itself.
+    app.include_router(create_recorder_router(service))
 
     broker = batch_broker if batch_broker is not None else service.broker
     registry = ToolRegistry()
