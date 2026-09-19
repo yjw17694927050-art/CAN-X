@@ -5,7 +5,8 @@
 > conflicts, isolation, tests, integration order, failure recovery, acceptance boundary.
 > **Status**: DESIGNED · **REAL PILOT NOT STARTED** · contracts are `PLANNED`, never dispatched.
 > **Execution mode**: **Tianshu native `/team`** — *not* a CAN-X-built Sub-Agent runtime.
-> **Branch**: `maintenance/agent-02-preparation` (PR #18, kept open for independent re-acceptance).
+> **Foundation**: `AGENT-02-NATIVE-HARNESS-PIVOT` **CLOSED** (head `cd44abc` → `main` `d652b4c`,
+> protected PR #18, post-merge main CI `35415938987` SUCCESS). This plan is not yet executed.
 > **Read first**: `docs/ADR/0003-native-agent-harness-orchestration.md` (the boundary this plan
 > rests on), `docs/engineering/MULTI_AGENT_PROTOCOL.md`, `docs/ADR/0002-parallel-development-serial-integration.md`,
 > `docs/engineering/INTEGRATION_POLICY.md`, `docs/engineering/AGENT_02_READINESS.md`.
