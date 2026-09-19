@@ -28,16 +28,40 @@
   ],
   "ownership_compliance": true,
   "tests": [
-    {"name": "replay-fake-clock-suite", "command": "pytest tests/unit/replay tests/integration/test_offline_replay.py -q -> 124 passed", "result": "passed"},
-    {"name": "replay-bounded-memory", "command": "pytest tests/performance/test_replay_bounded_memory.py -q -> passed (peak page frames <= page size)", "result": "passed"},
-    {"name": "replay-offline-only (negative no-TX)", "command": "pytest tests/unit/replay/test_replay_offline_only.py -q -> passed (no CanAdapter/send/python-can TX in the replay path)", "result": "passed"},
-    {"name": "runtime-pytest", "command": "pytest -q -> 3026 passed, 8 skipped, exit 0", "result": "passed"},
-    {"name": "runtime-ruff", "command": "ruff check . -> All checks passed!", "result": "passed"},
-    {"name": "runtime-mypy", "command": "mypy runtime tools -> Success: no issues found in 111 source files", "result": "passed"}
+    {
+      "name": "replay-fake-clock-suite",
+      "command": "pytest tests/unit/replay tests/integration/test_offline_replay.py -q -> 124 passed",
+      "result": "passed"
+    },
+    {
+      "name": "replay-bounded-memory",
+      "command": "pytest tests/performance/test_replay_bounded_memory.py -q -> passed (peak page frames <= page size)",
+      "result": "passed"
+    },
+    {
+      "name": "replay-offline-only (negative no-TX)",
+      "command": "pytest tests/unit/replay/test_replay_offline_only.py -q -> passed (no CanAdapter/send/python-can TX in the replay path)",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-pytest",
+      "command": "pytest -q -> 3026 passed, 8 skipped, exit 0",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-ruff",
+      "command": "ruff check . -> All checks passed!",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-mypy",
+      "command": "mypy runtime tools -> Success: no issues found in 111 source files",
+      "result": "passed"
+    }
   ],
   "lint": "ruff check . - All checks passed (re-run by the Main Agent in the worktree)",
   "typecheck": "mypy runtime tools - Success, 111 source files (re-run by the Main Agent in the worktree)",
-  "ci": "not run: no GitHub CI on this worktree branch in this environment",
+  "ci": "PR #33 - run 35449791949 - Runtime/Python pass (5m18s), Quality Gate pass",
   "dependencies": [],
   "known_issues": [
     "Provenance: the Sub-Agent implemented the replay domain and its tests and ran the targeted, ruff and mypy gates green, then exhausted its turn budget before the full pytest -q, the acceptance document and the commit. The Main Agent re-ran the full suite and completed the delivery. Every number here is a Main Agent re-run in the task worktree.",

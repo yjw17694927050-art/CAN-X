@@ -22,15 +22,35 @@
   ],
   "ownership_compliance": true,
   "tests": [
-    {"name": "plot-query-focused", "command": "pytest tests/unit/plot tests/integration/test_plot_query.py -q -> 70 passed", "result": "passed"},
-    {"name": "plot-downsampling-benchmark", "command": "pytest tests/performance/test_plot_downsampling.py -q -> 3 passed (output_count <= sample budget; working set bounded)", "result": "passed"},
-    {"name": "runtime-pytest", "command": "pytest -q -> 2968 passed, 8 skipped, exit 0", "result": "passed"},
-    {"name": "runtime-ruff", "command": "ruff check . -> All checks passed!", "result": "passed"},
-    {"name": "runtime-mypy", "command": "mypy runtime tools -> Success: no issues found in 108 source files", "result": "passed"}
+    {
+      "name": "plot-query-focused",
+      "command": "pytest tests/unit/plot tests/integration/test_plot_query.py -q -> 70 passed",
+      "result": "passed"
+    },
+    {
+      "name": "plot-downsampling-benchmark",
+      "command": "pytest tests/performance/test_plot_downsampling.py -q -> 3 passed (output_count <= sample budget; working set bounded)",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-pytest",
+      "command": "pytest -q -> 2968 passed, 8 skipped, exit 0",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-ruff",
+      "command": "ruff check . -> All checks passed!",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-mypy",
+      "command": "mypy runtime tools -> Success: no issues found in 108 source files",
+      "result": "passed"
+    }
   ],
   "lint": "ruff check . - All checks passed (re-run by the Main Agent in the worktree)",
   "typecheck": "mypy runtime tools - Success, 108 source files (re-run by the Main Agent in the worktree)",
-  "ci": "not run: no GitHub CI on this worktree branch in this environment",
+  "ci": "PR #32 - run 35449789442 - attempt 1 Runtime/Python FAIL (2 pre-existing intermittent tests: recorder.cleanup_timeout; a hex-UUID collision with the dbc leak marker), attempt 2 Runtime/Python pass (6m56s), Quality Gate pass - recorded, not smoothed over",
   "dependencies": [],
   "known_issues": [
     "Provenance: the Sub-Agent implemented the code and its tests and ran the targeted, performance, ruff and mypy gates green, then exhausted its turn budget before the full pytest -q and the commit. The Main Agent re-ran the full suite and completed the delivery. Every number here is a Main Agent re-run in the task worktree.",

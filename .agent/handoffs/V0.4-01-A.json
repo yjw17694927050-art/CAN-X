@@ -21,14 +21,30 @@
   ],
   "ownership_compliance": true,
   "tests": [
-    {"name": "recorder-control-plane-focused", "command": "pytest tests/unit/recorder tests/unit/api/test_recorder_api.py tests/integration/test_recorder_control_plane.py -q -> 67 passed", "result": "passed"},
-    {"name": "runtime-pytest", "command": "pytest -q -> 2931 passed, 8 skipped, exit 0", "result": "passed"},
-    {"name": "runtime-ruff", "command": "ruff check . -> All checks passed!", "result": "passed"},
-    {"name": "runtime-mypy", "command": "mypy runtime tools -> Success: no issues found in 105 source files", "result": "passed"}
+    {
+      "name": "recorder-control-plane-focused",
+      "command": "pytest tests/unit/recorder tests/unit/api/test_recorder_api.py tests/integration/test_recorder_control_plane.py -q -> 67 passed",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-pytest",
+      "command": "pytest -q -> 2931 passed, 8 skipped, exit 0",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-ruff",
+      "command": "ruff check . -> All checks passed!",
+      "result": "passed"
+    },
+    {
+      "name": "runtime-mypy",
+      "command": "mypy runtime tools -> Success: no issues found in 105 source files",
+      "result": "passed"
+    }
   ],
   "lint": "ruff check . - All checks passed (re-run by the Main Agent in the worktree)",
   "typecheck": "mypy runtime tools - Success, 105 source files (re-run by the Main Agent in the worktree)",
-  "ci": "not run: no GitHub CI on this worktree branch in this environment",
+  "ci": "PR #31 - run 35449787973 - Runtime/Python pass (4m27s), Frontend/TypeScript pass, Desktop System/Rust pass, Quality Gate pass",
   "dependencies": [],
   "known_issues": [
     "Provenance: the Sub-Agent exhausted its turn budget after implementing the code and its targeted tests; the full pytest -q, mypy, a clean ruff re-run, the acceptance document and the commit were completed by the Main Agent. Every number here is a Main Agent re-run in the task worktree.",
