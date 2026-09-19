@@ -9,6 +9,10 @@
 > because the host's native default worker concurrency is 3 and the pilot's purpose was to
 > validate that default rather than a reconfigured harness.
 > **Evidence**: `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`
+> **Remediation**: `V0.3-12-FIX-1` closed three P1 findings from independent acceptance — the
+> governance step §9/§11 defines had never been run (the model could not express the measured
+> shared-worktree mode), and §15.3's concurrency figure was withdrawn as unsupported and
+> re-measured. See **§15.6**.
 > **Execution mode**: **Tianshu native `/team`** — *not* a CAN-X-built Sub-Agent runtime.
 > **Foundation**: `AGENT-02-NATIVE-HARNESS-PIVOT` **CLOSED** (head `cd44abc` → `main` `d652b4c`,
 > protected PR #18, post-merge main CI `35415938987` SUCCESS). This plan is not yet executed.
@@ -367,8 +371,11 @@ worktree STOP condition in §6 was never reached.
 ### 15.3 Concurrency, context and ownership
 
 ```text
-Three-worker concurrent overlap   YES — all three workers' artifacts present simultaneously
-                                  for 114 consecutive samples = 302 s
+Three-worker concurrent overlap   WITHDRAWN as originally stated and re-measured — see §15.6.
+                                  The first run's active-execution overlap is NOT VERIFIED;
+                                  the instrumented rerun measured 25 s of strict three-way
+                                  overlap (114 s if one long tool call counts as continued
+                                  execution) with a peak of 3 simultaneously active workers.
 Context isolation                 PARTIAL — each worker received only its own contract brief
                                   and no Main-Agent history (by dispatch construction and by
                                   observed behaviour); the assembled worker prompt itself was
@@ -402,3 +409,56 @@ the Harness enforcing CAN-X ownership         out of scope by design — CAN-X k
 per-worker filesystem isolation               NOT PRESENT in this run (measured SHARED)
 independent acceptance                        PENDING — the reviewer's verdict, not the author's
 ```
+
+### 15.6 V0.3-12-FIX-1 — the closure this run was missing
+
+Independent acceptance of the run above returned three P1 findings. Two were about **this plan
+not being carried out**, and one was about **a claim stronger than its evidence**. Their
+resolution is recorded in full in
+`docs/acceptance/v0.3-12-desktop-project-open-foundation.md` §10; the parts that belong to *this
+plan* are:
+
+**§9 and §11 were not executed.** The three worker contracts stayed `PLANNED`, no handoff was
+written, and `validate-handoff` / `check-integration` were never run — the exact step §9 defines
+and §11 step 2–4 order. The root cause was not an operator omission: the AGENT-01 contract froze
+`branch` + `worktree`, this run measured a **shared worktree** (§15.2) in which neither exists,
+and `collect_repository_evidence` therefore failed closed with `agent.git_state_error` before it
+could inspect the delivery. A model that cannot describe the execution mode cannot validate its
+result.
+
+That gap is now closed by an explicit **`execution_mode`** (`isolated-worktree` | `native-shared`)
+plus **`integration_paths`**, defined in ADR-0003 and `MULTI_AGENT_PROTOCOL.md` §20. What this
+plan said in §9 — consume the native envelope, validate it in CAN-X, prove ownership from Git —
+is unchanged; what changed is that the contract can now name the mode it is validating. The
+three contracts were re-issued at revision 2 and all six governance commands now run green:
+
+```text
+validate-task     V0.3-12-{A,B,C}   exit 0 · exit 0 · exit 0
+validate-handoff  V0.3-12-{A,B,C}   exit 0 · exit 0 · exit 0
+check-integration V0.3-12-{A,B,C}   exit 0 · exit 0 · exit 0   ready = True · blockers = []
+```
+
+**§15.3's concurrency figure was wrong.** "All three workers' artifacts present for 302 s" is a
+statement about the working tree, not about workers executing; it is withdrawn, and the first
+run's active-execution overlap is `NOT VERIFIED` — the harness work orders carry no timestamps
+at all, and the per-worker checkpoints have internally inconsistent field semantics. §13 of this
+plan asks for provable concurrency, so it was re-measured with an instrumented rerun (1 Main +
+3 native workers, pairwise C0, ownership-disjoint, read-only), each worker emitting a heartbeat
+that only it writes, read by an independent sampler alongside the OS process table:
+
+```text
+dispatch window                    03:59:56 → 04:03:57 UTC   (105 samples, 241 s)
+all three first heartbeats         04:00:10 — the same second
+strict three-way overlap           25 s   (activity-gap threshold 60 s)
+                                    114 s if one 67 s gap counts as continued execution
+max simultaneously active workers  3
+node.exe                            baseline 5 → peak 12
+Harness maxWorkers                 3          concurrency config modified: NO
+
+parallelism verified  YES
+speedup verified      NO — no single-agent baseline exists, so no speed-up is claimed
+```
+
+§13's requirement that the run be *proved* concurrent rather than *asserted* now has an
+instrument that satisfies it, and the instrument is reusable: it lives in the dispatch brief
+(heartbeat) and in an external sampler, not in product code.

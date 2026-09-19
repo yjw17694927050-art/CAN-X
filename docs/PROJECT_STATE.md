@@ -345,9 +345,12 @@ audit durability across restart / tamper
 external execution atomic with the decision    NOT IMPLEMENTED — the kernel's lock covers only
                                                its own state
 multi-agent behaviour at real scale            PARTIAL — the first real AGENT-02 pilot ran
-                                               (1 Main + 3 native workers, §20); scale beyond
-                                               1 + 3 and long-duration context endurance
-                                               stay NOT VERIFIED
+                                               (1 Main + 3 native workers); the V0.3-12-FIX-1
+                                               section of
+                                               docs/acceptance/v0.3-12-desktop-project-open-foundation.md
+                                               carries the measured concurrency evidence;
+                                               scale beyond 1 + 3 and long-duration context
+                                               endurance stay NOT VERIFIED
 ruleset strict_required_status_checks_policy   false — recorded gap (ADR-0002 alt. A)
 ```
 
