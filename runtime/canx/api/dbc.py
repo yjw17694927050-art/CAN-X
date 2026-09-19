@@ -43,8 +43,9 @@ Four properties are load-bearing:
 * **The request body is bounded.** A batch is capped at
   :data:`MAX_BATCH_FRAMES`; the cap is an HTTP guard on this endpoint, not a
   property of the ``FrameBatch`` domain, whose own limits are untouched.
-* **Nothing blocking runs on the event loop.** Loading an asset reads a file,
-  verifies a hash, decodes text and parses it; decoding compiles and runs a plan.
+* **Nothing blocking runs on the event loop.** Loading an asset reads a file and
+  verifies a hash, and — the first time a given verified content is seen — decodes
+  text, parses it and compiles a decoder; decoding then runs that decoder's plan.
   All of it is offloaded with ``asyncio.to_thread`` so a DBC request can never
   stall the realtime WebSocket served by the same loop.
 * **A frame's failure is data, not the request's failure.** ``decode_batch``
