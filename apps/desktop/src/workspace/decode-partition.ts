@@ -4,103 +4,115 @@
  * ```text
  * viewport frames (realtime order, mixed channels)
  *   ↓ assetForChannel(frame.channelId)
- * runs of (one asset) × (contiguous sequence) × (at most maxRunLength)
- *   ↓ one request per run
- * POST /dbc/assets/{assetId}/decode-batch
+ * one ordered work set per asset, in viewport order, cut at the frame bound
+ *   ↓ one request per work set
+ * POST /dbc/assets/{assetId}/decode-frames
  * ```
  *
- * The constraint this module exists for is the Runtime's: `FrameBatch.create()` requires a
- * **contiguous** sequence range, because a batch is a slice of one stream's numbering, not a
- * set of samples. A viewport that alternates `can0`/`can1` therefore cannot be sent as "all
- * the `can0` frames" — `1 → 3` is not contiguous — so the viewport is cut into runs that are
- * each contiguous *within one asset*.
+ * **Grouping by asset is the point, and contiguity is not.** A DBC decode is a
+ * frame-local, stateless transformation: a decoder asked about sequence 1, 3 and 5
+ * answers exactly what it would answer for each of them alone, and never looks at
+ * sequence 2. A live viewport that alternates `can0` and `can1` therefore leaves
+ * every asset's own sequences full of the other channel's gaps — and those gaps are
+ * not a defect to be cut around, they are simply what "this asset's frames in this
+ * viewport" looks like. Partitioning on contiguity (which this module used to do,
+ * against the Runtime's `FrameBatch` contract) turned that ordinary viewport into
+ * one request per frame; partitioning on asset identity turns it into one request
+ * per asset.
  *
- * Four properties are deliberate:
+ * Five properties are deliberate:
  *
- * * **Grouping by asset is the bug this prevents.** Two channels can be bound to two assets
- *   and interleave frame by frame; collecting `assetA = [1, 3, 4]` would hand the Runtime a
- *   batch whose sequence range has a hole in it, which is not a batch at all.
- * * **An unbound channel ends the run.** A frame whose channel has no binding is not decoded
- *   and is not part of any batch — and because it occupies a sequence number, the runs on
- *   either side of it are separated. Skipping it silently and joining its neighbours would
- *   manufacture the same hole.
- * * **The batch bound is applied here, not discovered from a rejection.** A run longer than
- *   `maxRunLength` is cut into several contiguous runs, each of which the Runtime accepts.
- * * **The input order is the output order.** A worker snapshot is already in realtime order;
- *   this function never sorts, so what is plotted stays the order the frames arrived in.
+ * * **One work set per asset per bound.** Frames of one asset are collected in
+ *   viewport order and cut only when the set reaches `maxFramesPerSet`, so
+ *   `#requests(asset) = ceil(framesFor(asset) / maxFramesPerSet)`.
+ * * **An unbound channel contributes nothing, and cuts nothing.** A frame whose
+ *   channel has no binding is not decoded and is not part of any work set. Unlike
+ *   the sequence-based version of this module, it does not end a run either: it is
+ *   not in the set, and it has no power to fragment one.
+ * * **The input order is the output order.** Frames are appended in the order they
+ *   arrived and never sorted, so the work sets are in viewport order per asset and
+ *   the sets themselves come back in the order their asset first appeared. What is
+ *   plotted stays the order the frames arrived in.
+ * * **A set's sequences ascend and are unique, but need not be consecutive.** That
+ *   is exactly the Runtime's `DecodeFrameSet` contract; the viewport's own realtime
+ *   order is what provides it, and `partition` neither sorts nor de-duplicates to
+ *   manufacture it. A viewport that repeated a sequence is a broken viewport, and
+ *   the Runtime refuses it rather than this module hiding it.
+ * * **Asset identity is passed in, never looked up.** `assetForChannel` is the
+ *   session's answer, so this module stays pure and knows nothing about sessions,
+ *   projects or React.
  */
 
 import type { RuntimeFrame } from "../runtime/frame-schema";
 
 /**
- * One decodable unit: frames of a single channel, contiguous in sequence, bounded in length.
+ * One decodable unit: the frames of a single asset, in viewport order, bounded in length.
  *
- * Every frame in `frames` is bound to `assetId` and their sequences are consecutive, so the
- * run is exactly what one `decode-batch` request may carry.
+ * The frames are bound to `assetId` and their sequences ascend, so the set is exactly
+ * what one `decode-frames` request may carry. They are *not* required to be
+ * consecutive — see the module header.
  */
-export interface DecodeRun {
+export interface DecodeWorkSet {
   readonly assetId: string;
   readonly frames: readonly RuntimeFrame[];
 }
 
-/** The Runtime's own per-request ceiling, so a run is never rejected for being too long. */
-export const MAX_BATCH_FRAMES = 1000;
+/** The Runtime's own per-request ceiling, so a work set is never rejected for being too long. */
+export const MAX_WORK_SET_FRAMES = 1000;
 
 /**
- * Cut a viewport into contiguous, single-asset runs.
+ * Group a viewport into one ordered work set per asset, cutting at the frame bound.
  *
  * Args:
  *   frames: The viewport's frames, in realtime order.
- *   assetForChannel: Which asset decodes a channel, or `null` when nothing is bound to it.
- *     This is the session's answer (`WorkspaceSessionStore.assetForChannel`), passed in so
- *     this function stays pure and knows nothing about sessions.
- *   maxRunLength: The largest number of frames one run may carry. Defaults to
- *     {@link MAX_BATCH_FRAMES}, the Runtime's own limit.
+ *   assetForChannel: Which asset decodes a channel, or `null` when nothing is bound to
+ *     it. This is the session's answer (`WorkspaceSessionStore.assetForChannel`),
+ *     passed in so this function stays pure and knows nothing about sessions.
+ *   maxFramesPerSet: The largest number of frames one work set may carry. Defaults to
+ *     {@link MAX_WORK_SET_FRAMES}, the Runtime's own limit.
  *
  * Returns:
- *   The runs, in input order. Frames whose channel is unbound contribute no run.
+ *   The work sets: for each asset that appears in the viewport, its frames in viewport
+ *   order, cut at the bound; the assets in the order they first appeared. Frames whose
+ *   channel is unbound contribute no set.
  *
  * Throws:
- *   `RangeError` when `maxRunLength` is not a positive integer — a zero bound would make
- *   every run impossible and the caller would be asking for an infinite loop.
+ *   `RangeError` when `maxFramesPerSet` is not a positive integer — a zero bound would
+ *   make every set impossible and the caller would be asking for an infinite loop.
  */
-export function partitionDecodeRuns(
+export function partitionDecodeWorkSets(
   frames: readonly RuntimeFrame[],
   assetForChannel: (channelId: string) => string | null,
-  maxRunLength: number = MAX_BATCH_FRAMES,
-): readonly DecodeRun[] {
-  if (!Number.isInteger(maxRunLength) || maxRunLength < 1) {
-    throw new RangeError("maxRunLength must be a positive integer");
+  maxFramesPerSet: number = MAX_WORK_SET_FRAMES,
+): readonly DecodeWorkSet[] {
+  if (!Number.isInteger(maxFramesPerSet) || maxFramesPerSet < 1) {
+    throw new RangeError("maxFramesPerSet must be a positive integer");
   }
 
-  const runs: DecodeRun[] = [];
-  // The run being built, kept as a mutable pair and pushed by reference: the frames array
-  // is only ever appended to, so the pushed runs stay correct without a second pass.
-  let current: { assetId: string; frames: RuntimeFrame[] } | null = null;
-  let lastSequence: bigint | null = null;
+  // `Map` preserves insertion order for string keys, which is what makes the output
+  // order "the order each asset first appeared" rather than an accident of hashing.
+  const setsByAsset = new Map<string, RuntimeFrame[][]>();
 
   for (const frame of frames) {
     const assetId = assetForChannel(frame.channelId);
-    if (assetId === null) {
-      // Unbound: no batch carries it, and the sequence it occupies separates its neighbours.
-      current = null;
-      lastSequence = null;
-      continue;
+    if (assetId === null) continue;
+
+    let sets = setsByAsset.get(assetId);
+    if (sets === undefined) {
+      sets = [];
+      setsByAsset.set(assetId, sets);
     }
-    const continues =
-      current !== null &&
-      current.assetId === assetId &&
-      lastSequence !== null &&
-      lastSequence + 1n === frame.sequence &&
-      current.frames.length < maxRunLength;
-    if (continues && current !== null) {
-      current.frames.push(frame);
-    } else {
-      current = { assetId, frames: [frame] };
-      runs.push(current);
-    }
-    lastSequence = frame.sequence;
+    // The last set is the only one that can still grow: earlier ones are full by
+    // construction, which is what keeps the output a partitioned view and not a
+    // reshuffle.
+    const open = sets[sets.length - 1];
+    if (open !== undefined && open.length < maxFramesPerSet) open.push(frame);
+    else sets.push([frame]);
   }
 
-  return runs;
+  const workSets: DecodeWorkSet[] = [];
+  for (const [assetId, sets] of setsByAsset) {
+    for (const set of sets) workSets.push({ assetId, frames: set });
+  }
+  return workSets;
 }

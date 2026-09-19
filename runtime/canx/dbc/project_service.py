@@ -61,6 +61,8 @@ from uuid import UUID, uuid4
 
 from canx.dbc import repository
 from canx.dbc.asset import DbcAsset, asset_relative_path, resolve_asset_path
+from canx.dbc.decode import DbcDecoder
+from canx.dbc.decoder_cache import DECODER_CACHE, DecoderKey
 from canx.dbc.errors import (
     DbcAssetIntegrityError,
     DbcAssetNotFoundError,
@@ -307,17 +309,105 @@ class ProjectDbcService:
                 read, or no longer matches the registered size or digest.
             DbcAssetRegistryError: If the registry could not be read.
         """
+        asset, raw = self.read_verified_asset(asset_id)
+        return self._parse_verified_asset(asset, raw)
+
+    def read_verified_asset(self, asset_id: str) -> tuple[DbcAsset, bytes]:
+        """Open the project, resolve one asset and prove its bytes are unchanged.
+
+        The integrity half of :meth:`load_asset`, with the parse left out. It exists
+        for callers that want a decoder rather than a document, where the document's
+        *content* is what :mod:`canx.dbc.decoder_cache` may reuse — so the parse is
+        allowed to happen once per verified content identity instead of once per
+        request.
+
+        The order is the reason this is a separate step rather than a cached whole:
+
+        ```text
+        registry row  →  resolve the stored path inside dbc/  →  read the bytes
+        →  prove the size  →  prove the SHA-256
+        ```
+
+        Nothing here is cached, and nothing here may be: a file that no longer
+        matches its row fails *here*, before any cache is consulted, so a tampered
+        asset can neither populate nor hit an entry.
+
+        Args:
+            asset_id: The asset to read.
+
+        Returns:
+            The registry row and the exact bytes it was proven to describe.
+
+        Raises:
+            ProjectError: If the project root is not a readable CAN-X project.
+            DbcAssetNotFoundError: If the asset is not registered in this project.
+            DbcAssetIntegrityError: If the registered file is missing, cannot be
+                read, or no longer matches the registered size or digest.
+            DbcAssetRegistryError: If the registry could not be read.
+        """
         asset = self.get_asset(asset_id)
         raw = _read_asset_bytes(resolve_asset_path(self._root, asset), asset)
+        return asset, raw
+
+    def load_decoder(self, asset_id: str) -> DbcDecoder:
+        """Return a compiled decoder for one asset, reusing a verified-content cache.
+
+        The decode path's entry point. Every call performs the same integrity proof
+        as :meth:`load_asset` — the project is opened, the registry row is read, the
+        file is hashed — and the decoder is compiled only when the *verified* content
+        identity has not been seen before. A parse and a compile are pure functions
+        of the bytes and their encoding, and the bytes are proven to be the row's, so
+        a hit returns exactly what a miss would have built.
+
+        The key carries the project identity as well as the content identity, so the
+        same bytes owned by two projects are two entries and no decoder is reached
+        across a project boundary. See :mod:`canx.dbc.decoder_cache` for the cache's
+        own contract.
+
+        Args:
+            asset_id: The asset to decode against.
+
+        Returns:
+            A compiled, read-only decoder for the asset's canonical database.
+
+        Raises:
+            ProjectError: If the project root is not a readable CAN-X project.
+            DbcAssetNotFoundError: If the asset is not registered in this project.
+            DbcAssetIntegrityError: If the registered file is missing, cannot be
+                read, no longer matches the registered size or digest, or does not
+                parse as its registry row describes.
+            DbcAssetRegistryError: If the registry could not be read.
+        """
+        asset, raw = self.read_verified_asset(asset_id)
+        key = DecoderKey(
+            project_id=asset.project_id,
+            sha256=asset.sha256,
+            size_bytes=asset.size_bytes,
+            encoding=asset.encoding,
+        )
+        cached = DECODER_CACHE.get(key)
+        if cached is not None:
+            return cached
+        decoder = DbcDecoder(self._parse_verified_asset(asset, raw).database)
+        DECODER_CACHE.put(key, decoder)
+        return decoder
+
+    def _parse_verified_asset(self, asset: DbcAsset, raw: bytes) -> DbcDocument:
+        """Parse bytes already proven to match ``asset``'s registry row.
+
+        A failure here is never "the document is malformed": these bytes hash to what
+        was registered, so they are the very bytes that parsed when the asset was
+        imported, and the failure means the row and the file no longer tell the same
+        story.
+
+        Raises:
+            DbcAssetIntegrityError: If the verified bytes do not parse.
+        """
         try:
             return self._importer.load_bytes(
                 raw, source_name=asset.source_name, encoding=asset.encoding
             )
         except DbcError as error:
-            # These bytes hash to what was registered, so they are the very bytes
-            # that parsed when the asset was imported. A failure now means the row
-            # and the file no longer tell the same story, never that the document
-            # is malformed.
             raise DbcAssetIntegrityError(
                 "The registered DBC asset does not parse as its registry row describes.",
                 details={"asset_id": asset.asset_id, "cause": error.code},

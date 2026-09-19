@@ -5,13 +5,19 @@ import {
   RuntimeDbcContractError,
   RuntimeDbcTransportError,
   decodeDbcFrameBatch,
+  decodeDbcFrameSet,
 } from "./dbc-decode-client";
-import type { DecodeBatchResult, DecodeFrameBatchInput } from "./dbc-decode-client";
+import type {
+  DecodeBatchResult,
+  DecodeFrameBatchInput,
+  DecodeFrameSetInput,
+} from "./dbc-decode-client";
 import type { RuntimeFrame } from "./frame-schema";
 
 afterEach(() => vi.unstubAllGlobals());
 
 const DECODE_BATCH_URL = "http://127.0.0.1:8765/dbc/assets/dbc-asset-0001/decode-batch";
+const DECODE_FRAMES_URL = "http://127.0.0.1:8765/dbc/assets/dbc-asset-0001/decode-frames";
 
 const PROJECT_PATH = "C:\\customer\\secret-program";
 const STREAM_ID = "stream-1";
@@ -806,5 +812,204 @@ describe("decode-batch per-frame failure envelope", () => {
     stubFetch(rawJsonResponse(withFailure({ ...VALID_FAILURE, code: 404 }), 200));
 
     await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+});
+
+describe("the Runtime decode-frames request", () => {
+  /**
+   * The decode-specific surface: an *ordered* work set whose sequences need not be
+   * consecutive. The two decode calls differ in exactly one contract fact, so these tests
+   * exist to pin both halves of it — that a gap is accepted here, and that repetition and
+   * reordering are still refused.
+   */
+  const INPUT_SET: DecodeFrameSetInput = {
+    assetId: "dbc-asset-0001",
+    frames: [frame()],
+    projectPath: PROJECT_PATH,
+    streamId: STREAM_ID,
+  };
+
+  /** One successful outcome per submitted frame, echoed as the Runtime would. */
+  function wireFrameSetFor(source: readonly RuntimeFrame[]): Record<string, unknown> {
+    return {
+      frame_count: source.length,
+      outcomes: source.map((input) => ({
+        decoded: wireDecoded(),
+        failure: null,
+        frame: wireFrame({
+          arbitration_id: input.arbitrationId,
+          channel_id: input.channelId,
+          is_extended: input.isExtended,
+          sequence: Number(input.sequence),
+        }),
+      })),
+      schema_version: 1,
+      sequences: source.map((input) => Number(input.sequence)),
+      stream_id: STREAM_ID,
+    };
+  }
+
+  it("posts to the decode-frames endpoint, with the same sixteen-field frame spelling", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(INPUT_SET.frames), 200));
+
+    await decodeDbcFrameSet(INPUT_SET);
+
+    expect(calls[0]?.url).toBe(DECODE_FRAMES_URL);
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(framesOfBody(calls[0] as FetchCall)).toEqual([
+      {
+        arbitration_id: 0x123,
+        bitrate_switch: false,
+        channel_id: "can0",
+        clock_domain: "monotonic",
+        data: "01AF00",
+        direction: "rx",
+        dlc: 3,
+        error_state_indicator: false,
+        flags: 0,
+        hardware_timestamp: 1.5,
+        host_timestamp: 2.5,
+        is_extended: false,
+        is_fd: false,
+        normalized_timestamp: 3.5,
+        sequence: 1,
+        timestamp_quality: "hardware",
+      },
+    ]);
+  });
+
+  it("accepts a work set whose sequences have gaps, and sends one request", async () => {
+    const gapped = [
+      frame({ sequence: 1n }),
+      frame({ sequence: 3n }),
+      frame({ sequence: 5n }),
+    ];
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(gapped), 200));
+
+    const result = await decodeDbcFrameSet({ ...INPUT_SET, frames: gapped });
+
+    expect(calls).toHaveLength(1);
+    expect(result.sequences).toEqual([1n, 3n, 5n]);
+    expect(result.frameCount).toBe(3);
+  });
+
+  it("binds every record to the frame object that was submitted", async () => {
+    const submitted = [frame({ sequence: 7n }), frame({ sequence: 20n })];
+    stubFetch(rawJsonResponse(wireFrameSetFor(submitted), 200));
+
+    const result = await decodeDbcFrameSet({ ...INPUT_SET, frames: submitted });
+
+    expect(result.records.map((record) => record.frame)).toEqual(submitted);
+    expect(result.records[0]?.frame).toBe(submitted[0]);
+  });
+
+  it("refuses a repeated sequence, and sends nothing", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(INPUT_SET.frames), 200));
+
+    await expect(
+      decodeDbcFrameSet({
+        ...INPUT_SET,
+        frames: [frame({ sequence: 2n }), frame({ sequence: 2n })],
+      }),
+    ).rejects.toBeInstanceOf(RuntimeDbcContractError);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses reordered sequences, and sends nothing", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(INPUT_SET.frames), 200));
+
+    await expect(
+      decodeDbcFrameSet({
+        ...INPUT_SET,
+        frames: [frame({ sequence: 3n }), frame({ sequence: 1n }), frame({ sequence: 2n })],
+      }),
+    ).rejects.toBeInstanceOf(RuntimeDbcContractError);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses an empty work set, and sends nothing", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(INPUT_SET.frames), 200));
+
+    await expect(decodeDbcFrameSet({ ...INPUT_SET, frames: [] })).rejects.toBeInstanceOf(
+      RuntimeDbcContractError,
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses an oversized work set, and sends nothing", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(INPUT_SET.frames), 200));
+
+    await expect(
+      decodeDbcFrameSet({ ...INPUT_SET, frames: framesOf(1001) }),
+    ).rejects.toBeInstanceOf(RuntimeDbcContractError);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a sequence that cannot survive as a JSON number", async () => {
+    const unsafe = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(INPUT_SET.frames), 200));
+
+    await expect(
+      decodeDbcFrameSet({ ...INPUT_SET, frames: [frame({ sequence: unsafe })] }),
+    ).rejects.toBeInstanceOf(RuntimeDbcContractError);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("encodes the asset id as one path segment", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireFrameSetFor(INPUT_SET.frames), 200));
+
+    await decodeDbcFrameSet({ ...INPUT_SET, assetId: "a/b?c#d e%f" });
+
+    expect(calls[0]?.url).toBe(
+      "http://127.0.0.1:8765/dbc/assets/a%2Fb%3Fc%23d%20e%25f/decode-frames",
+    );
+  });
+
+  it.each([
+    ["a missing sequence", { sequences: [] }],
+    ["an extra sequence", { sequences: [1, 2] }],
+    ["a substituted sequence", { sequences: [9] }],
+  ])("refuses an answer with %s", async (_label, override) => {
+    stubFetch(
+      rawJsonResponse({ ...wireFrameSetFor(INPUT_SET.frames), ...override }, 200),
+    );
+
+    await expect(decodeDbcFrameSet(INPUT_SET)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses an answer whose frame_count contradicts its outcomes", async () => {
+    stubFetch(rawJsonResponse({ ...wireFrameSetFor(INPUT_SET.frames), frame_count: 2 }, 200));
+
+    await expect(decodeDbcFrameSet(INPUT_SET)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses an answer whose echoed frame is not the submitted one", async () => {
+    const body = wireFrameSetFor(INPUT_SET.frames);
+    const outcomes = body["outcomes"] as Record<string, unknown>[];
+    body["outcomes"] = [{ ...(outcomes[0] as Record<string, unknown>), frame: wireFrame({ data: "FFFFFFFF" }) }];
+
+    stubFetch(rawJsonResponse(body, 200));
+
+    await expect(decodeDbcFrameSet(INPUT_SET)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses an answer for a different stream", async () => {
+    stubFetch(rawJsonResponse({ ...wireFrameSetFor(INPUT_SET.frames), stream_id: "other" }, 200));
+
+    await expect(decodeDbcFrameSet(INPUT_SET)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("propagates a transport failure without echoing the request", async () => {
+    stubRejectingFetch(new Error("connect ECONNREFUSED 127.0.0.1:8765"));
+
+    const cause = await rejectionOf(decodeDbcFrameSet(INPUT_SET));
+
+    expect(cause).toBeInstanceOf(RuntimeDbcTransportError);
+    expect((cause as Error).message).not.toContain("secret-program");
   });
 });

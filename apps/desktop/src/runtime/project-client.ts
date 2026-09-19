@@ -55,8 +55,32 @@
  *   response body on its own account.
  */
 
-/** Where the packaged Runtime sidecar listens. Same origin as every other client. */
-const RUNTIME_URL = "http://127.0.0.1:8765";
+import {
+  RUNTIME_URL,
+  RuntimeDbcApiError,
+  RuntimeDbcContractError,
+  RuntimeDbcTransportError,
+  readResponse,
+  runtimeFetch,
+} from "./runtime-http";
+
+/**
+ * The Runtime boundary's failure vocabulary, under this module's historic names.
+ *
+ * `RuntimeProject*` predates the shared floor in `./runtime-http`, and the project
+ * surface is not the only consumer of those names: `components/project/ProjectControls`
+ * and the project-open orchestration both classify failures by them. They are
+ * re-exported rather than redeclared because a second, structurally identical class would
+ * break `instanceof` at exactly the boundary this split exists to keep honest — a failure
+ * raised by the floor has to be the failure the project UI recognises. The `Dbc` in the
+ * canonical names is historic too: they are the Runtime boundary's types, and renaming
+ * them would be renaming the boundary rather than adding one.
+ */
+export {
+  RuntimeDbcApiError as RuntimeProjectApiError,
+  RuntimeDbcContractError as RuntimeProjectContractError,
+  RuntimeDbcTransportError as RuntimeProjectTransportError,
+};
 
 /** The Runtime project read-model endpoint. */
 const PROJECT_INSPECT_PATH = "/project/inspect";
@@ -85,85 +109,6 @@ export interface ProjectReadModel {
   /** When the project was last updated, as the Runtime reported it. */
   readonly updatedAt: string;
 }
-
-/**
- * A structured failure the Runtime itself diagnosed.
- *
- * The five fields are the Runtime's own error envelope, carried through rather than
- * translated: `code` stays branchable (`project.not_found`,
- * `project.manifest_malformed`, `api.request_validation_failed` stay three
- * different facts), `recoverable` keeps its retry semantics, `source` keeps saying
- * *which* boundary refused, and `details` arrives as the Runtime rendered it — which
- * may include a path, because the Runtime's own project diagnostics carry one. None
- * of it is reconstructed from the request: a caller sees what the Runtime chose to
- * report, never a re-rendering of the request it made.
- */
-export class RuntimeProjectApiError extends Error {
-  /** The HTTP status the Runtime answered with. */
-  readonly status: number;
-  /** The Runtime's stable diagnostic code, for example `project.not_found`. */
-  readonly code: string;
-  /** The Runtime's structured context, passed through unchanged. */
-  readonly details: Readonly<Record<string, unknown>>;
-  /** Whether the Runtime considers the operation worth retrying. */
-  readonly recoverable: boolean;
-  /** Which Runtime boundary produced the diagnosis. */
-  readonly source: string;
-
-  constructor(
-    status: number,
-    code: string,
-    message: string,
-    details: Readonly<Record<string, unknown>>,
-    recoverable: boolean,
-    source: string,
-  ) {
-    super(`${code}: ${message}`);
-    this.name = "RuntimeProjectApiError";
-    this.status = status;
-    this.code = code;
-    this.details = details;
-    this.recoverable = recoverable;
-    this.source = source;
-  }
-}
-
-/**
- * The Runtime could not be reached, or did not answer with its own envelope.
- *
- * A transport failure is about the *exchange*, not about the project: the sidecar
- * is not listening, the connection dropped, or something in front of the Runtime
- * answered with HTML. It carries a static message because the alternative —
- * forwarding a layer's text — is how a proxy's error page, a URL or an internal
- * address ends up in a user-facing diagnosis.
- */
-export class RuntimeProjectTransportError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RuntimeProjectTransportError";
-  }
-}
-
-/**
- * The Runtime answered successfully with something this contract does not describe.
- *
- * Distinct from {@link RuntimeProjectTransportError} on purpose: the exchange worked
- * and the Runtime spoke, so the disagreement is between the Runtime's contract and
- * this client's — a defect to fix, not a condition to retry.
- */
-export class RuntimeProjectContractError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RuntimeProjectContractError";
-  }
-}
-
-/** The one transport message, so every unreachable-Runtime story reads alike. */
-const TRANSPORT_MESSAGE = "The CAN-X Runtime could not be reached.";
-
-/** The one envelope message for a non-2xx answer that is not the shared envelope. */
-const UNREADABLE_FAILURE_MESSAGE =
-  "The CAN-X Runtime answered with a failure this client cannot interpret.";
 
 /** The one contract message for a 2xx answer whose project shape is wrong. */
 const UNREADABLE_PROJECT_MESSAGE =
@@ -198,121 +143,22 @@ const UNREADABLE_PROJECT_MESSAGE =
  *   a payload this contract does not describe.
  */
 export async function inspectProject(projectPath: string): Promise<ProjectReadModel> {
-  const payload = await readResponse(await get(inspectUrl(projectPath)));
+  const payload = await readResponse(await runtimeFetch(inspectUrl(projectPath), { method: "GET" }));
   return readProject(payload);
-}
-
-/**
- * Send a read request to a URL this module built itself.
- *
- * The URL is never assembled from caller input by concatenation: the builder below
- * encodes the project path as a query parameter, so a `?`, `&`, `#`, `/`, `%` or
- * whitespace in the path is data and never structure. `fetch` carries no body and
- * no caller headers — a GET the Runtime defined.
- */
-async function get(url: string): Promise<Response> {
-  try {
-    return await fetch(url, { method: "GET" });
-  } catch {
-    throw new RuntimeProjectTransportError(TRANSPORT_MESSAGE);
-  }
 }
 
 /**
  * One project's inspect URL: `GET /project/inspect?project_path=…`.
  *
- * `URLSearchParams` applies the query-string encoding rules, so the value is
- * percent-encoded as a whole: it cannot terminate the query, start a second
- * parameter or introduce a fragment, and the Runtime decodes it back to exactly the
- * string the caller passed.
+ * The origin comes from the shared floor (`./runtime-http`), and the path is never
+ * assembled from caller input by concatenation: `URLSearchParams` applies the query-string
+ * encoding rules, so the value is percent-encoded as a whole and cannot terminate the
+ * query, start a second parameter or introduce a fragment. The Runtime decodes it back to
+ * exactly the string the caller passed.
  */
 function inspectUrl(projectPath: string): string {
   const query = new URLSearchParams({ project_path: projectPath }).toString();
   return `${RUNTIME_URL}${PROJECT_INSPECT_PATH}?${query}`;
-}
-
-/**
- * Read a response as JSON and translate the failure half of the exchange.
- *
- * Splitting success from failure here keeps the two intended meanings apart: behind
- * a non-2xx answer, a missing envelope means the reply did not come *from* the
- * Runtime's application boundary (a proxy, a framework or a version that does not
- * speak this contract), which is a transport problem; behind a 2xx answer, a body
- * that is not JSON is the caller's contract problem, diagnosed when the payload is
- * validated.
- */
-async function readResponse(response: Response): Promise<unknown> {
-  const payload = await readJson(response);
-  if (response.ok) return payload;
-  const envelope = readErrorEnvelope(payload);
-  if (envelope === null) {
-    throw new RuntimeProjectTransportError(UNREADABLE_FAILURE_MESSAGE);
-  }
-  throw new RuntimeProjectApiError(
-    response.status,
-    envelope.code,
-    envelope.message,
-    envelope.details,
-    envelope.recoverable,
-    envelope.source,
-  );
-}
-
-/**
- * Read the response body as JSON, or report that it was not JSON.
- *
- * Returns `undefined` rather than throwing so that the *caller* can decide what a
- * non-JSON body means, which differs by status: in front of a failure response it is
- * a transport problem, behind a success response it is a contract problem.
- */
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return undefined;
-  }
-}
-
-/** The Runtime's error envelope, narrowed to the five fields it promises. */
-interface RuntimeErrorEnvelope {
-  readonly code: string;
-  readonly message: string;
-  readonly details: Readonly<Record<string, unknown>>;
-  readonly recoverable: boolean;
-  readonly source: string;
-}
-
-/**
- * Validate a failure body against the shared envelope.
- *
- * `null` means "this is not the Runtime's own diagnosis" — the shape the
- * application boundary of `canx.api.errors` defines. Checked rather than believed
- * for the same reason the success payload is: a `{"detail": …}` from a framework, a
- * gateway or a future Runtime version must be reported as an uninterpretable
- * failure, not decorated with a code it never claimed.
- */
-function readErrorEnvelope(payload: unknown): RuntimeErrorEnvelope | null {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
-  const record = payload as Record<string, unknown>;
-  const code = record["code"];
-  const message = record["message"];
-  const details = record["details"];
-  const recoverable = record["recoverable"];
-  const source = record["source"];
-  if (
-    typeof code !== "string" ||
-    typeof message !== "string" ||
-    typeof recoverable !== "boolean" ||
-    typeof source !== "string" ||
-    typeof details !== "object" ||
-    details === null ||
-    Array.isArray(details)
-  ) {
-    return null;
-  }
-  // Copied, not aliased: the returned envelope must not be a live view of a body
-  // that some other layer still holds.
-  return { code, message, details: { ...(details as Record<string, unknown>) }, recoverable, source };
 }
 
 /**
@@ -343,14 +189,14 @@ function readProject(value: unknown): ProjectReadModel {
  */
 function readObject(value: unknown, message: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new RuntimeProjectContractError(message);
+    throw new RuntimeDbcContractError(message);
   }
   return value as Record<string, unknown>;
 }
 
 /** Read one declared string field, or refuse the payload. */
 function readString(value: unknown, message: string): string {
-  if (typeof value !== "string") throw new RuntimeProjectContractError(message);
+  if (typeof value !== "string") throw new RuntimeDbcContractError(message);
   return value;
 }
 
@@ -363,7 +209,7 @@ function readString(value: unknown, message: string): string {
  */
 function readInteger(value: unknown, message: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {
-    throw new RuntimeProjectContractError(message);
+    throw new RuntimeDbcContractError(message);
   }
   return value;
 }

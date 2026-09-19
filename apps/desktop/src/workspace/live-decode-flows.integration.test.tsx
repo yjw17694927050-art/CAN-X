@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "../i18n/config";
 import { LiveTracePanel } from "../components/trace/LiveTracePanel";
 import type {
-  DecodeBatchResult,
-  DecodeFrameBatchInput,
+  DecodeFrameSetInput,
+  DecodedFrameSetResult,
   DecodedSignalValue,
 } from "../runtime/dbc-decode-client";
 import type { RuntimeFrame } from "../runtime/frame-schema";
@@ -84,29 +84,64 @@ function decoded(
   streamId: string,
   frames: readonly RuntimeFrame[],
   signals: readonly DecodedSignalValue[] = RPM,
-): DecodeBatchResult {
+): DecodedFrameSetResult {
   return {
-    firstSequence: frames[0]?.sequence ?? 0n,
     frameCount: frames.length,
-    lastSequence: frames[frames.length - 1]?.sequence ?? 0n,
     records: frames.map((f) => ({
       frame: f,
       outcome: { decoded: { messageName: "EngineData", signals }, failure: null },
     })),
+    sequences: frames.map((f) => f.sequence),
+    streamId,
+  };
+}
+
+/**
+ * One work-set answer whose frames decode to *different* physical values.
+ *
+ * Needed because one work set can carry frames from two channels bound to the same
+ * asset, and "the selected channel's signal only" is exactly the case where the two
+ * frames must not share an answer.
+ */
+function decodedPerFrame(
+  streamId: string,
+  entries: readonly { readonly frame: RuntimeFrame; readonly physical: number }[],
+): DecodedFrameSetResult {
+  return {
+    frameCount: entries.length,
+    records: entries.map(({ frame, physical }) => ({
+      frame,
+      outcome: {
+        decoded: {
+          messageName: "EngineData",
+          signals: [
+            {
+              choiceLabel: null,
+              name: "EngineSpeed",
+              physicalValue: physical,
+              rawValue: physical * 2,
+              unit: "rpm",
+            },
+          ],
+        },
+        failure: null,
+      },
+    })),
+    sequences: entries.map(({ frame }) => frame.sequence),
     streamId,
   };
 }
 
 interface Deferred {
-  readonly promise: Promise<DecodeBatchResult>;
+  readonly promise: Promise<DecodedFrameSetResult>;
   reject(cause: unknown): void;
-  resolve(result: DecodeBatchResult): void;
+  resolve(result: DecodedFrameSetResult): void;
 }
 
 function deferred(): Deferred {
-  let resolve!: (result: DecodeBatchResult) => void;
+  let resolve!: (result: DecodedFrameSetResult) => void;
   let reject!: (cause: unknown) => void;
-  const promise = new Promise<DecodeBatchResult>((res, rej) => {
+  const promise = new Promise<DecodedFrameSetResult>((res, rej) => {
     resolve = res;
     reject = rej;
   });
@@ -116,11 +151,11 @@ function deferred(): Deferred {
 interface Chain {
   readonly decoded: DecodedRealtimeStore;
   readonly realtime: RealtimeStreamStore;
-  readonly requests: DecodeFrameBatchInput[];
+  readonly requests: DecodeFrameSetInput[];
   readonly session: WorkspaceSessionStore;
   readonly sockets: FakeSocket[];
   readonly workers: FakeWorker[];
-  answer(index: number, result: DecodeBatchResult): void;
+  answer(index: number, result: DecodedFrameSetResult): void;
   fail(index: number, cause: unknown): void;
   /** Push a viewport as the Worker would, once the response has been set up. */
   push(frames: readonly RuntimeFrame[], streamId?: string): void;
@@ -151,7 +186,7 @@ function chain(): Chain {
   });
   const session = createWorkspaceSession();
   const decodedStore = createDecodedRealtimeStore(4096);
-  const requests: DecodeFrameBatchInput[] = [];
+  const requests: DecodeFrameSetInput[] = [];
   const pending: Deferred[] = [];
   const coordinator = new WorkspaceDecodeCoordinator({
     decode: (input) => {
@@ -266,9 +301,16 @@ describe("V0.3-14 — flow 1: the whole chain, frame to plotted signal", () => {
     c.push([onCan0, onCan1]);
     await settle();
 
-    c.answer(0, decoded("s1", [onCan0], [{ choiceLabel: null, name: "EngineSpeed", physicalValue: 1500, rawValue: 3000, unit: "rpm" }]));
-    await settle();
-    c.answer(1, decoded("s1", [onCan1], [{ choiceLabel: null, name: "EngineSpeed", physicalValue: 2000, rawValue: 4000, unit: "rpm" }]));
+    // One asset, one work set: both channels' frames travel in a single request, and each
+    // frame still carries its own answer.
+    expect(c.requests).toHaveLength(1);
+    c.answer(
+      0,
+      decodedPerFrame("s1", [
+        { frame: onCan0, physical: 1500 },
+        { frame: onCan1, physical: 2000 },
+      ]),
+    );
     await settle();
 
     expect(samplesFor(c.decoded, "can0")).toEqual([{ time: 0.001, value: 1500 }]);
@@ -277,8 +319,8 @@ describe("V0.3-14 — flow 1: the whole chain, frame to plotted signal", () => {
   });
 });
 
-describe("V0.3-14 — flow 2: interleaved assets are batched by contiguous run", () => {
-  it("submits A[1] B[2] A[3,4] B[5], never A[1,3,4]", async () => {
+describe("V0.3-14 — flow 2: interleaved assets decode as one request per asset", () => {
+  it("submits A[1,3,4] B[2,5], never one request per frame", async () => {
     const c = chain();
     openProject(c.session, "/p");
     c.session.bindChannel("can0", "assetA");
@@ -294,19 +336,21 @@ describe("V0.3-14 — flow 2: interleaved assets are batched by contiguous run",
     c.push(frames);
     await settle();
 
-    // Answer each run in turn; the coordinator serialises them.
-    c.answer(0, decoded("s1", [frames[0] as RuntimeFrame]));
+    // Two requests, serialised by the coordinator — and not five.
+    expect(c.requests).toHaveLength(1);
+    expect(c.requests[0]?.assetId).toBe("assetA");
+    expect(c.requests[0]?.frames.map((f) => f.sequence)).toEqual([1n, 3n, 4n]);
+    c.answer(0, decoded("s1", [frames[0], frames[2], frames[3]] as RuntimeFrame[]));
     await settle();
-    c.answer(1, decoded("s1", [frames[1] as RuntimeFrame]));
-    await settle();
-    c.answer(2, decoded("s1", [frames[2] as RuntimeFrame, frames[3] as RuntimeFrame]));
-    await settle();
-    c.answer(3, decoded("s1", [frames[4] as RuntimeFrame]));
+
+    expect(c.requests[1]?.assetId).toBe("assetB");
+    expect(c.requests[1]?.frames.map((f) => f.sequence)).toEqual([2n, 5n]);
+    c.answer(1, decoded("s1", [frames[1], frames[4]] as RuntimeFrame[]));
     await settle();
 
     expect(
       c.requests.map((request) => `${request.assetId}[${request.frames.map((f) => f.sequence).join(",")}]`),
-    ).toEqual(["assetA[1]", "assetB[2]", "assetA[3,4]", "assetB[5]"]);
+    ).toEqual(["assetA[1,3,4]", "assetB[2,5]"]);
     c.stop();
   });
 });

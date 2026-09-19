@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RuntimeFrame } from "../runtime/frame-schema";
-import { partitionDecodeRuns } from "./decode-partition";
+import { MAX_WORK_SET_FRAMES, partitionDecodeWorkSets } from "./decode-partition";
 
 function frame(sequence: number, channelId: string): RuntimeFrame {
   return {
@@ -29,13 +29,20 @@ function bindings(map: Record<string, string>): (channelId: string) => string | 
   return (channelId) => map[channelId] ?? null;
 }
 
-/** One run, flattened to `assetId[seq, seq, …]` so the expectation reads as the spec. */
-function shape(runs: readonly { assetId: string; frames: readonly RuntimeFrame[] }[]): string[] {
-  return runs.map((run) => `${run.assetId}[${run.frames.map((f) => f.sequence).join(",")}]`);
+/**
+ * One work set, flattened to `assetId[seq, seq, …]` so an expectation reads as the spec.
+ *
+ * The gaps are visible in this rendering on purpose: a work set of `assetA[1,3,5]` is the
+ * *expected* output for an alternating viewport, not a tolerated one.
+ */
+function shape(
+  sets: readonly { assetId: string; frames: readonly RuntimeFrame[] }[],
+): string[] {
+  return sets.map((set) => `${set.assetId}[${set.frames.map((f) => f.sequence).join(",")}]`);
 }
 
-describe("partitionDecodeRuns", () => {
-  it("splits interleaved assets into contiguous runs, never grouping by asset", () => {
+describe("partitionDecodeWorkSets", () => {
+  it("groups interleaved assets by asset, keeping every gap", () => {
     // can0 -> assetA, can1 -> assetB; sequences 1..5 alternate.
     const frames = [
       frame(1, "can0"),
@@ -45,45 +52,96 @@ describe("partitionDecodeRuns", () => {
       frame(5, "can1"),
     ];
 
-    const runs = partitionDecodeRuns(frames, bindings({ can0: "assetA", can1: "assetB" }));
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA", can1: "assetB" }));
 
-    // The whole point: assetA is NOT [1,3,4] — 1 -> 3 is not contiguous.
-    expect(shape(runs)).toEqual(["assetA[1]", "assetB[2]", "assetA[3,4]", "assetB[5]"]);
+    // The whole point: two requests, not one per frame. `1 -> 3` is a legal work set.
+    expect(shape(sets)).toEqual(["assetA[1,3,4]", "assetB[2,5]"]);
   });
 
-  it("cuts a run when the sequence is not contiguous, even for one asset", () => {
+  it("keeps one asset's gapped frames in a single set", () => {
     const frames = [frame(1, "can0"), frame(3, "can0")];
 
-    const runs = partitionDecodeRuns(frames, bindings({ can0: "assetA" }));
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA" }));
 
-    expect(shape(runs)).toEqual(["assetA[1]", "assetA[3]"]);
+    expect(shape(sets)).toEqual(["assetA[1,3]"]);
   });
 
-  it("drops frames whose channel is not bound, and the gap ends the run", () => {
-    const frames = [frame(1, "can0"), frame(2, "can2"), frame(3, "can0")];
+  it("groups a six-frame alternation into exactly two sets", () => {
+    const frames = [
+      frame(1, "can0"),
+      frame(2, "can1"),
+      frame(3, "can0"),
+      frame(4, "can1"),
+      frame(5, "can0"),
+      frame(6, "can1"),
+    ];
 
-    const runs = partitionDecodeRuns(frames, bindings({ can0: "assetA" }));
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA", can1: "assetB" }));
 
-    expect(shape(runs)).toEqual(["assetA[1]", "assetA[3]"]);
+    expect(sets).toHaveLength(2);
+    expect(shape(sets)).toEqual(["assetA[1,3,5]", "assetB[2,4,6]"]);
+  });
+
+  it("does not grow the request count with the frame count", () => {
+    // 1000 alternating frames, a 1000-frame bound: two requests, not one thousand.
+    const frames = Array.from({ length: 1000 }, (_, index) =>
+      frame(index + 1, index % 2 === 0 ? "can0" : "can1"),
+    );
+
+    const sets = partitionDecodeWorkSets(
+      frames,
+      bindings({ can0: "assetA", can1: "assetB" }),
+      MAX_WORK_SET_FRAMES,
+    );
+
+    expect(sets.length).toBeLessThanOrEqual(2);
+    expect(sets.map((set) => set.assetId)).toEqual(["assetA", "assetB"]);
+    expect(sets.map((set) => set.frames.length)).toEqual([500, 500]);
+    // Every frame is decoded exactly once, gaps included.
+    expect(new Set(sets.flatMap((set) => set.frames.map((f) => f.sequence))).size).toBe(1000);
+  });
+
+  it("drops frames whose channel is not bound, without fragmenting the bound asset", () => {
+    // can1 is unbound and sits between two assetA frames; it must not cut them apart.
+    const frames = [frame(1, "can0"), frame(2, "can1"), frame(3, "can0")];
+
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA" }));
+
+    expect(shape(sets)).toEqual(["assetA[1,3]"]);
+  });
+
+  it("never lets an unbound channel turn an asset's work into single-frame sets", () => {
+    // Half the viewport is unbound; the bound half is still one request per bound.
+    const frames = Array.from({ length: 400 }, (_, index) =>
+      frame(index + 1, index % 2 === 0 ? "can0" : "can9"),
+    );
+
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA" }));
+
+    expect(sets).toHaveLength(1);
+    expect(sets[0]?.frames.length).toBe(200);
+    expect(sets[0]?.frames.map((f) => f.sequence)).toEqual(
+      Array.from({ length: 200 }, (_, index) => BigInt(index * 2 + 1)),
+    );
   });
 
   it("returns nothing when no channel is bound", () => {
     const frames = [frame(1, "can0"), frame(2, "can1")];
 
-    expect(partitionDecodeRuns(frames, bindings({}))).toEqual([]);
+    expect(partitionDecodeWorkSets(frames, bindings({}))).toEqual([]);
   });
 
   it("returns nothing for an empty viewport", () => {
-    expect(partitionDecodeRuns([], bindings({ can0: "assetA" }))).toEqual([]);
+    expect(partitionDecodeWorkSets([], bindings({ can0: "assetA" }))).toEqual([]);
   });
 
-  it("splits a long contiguous run at the batch bound", () => {
+  it("splits one asset past the bound, and only there", () => {
     const frames = Array.from({ length: 2500 }, (_, index) => frame(index + 1, "can0"));
 
-    const runs = partitionDecodeRuns(frames, bindings({ can0: "assetA" }), 1000);
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA" }), 1000);
 
-    expect(runs.map((run) => run.frames.length)).toEqual([1000, 1000, 500]);
-    expect(shape(runs)).toEqual([
+    expect(sets.map((set) => set.frames.length)).toEqual([1000, 1000, 500]);
+    expect(shape(sets)).toEqual([
       `assetA[${range(1, 1000).join(",")}]`,
       `assetA[${range(1001, 2000).join(",")}]`,
       `assetA[${range(2001, 2500).join(",")}]`,
@@ -94,15 +152,23 @@ describe("partitionDecodeRuns", () => {
     // A worker snapshot is already ordered; the partition preserves whatever order it is given.
     const frames = [frame(7, "can0"), frame(8, "can0")];
 
-    const runs = partitionDecodeRuns(frames, bindings({ can0: "assetA" }));
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA" }));
 
-    expect(runs[0]?.frames.map((f) => f.sequence)).toEqual([7n, 8n]);
+    expect(sets[0]?.frames.map((f) => f.sequence)).toEqual([7n, 8n]);
   });
 
-  it("rejects a non-positive batch bound rather than looping forever", () => {
-    expect(() => partitionDecodeRuns([frame(1, "can0")], bindings({ can0: "assetA" }), 0)).toThrow(
-      RangeError,
-    );
+  it("returns the assets in the order they first appeared", () => {
+    const frames = [frame(1, "can1"), frame(2, "can0"), frame(3, "can1")];
+
+    const sets = partitionDecodeWorkSets(frames, bindings({ can0: "assetA", can1: "assetB" }));
+
+    expect(sets.map((set) => set.assetId)).toEqual(["assetB", "assetA"]);
+  });
+
+  it("rejects a non-positive frame bound rather than looping forever", () => {
+    expect(() =>
+      partitionDecodeWorkSets([frame(1, "can0")], bindings({ can0: "assetA" }), 0),
+    ).toThrow(RangeError);
   });
 });
 

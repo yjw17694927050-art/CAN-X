@@ -62,11 +62,14 @@ export {
   RuntimeDbcTransportError,
 } from "./runtime-http";
 
-/** The DBC asset collection the decode-batch endpoint hangs off. */
+/** The DBC asset collection both decode endpoints hang off. */
 const DBC_ASSETS_PATH = "/dbc/assets";
 
-/** This endpoint's own suffix under one asset. */
+/** The batch endpoint's own suffix under one asset. */
 const DECODE_BATCH_SUFFIX = "/decode-batch";
+
+/** The work-set endpoint's own suffix under one asset. */
+const DECODE_FRAMES_SUFFIX = "/decode-frames";
 
 /**
  * The HTTP guard on one decode-batch call, mirroring the Runtime's own
@@ -75,15 +78,35 @@ const DECODE_BATCH_SUFFIX = "/decode-batch";
  */
 const MAX_BATCH_FRAMES = 1000;
 
+/**
+ * The HTTP guard on one decode-frames call, mirroring the Runtime's own
+ * `DecodeFrameSet.MAX_FRAMES`.
+ *
+ * A separate constant rather than a shared one: the two endpoints bound *different
+ * containers*, and a single number would silently couple them the day either bound
+ * moves.
+ */
+const MAX_WORK_SET_FRAMES = 1000;
+
 /** The only decoded-batch schema this client understands. */
 const DECODED_BATCH_SCHEMA_VERSION = 1;
 
-/** The one message for a request this client refuses to send. */
+/** The only decoded-work-set schema this client understands. */
+const DECODED_WORK_SET_SCHEMA_VERSION = 1;
+
+/** The one message for a decode-batch request this client refuses to send. */
 const INVALID_REQUEST_MESSAGE = "The decode-batch request does not match the contract.";
+
+/** The one message for a decode-frames request this client refuses to send. */
+const INVALID_WORK_SET_MESSAGE = "The decode-frames request does not match the contract.";
 
 /** The one message for a 2xx answer whose decode-batch shape is wrong. */
 const UNREADABLE_BATCH_MESSAGE =
   "The CAN-X Runtime answered with a decode-batch payload that does not match the contract.";
+
+/** The one message for a 2xx answer whose decode-frames shape is wrong. */
+const UNREADABLE_WORK_SET_MESSAGE =
+  "The CAN-X Runtime answered with a decode-frames payload that does not match the contract.";
 
 /** The four facts a decode-batch call takes: where, against what, and which frames. */
 export interface DecodeFrameBatchInput {
@@ -94,6 +117,31 @@ export interface DecodeFrameBatchInput {
   /** The stream the submitted frames belong to. */
   readonly streamId: string;
   /** The frames to decode, in submission order. Between one and one thousand. */
+  readonly frames: readonly RuntimeFrame[];
+}
+
+/**
+ * The four facts a decode-frames call takes: where, against what, and which frames.
+ *
+ * The same four as {@link DecodeFrameBatchInput}, and that is the whole difference
+ * between the two calls: this one carries an *ordered work set* whose sequences need
+ * not be consecutive, and the Runtime answers it as such. A live viewport that
+ * alternates two channels leaves each channel's sequences full of the other
+ * channel's gaps, and those frames are a well-formed request — they were only ever
+ * refused because they were measured against a capture batch's contract.
+ */
+export interface DecodeFrameSetInput {
+  /** The CAN-X project that owns the asset. */
+  readonly projectPath: string;
+  /** The registered DBC asset the frames are decoded against. */
+  readonly assetId: string;
+  /** The stream the submitted frames belong to. */
+  readonly streamId: string;
+  /**
+   * The frames to decode, in submission order. Between one and one thousand, with
+   * strictly increasing sequences — ordered and non-repeating, but not necessarily
+   * consecutive.
+   */
   readonly frames: readonly RuntimeFrame[];
 }
 
@@ -141,6 +189,23 @@ export interface DecodeBatchResult {
 }
 
 /**
+ * One decoded work set, in the submitted frame order.
+ *
+ * There is no `firstSequence`/`lastSequence`: a work set has no range, and a client
+ * that reported one would invite its caller to reason about the frames *between* two
+ * submitted sequences — frames this answer says nothing about. `sequences` is the
+ * caller's own account of what was submitted, echoed by the Runtime and checked
+ * against the request here, so an outcome can be aligned to a frame by something
+ * other than position.
+ */
+export interface DecodedFrameSetResult {
+  readonly streamId: string;
+  readonly frameCount: number;
+  readonly sequences: readonly bigint[];
+  readonly records: readonly DecodedFrameRecord[];
+}
+
+/**
  * Decode a bounded batch of captured frames against one project-owned DBC asset.
  *
  * Args:
@@ -167,9 +232,51 @@ export async function decodeDbcFrameBatch(
     throw new RuntimeDbcContractError(INVALID_REQUEST_MESSAGE);
   }
   requireContiguous(input.frames);
-  const submitted = input.frames.map((frame) => frameToWire(frame));
-  const payload = await readResponse(await post(input, submitted));
+  const submitted = input.frames.map((frame) => frameToWire(frame, INVALID_REQUEST_MESSAGE));
+  const payload = await readResponse(await postDecodeRequest(DECODE_BATCH_SUFFIX, input, submitted));
   return readBatch(payload, input, submitted);
+}
+
+/**
+ * Decode one bounded work set of captured frames against one project-owned DBC asset.
+ *
+ * The sibling of {@link decodeDbcFrameBatch}, and the call the realtime decode path
+ * uses. The only contract difference is the one that matters: the frames must be
+ * *ordered and non-repeating*, and need not be consecutive. A decoder answers a
+ * frame-local question — "what does this frame mean" — so a request carrying
+ * sequence 1, 3 and 5 is exactly as meaningful as one carrying 1, 2 and 3; requiring
+ * the second is what forced an alternating-channel viewport into one request per
+ * frame.
+ *
+ * Args:
+ *   input: The project and asset to decode against, the stream the frames belong
+ *     to, and the frames themselves, in the order outcomes are wanted back.
+ *
+ * Returns:
+ *   One {@link DecodedFrameRecord} per submitted frame, in the submitted order,
+ *   each bound to the very frame object that was submitted.
+ *
+ * Throws:
+ *   {@link RuntimeDbcContractError} when the request is refused before it is sent
+ *   — an empty or oversized work set, a sequence that repeats or goes backwards, or
+ *   a sequence that cannot survive as a JSON number — or when the Runtime answered
+ *   successfully with a payload this contract does not describe.
+ *   {@link RuntimeDbcApiError} when the Runtime diagnosed the failure itself.
+ *   {@link RuntimeDbcTransportError} when the Runtime could not be reached, or
+ *   answered with a failure that is not the shared envelope.
+ */
+export async function decodeDbcFrameSet(
+  input: DecodeFrameSetInput,
+): Promise<DecodedFrameSetResult> {
+  if (input.frames.length < 1 || input.frames.length > MAX_WORK_SET_FRAMES) {
+    throw new RuntimeDbcContractError(INVALID_WORK_SET_MESSAGE);
+  }
+  requireStrictlyIncreasing(input.frames);
+  const submitted = input.frames.map((frame) => frameToWire(frame, INVALID_WORK_SET_MESSAGE));
+  const payload = await readResponse(
+    await postDecodeRequest(DECODE_FRAMES_SUFFIX, input, submitted),
+  );
+  return readFrameSet(payload, input, submitted);
 }
 
 /**
@@ -201,19 +308,60 @@ function requireContiguous(frames: readonly RuntimeFrame[]): void {
 }
 
 /**
- * Send the decode-batch request.
+ * Refuse a work set whose sequences repeat or go backwards.
+ *
+ * Strictly increasing is the *whole* invariant the Runtime's `DecodeFrameSet` states
+ * beyond its size bound, and it is the weakest one that keeps "the outcome at index
+ * `i` is about the frame at index `i`" checkable: a repeated sequence would mean two
+ * outcomes for one frame, and a backwards step would mean the caller's own order is
+ * not the order it sent. A gap is deliberately *not* refused — a gap is the shape
+ * this call exists for.
+ *
+ * This is the HTTP boundary's own invariant, not a restatement of the partitioner's
+ * grouping: the partitioner decides *which* frames belong to one asset, and this
+ * decides whether the work set it hands over is well formed. A caller that assembled
+ * frames by hand cannot slip a repeat or a reorder past it.
+ *
+ * Throws:
+ *   {@link RuntimeDbcContractError} before anything is sent, using the same static
+ *   request message as the size guard — there is one reason a work-set request is
+ *   refused, and one message for it.
+ */
+function requireStrictlyIncreasing(frames: readonly RuntimeFrame[]): void {
+  for (let index = 1; index < frames.length; index += 1) {
+    const previous = frames[index - 1];
+    const current = frames[index];
+    if (previous === undefined || current === undefined) {
+      throw new RuntimeDbcContractError(INVALID_WORK_SET_MESSAGE);
+    }
+    if (current.sequence <= previous.sequence) {
+      throw new RuntimeDbcContractError(INVALID_WORK_SET_MESSAGE);
+    }
+  }
+}
+
+/** The three request facts that address an asset, shared by both decode calls. */
+type DecodeTarget = Pick<DecodeFrameSetInput, "assetId" | "projectPath" | "streamId">;
+
+/**
+ * Send one decode request to one asset's decode endpoint.
+ *
+ * One function for both endpoints on purpose: the two calls differ in which container
+ * they declare, never in how a request is addressed or serialized. A second copy of
+ * this body would be a second place for the two to drift.
  *
  * The asset id is encoded as a single path segment and the project path travels in
  * the body, so a separator, a query character, a fragment or whitespace in either
  * value is data and never structure. What an unreachable Runtime means is the shared
  * transport's business, not this module's.
  */
-async function post(
-  input: DecodeFrameBatchInput,
+async function postDecodeRequest(
+  suffix: string,
+  input: DecodeTarget,
   frames: readonly FrameWireBody[],
 ): Promise<Response> {
   return runtimeFetch(
-    `${RUNTIME_URL}${DBC_ASSETS_PATH}/${encodeURIComponent(input.assetId)}${DECODE_BATCH_SUFFIX}`,
+    `${RUNTIME_URL}${DBC_ASSETS_PATH}/${encodeURIComponent(input.assetId)}${suffix}`,
     {
       body: JSON.stringify({
         project_path: input.projectPath,
@@ -274,6 +422,56 @@ function readBatch(
     return { frame, outcome: outcome.outcome };
   });
   return { streamId, firstSequence, lastSequence, frameCount, records };
+}
+
+/**
+ * Validate a decode-frames body and project it onto {@link DecodedFrameSetResult}.
+ *
+ * Every redundant fact the Runtime echoes is checked against the request rather than
+ * trusted — schema version, stream identity, frame count, the submitted sequence
+ * list, and every echoed frame — exactly as {@link readBatch} does. The difference is
+ * the bookkeeping being checked. A work set has no range, so instead of a
+ * `first_sequence`/`last_sequence` pair the Runtime echoes the *submitted sequences*,
+ * in order; that list must equal what was sent, item for item, which is what makes an
+ * outcome alignable to a frame by sequence and not merely by position.
+ */
+function readFrameSet(
+  payload: unknown,
+  input: DecodeFrameSetInput,
+  submitted: readonly FrameWireBody[],
+): DecodedFrameSetResult {
+  const message = UNREADABLE_WORK_SET_MESSAGE;
+  const record = readObject(payload, message);
+  if (readInteger(record["schema_version"], message) !== DECODED_WORK_SET_SCHEMA_VERSION) {
+    throw new RuntimeDbcContractError(message);
+  }
+  const streamId = readString(record["stream_id"], message);
+  if (streamId !== input.streamId) {
+    throw new RuntimeDbcContractError(message);
+  }
+  const sequences = readArray(record["sequences"], message, (item) =>
+    readSequence(item, message),
+  );
+  if (
+    sequences.length !== input.frames.length ||
+    sequences.some((sequence, index) => sequence !== input.frames[index]?.sequence)
+  ) {
+    throw new RuntimeDbcContractError(message);
+  }
+  const frameCount = readInteger(record["frame_count"], message);
+  const outcomes = readArray(record["outcomes"], message, (item) => readOutcome(item, message));
+  if (frameCount !== outcomes.length || frameCount !== submitted.length) {
+    throw new RuntimeDbcContractError(message);
+  }
+  const records = outcomes.map((outcome, index): DecodedFrameRecord => {
+    const frame = input.frames[index];
+    const expected = submitted[index];
+    if (frame === undefined || expected === undefined || !isSameFrame(outcome.frame, expected)) {
+      throw new RuntimeDbcContractError(message);
+    }
+    return { frame, outcome: outcome.outcome };
+  });
+  return { frameCount, records, sequences, streamId };
 }
 
 /** One echoed frame together with the outcome it belongs to. */
@@ -377,9 +575,9 @@ interface FrameWireBody {
  * decoded read model — so the Runtime sees the whole frame, timestamps and flags
  * included.
  */
-function frameToWire(frame: RuntimeFrame): FrameWireBody {
+function frameToWire(frame: RuntimeFrame, message: string): FrameWireBody {
   return {
-    sequence: sequenceToNumber(frame.sequence),
+    sequence: sequenceToNumber(frame.sequence, message),
     channel_id: frame.channelId,
     arbitration_id: frame.arbitrationId,
     is_extended: frame.isExtended,
@@ -457,10 +655,10 @@ function isSameFrame(a: FrameWireBody, b: FrameWireBody): boolean {
  * `Number.MAX_SAFE_INTEGER` the round trip is lossy. Rather than truncate, wrap or
  * round — every one of which would decode the wrong frame — the call is refused.
  */
-function sequenceToNumber(sequence: bigint): number {
+function sequenceToNumber(sequence: bigint, message: string): number {
   const value = Number(sequence);
   if (!Number.isSafeInteger(value)) {
-    throw new RuntimeDbcContractError(INVALID_REQUEST_MESSAGE);
+    throw new RuntimeDbcContractError(message);
   }
   return value;
 }

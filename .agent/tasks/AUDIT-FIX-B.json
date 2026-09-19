@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "task_id": "AUDIT-FIX-B",
+  "title": "Remove repeated static work from the live DBC decode hot path without weakening fail-closed integrity",
+  "objective": "A decode request today repeats, per request, work that is only a function of an immutable project-owned asset: project open and identity validation, registry lookup, reading the .dbc bytes, size and sha256 verification, text decode, cantools parse, canonical model conversion, and DbcDecoder compilation. Only the final per-frame decode varies with the request. In a live viewport the frontend sends one small contiguous batch at a time with exactly one request in flight, so that static work recurs on the realtime path. This task measures the real cost first, then removes the repetition - or reports measured evidence that the cost is not material and changes nothing. Any cache must be keyed on verified content identity (size and sha256, plus the encoding that produced the parse), never on asset_id or source_name alone, must stay inside one project, and must keep tamper detection fail-closed: a replaced or edited project-owned .dbc must still be refused rather than served from a stale parse.",
+  "scope": "runtime/canx/dbc/**, runtime/canx/api/dbc.py, the DBC test suites, and - only if the decode batch abstraction must change - the Desktop decode partition/coordinator modules.",
+  "non_goals": [
+    "A second DBC decode engine, or moving decode authority out of DbcDecoder",
+    "cantools becoming anything other than the parser boundary and test oracle",
+    "A global current DBC, or any cross-project cache that can leak an asset between projects",
+    "Weakening, removing or bypassing the size/sha256 integrity check, or making a tamper failure recoverable",
+    "Changing the external HTTP contract unless it is genuinely required, in which case every caller, test and document is updated with it",
+    "Any V0.4 feature"
+  ],
+  "base_sha": "42e8250ce23192a931466ba84d4685967e6cd0e2",
+  "branch": "agent/AUDIT-FIX-B-dbc-hot-path",
+  "worktree": ".worktrees/audit-fix-b",
+  "execution_mode": "isolated-worktree",
+  "owner": "sub-b",
+  "allowed_paths": [
+    "runtime/canx/dbc/**",
+    "runtime/canx/api/dbc.py",
+    "tests/unit/dbc/**",
+    "tests/integration/test_dbc_api_integration.py",
+    "tests/integration/test_packaged_runtime_smoke.py",
+    "apps/desktop/src/workspace/decode-coordinator.ts",
+    "apps/desktop/src/workspace/decode-coordinator.test.ts",
+    "apps/desktop/src/workspace/decode-partition.ts",
+    "apps/desktop/src/workspace/decode-partition.test.ts",
+    "apps/desktop/src/workspace/decoded-realtime.ts",
+    "apps/desktop/src/workspace/decoded-realtime.test.ts"
+  ],
+  "forbidden_paths": [
+    "runtime/canx/domain/**",
+    "runtime/canx/data/**",
+    "runtime/canx/query/**",
+    "runtime/canx/recorder/**",
+    "runtime/canx/project/**",
+    "runtime/canx/safety/**",
+    "runtime/canx/api/project.py",
+    "runtime/canx/api/app.py",
+    "apps/desktop/src/runtime/**",
+    "apps/desktop/src/components/**",
+    "docs/**",
+    ".agent/**",
+    ".github/**",
+    "SPEC.md",
+    "AGENTS.md",
+    "PRD.md",
+    "pyproject.toml",
+    "package.json"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "runtime/canx/api/dbc.py",
+      "sha": "42e8250ce23192a931466ba84d4685967e6cd0e2"
+    }
+  ],
+  "acceptance_criteria": [
+    "A BEFORE/AFTER benchmark exists and is reported with real numbers: request count, DBC parse count, decoder compile count, decoded frame count, elapsed time and a throughput-equivalent metric, with the environment stated",
+    "The benchmark covers at least: one channel with one DBC; two channels sharing one DBC; two channels with two different DBCs and interleaved frames; high-frequency alternating channels (worst-case partitioning); a large batch; repeated decode against an unchanged asset",
+    "If the measurement shows the static cost is not material, that evidence is kept and NO architecture change is made",
+    "A tampered project-owned .dbc still fails closed with dbc.asset_integrity_failed, and a replaced asset never serves a stale parse",
+    "Two projects with the same asset content never share a decoder in a way that crosses project identity",
+    "Decode results are byte-identical to base_sha for every existing decode fixture",
+    "No global current DBC exists and the code still cannot reach one"
+  ],
+  "required_tests": [
+    "runtime-pytest",
+    "runtime-ruff",
+    "runtime-mypy",
+    "frontend-test",
+    "frontend-typecheck",
+    "benchmark"
+  ],
+  "handoff_requirements": [
+    "Root cause and the design decision, including the cache key and its lifetime if a cache is introduced",
+    "The BEFORE and AFTER benchmark tables with the exact command that produced them",
+    "Reconciliation of which previously per-request steps are now once-per-asset, and which deliberately remain per-request",
+    "Exact commands and results for the DBC suites, the decode client suites, ruff and mypy",
+    "State explicitly which files outside allowed_paths were touched (expected: none) and that no frontend component or runtime/ module outside the allowed surface changed"
+  ],
+  "risk_class": "HIGH",
+  "status": "READY",
+  "revision": 1
+}

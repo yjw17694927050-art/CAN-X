@@ -156,6 +156,9 @@ function SignalPlot({
     const element = chartElement.current;
     if (element === null) return;
     let disposed = false;
+    // The chart's own observer, created with the chart and released with it. Never a module
+    // singleton and never registered twice: one chart, one observer.
+    let observer: ResizeObserver | null = null;
     void Promise.all([
       import("echarts/core"),
       import("echarts/charts"),
@@ -181,9 +184,24 @@ function SignalPlot({
         yAxis: { name: latestAxisName.current, type: "value" },
         series: [{ data: latestSeries.current, showSymbol: false, type: "line" }],
       });
+      // A Dockview panel is dragged, split, re-tabbed and resized, and none of that tells a
+      // canvas it still has the size it was built at. The observer is created *here*, after
+      // `init`, for two reasons: the first notification is immediate, so the chart it resizes
+      // already exists, and it is created exactly once per chart — a second observer would
+      // mean a second `resize()` per notification and one left attached on unmount.
+      observer = new ResizeObserver(() => {
+        // A notification already queued when the chart was disposed must not reach it.
+        if (disposed) return;
+        chartRef.current?.resize();
+      });
+      observer.observe(element);
     });
     return () => {
       disposed = true;
+      observer?.disconnect();
+      observer = null;
+      // Safe when the imports never resolved — there is then no chart to dispose and no
+      // observer that could have been left attached.
       chartRef.current?.dispose();
       chartRef.current = null;
     };

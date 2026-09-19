@@ -2100,3 +2100,246 @@ async def test_padding_planted_inside_a_multi_step_payload_is_still_refused(
 
     _assert_validation_envelope(response.status_code, response.json())
     assert _stored_assets(root) == []
+
+# --- decode-frames: the decode-specific work-set surface ---------------------
+#
+# A decode request is a frame-local transformation, not a slice of a capture
+# stream, so its container does not inherit the batch's contiguity. These tests
+# pin the one shape difference, and — in the last case — pin that the capture
+# container was not widened to produce it: the *same* payload that the work-set
+# surface accepts is still refused by `/decode-batch`.
+
+
+async def test_a_decode_work_set_accepts_non_contiguous_sequences(tmp_path: Path) -> None:
+    """1, 3, 5 is a decode request. It was never a batch, and no longer has to be."""
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [
+        _wire(ENGINE_DATA, sequence=1),
+        _wire(ENGINE_DATA, sequence=3),
+        _wire(ENGINE_DATA, sequence=5),
+    ]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == {
+        "schema_version",
+        "stream_id",
+        "frame_count",
+        "sequences",
+        "outcomes",
+    }
+    assert body["schema_version"] == 1
+    assert body["stream_id"] == STREAM_ID
+    assert body["frame_count"] == 3
+    assert body["sequences"] == [1, 3, 5]
+    assert [outcome["frame"]["sequence"] for outcome in body["outcomes"]] == [1, 3, 5]
+    assert all(outcome["decoded"] is not None for outcome in body["outcomes"])
+
+
+async def test_a_decode_work_set_accepts_a_contiguous_run(tmp_path: Path) -> None:
+    """A contiguous run is a legal work set too — contiguity is simply not required."""
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [_wire(ENGINE_DATA, sequence=sequence) for sequence in range(10, 13)]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["sequences"] == [10, 11, 12]
+
+
+async def test_a_decode_work_set_accepts_large_gaps(tmp_path: Path) -> None:
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [
+        _wire(ENGINE_DATA, sequence=1),
+        _wire(ENGINE_DATA, sequence=100),
+        _wire(ENGINE_DATA, sequence=10_000),
+    ]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["sequences"] == [1, 100, 10_000]
+
+
+async def test_a_decode_work_set_keeps_a_per_frame_failure_as_data(tmp_path: Path) -> None:
+    """A gap-bearing request still answers every frame, including the undecodable one."""
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [
+        _wire(ENGINE_DATA, sequence=1),
+        _wire(ENGINE_DATA, sequence=3, arbitration_id=0x7FF),
+        _wire(ENGINE_DATA, sequence=9),
+    ]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [outcome["decoded"] is not None for outcome in body["outcomes"]] == [
+        True,
+        False,
+        True,
+    ]
+    failure = body["outcomes"][1]["failure"]
+    assert failure["code"] == "dbc.message_not_found"
+    assert failure["source"] == "dbc"
+
+
+async def test_a_decode_work_set_refuses_a_duplicated_sequence(tmp_path: Path) -> None:
+    """One frame, one answer: a repeated sequence cannot be aligned by position."""
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [_wire(ENGINE_DATA, sequence=2), _wire(ENGINE_DATA, sequence=2)]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+
+
+async def test_a_decode_work_set_refuses_reordered_sequences(tmp_path: Path) -> None:
+    """The caller's order is the contract; a set that reorders frames is not it."""
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [
+        _wire(ENGINE_DATA, sequence=3),
+        _wire(ENGINE_DATA, sequence=1),
+        _wire(ENGINE_DATA, sequence=2),
+    ]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+
+
+async def test_exactly_the_maximum_decode_work_set_is_accepted(tmp_path: Path) -> None:
+    """Every sequence odd: 1000 frames of a 2000-frame span, so no gap-filling applies."""
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [
+        _wire(ENGINE_DATA, sequence=sequence) for sequence in range(1, 2000, 2)
+    ]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["frame_count"] == 1000
+
+
+async def test_more_than_the_maximum_decode_work_set_is_rejected(tmp_path: Path) -> None:
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [
+        _wire(ENGINE_DATA, sequence=sequence) for sequence in range(1, 2002, 2)
+    ]
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": frames},
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+    assert response.json()["details"]["errors"][0]["location"][-1] == "frames"
+
+
+async def test_an_empty_decode_work_set_is_rejected(tmp_path: Path) -> None:
+    root, asset_ids = _project(tmp_path, BASIC)
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={"project_path": str(root), "stream_id": STREAM_ID, "frames": []},
+        )
+
+    _assert_validation_envelope(response.status_code, response.json())
+
+
+async def test_a_decode_work_set_against_an_unknown_asset_is_a_404(tmp_path: Path) -> None:
+    root, _ = _project(tmp_path, BASIC)
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{UNKNOWN_ASSET}/decode-frames",
+            json={
+                "project_path": str(root),
+                "stream_id": STREAM_ID,
+                "frames": [_wire(ENGINE_DATA, sequence=1), _wire(ENGINE_DATA, sequence=3)],
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "dbc.asset_not_found"
+
+
+async def test_a_non_contiguous_payload_diverges_between_the_two_surfaces(
+    tmp_path: Path,
+) -> None:
+    """The one payload, both endpoints: refused as a batch, accepted as a work set.
+
+    This is the regression in one test. ``1, 3`` is not a ``FrameBatch`` and must
+    keep being refused by ``/decode-batch``; it *is* a decode work set, and the
+    work-set surface exists so the decode path no longer has to pretend otherwise.
+    """
+    root, asset_ids = _project(tmp_path, BASIC)
+    frames = [_wire(ENGINE_DATA, sequence=1), _wire(ENGINE_DATA, sequence=3)]
+    body = {"project_path": str(root), "stream_id": STREAM_ID, "frames": frames}
+
+    async with _client() as client:
+        as_batch = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-batch", json=body
+        )
+        as_work_set = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames", json=body
+        )
+
+    _assert_validation_envelope(as_batch.status_code, as_batch.json())
+    assert as_work_set.status_code == 200, as_work_set.text
+    assert as_work_set.json()["sequences"] == [1, 3]
+
+
+async def test_a_decode_work_set_is_integrity_checked_like_any_other_decode(
+    tmp_path: Path,
+) -> None:
+    """The new surface must not become a way around the asset integrity proof."""
+    root, asset_ids = _project(tmp_path, BASIC)
+    target = root / "dbc" / f"{asset_ids[0]}.dbc"
+    target.write_bytes(target.read_bytes() + b"\n")
+
+    async with _client() as client:
+        response = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode-frames",
+            json={
+                "project_path": str(root),
+                "stream_id": STREAM_ID,
+                "frames": [_wire(ENGINE_DATA, sequence=1), _wire(ENGINE_DATA, sequence=3)],
+            },
+        )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "dbc.asset_integrity_failed"
+    assert response.json()["recoverable"] is False

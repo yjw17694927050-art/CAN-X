@@ -40,7 +40,7 @@ is additional semantics attached to the raw value, never a replacement for it.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isfinite
 from types import MappingProxyType
@@ -52,6 +52,7 @@ from canx.dbc.decode_model import (
     DecodedFrameOutcome,
     DecodedSignal,
 )
+from canx.dbc.decode_set import DecodedFrameSet, DecodeFrameSet
 from canx.dbc.errors import (
     DbcDecodeUnsupportedError,
     DbcError,
@@ -178,8 +179,47 @@ class DbcDecoder:
         """
         if not isinstance(batch, FrameBatch):
             raise TypeError("decode_batch requires a canonical FrameBatch")
+        return DecodedFrameBatch.create(
+            stream_id=batch.stream_id, outcomes=self._outcomes(batch.frames)
+        )
+
+    def decode_frames(self, work: DecodeFrameSet) -> DecodedFrameSet:
+        """Decode one decode work set, capturing one outcome per input frame.
+
+        The same decode loop as :meth:`decode_batch`, over a container whose
+        sequences need not be consecutive. A decoder is a frame-local, stateless
+        transformation — it answers "what does *this* frame mean", and never looks
+        at a neighbouring sequence — so a request carrying 1, 3 and 5 is exactly as
+        meaningful as one carrying 1, 2 and 3. What the batch container's
+        contiguity was ever needed for is the *capture* stream's numbering, which
+        this method does not touch.
+
+        Args:
+            work: The decode work set. It is never modified.
+
+        Returns:
+            One outcome per input frame, in the input order.
+
+        Raises:
+            TypeError: If ``work`` is not a canonical :class:`DecodeFrameSet`.
+        """
+        if not isinstance(work, DecodeFrameSet):
+            raise TypeError("decode_frames requires a canonical DecodeFrameSet")
+        return DecodedFrameSet.create(
+            stream_id=work.stream_id, outcomes=self._outcomes(work.frames)
+        )
+
+    def _outcomes(self, frames: Sequence[Frame]) -> tuple[DecodedFrameOutcome, ...]:
+        """Decode every frame, turning a per-frame failure into data.
+
+        The one decode loop both containers share: a frame that cannot be decoded
+        becomes an outcome carrying its typed failure rather than disappearing, so
+        the result always has the same length and order as the input and no caller
+        has to guess which frames were skipped. A failure here is *per frame*; only
+        a programming error raises.
+        """
         outcomes: list[DecodedFrameOutcome] = []
-        for frame in batch.frames:
+        for frame in frames:
             try:
                 decoded = self.decode_frame(frame)
             except DbcError as error:
@@ -188,7 +228,7 @@ class DbcDecoder:
                 )
             else:
                 outcomes.append(DecodedFrameOutcome.succeeded(frame, decoded))
-        return DecodedFrameBatch.create(stream_id=batch.stream_id, outcomes=outcomes)
+        return tuple(outcomes)
 
 
 @dataclass(frozen=True, slots=True)

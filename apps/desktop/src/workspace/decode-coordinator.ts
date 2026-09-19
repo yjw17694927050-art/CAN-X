@@ -5,7 +5,7 @@
  * RealtimeStreamStore    raw frames, as the Worker decoded them
  * WorkspaceSessionStore  which asset decodes which channel
  *   ↓ this coordinator (one per workspace, injected)
- * partitionDecodeRuns → one decode-batch request at a time
+ * partitionDecodeWorkSets → one decode-frames request at a time
  *   ↓
  * DecodedRealtimeStore   the outcomes Trace and Plot both read
  * ```
@@ -18,11 +18,14 @@
  * Seven properties are deliberate:
  *
  * * **One request in flight, globally.** Not one per asset and not one per viewport: the
- *   coordinator holds at most a single outstanding `decode-batch` call, so the load it can
- *   place on the Runtime is bounded by construction rather than by how fast snapshots
+ *   coordinator holds at most a single outstanding `decode-frames` call, so the load it
+ *   can place on the Runtime is bounded by construction rather than by how fast snapshots
  *   arrive. A burst of snapshots does not become a burst of requests — the outstanding
- *   response's completion re-runs the pass against the newest viewport, so the loop advances
- *   at the pace of the Runtime rather than the pace of the bus.
+ *   response's completion re-runs the pass against the newest viewport, so the loop
+ *   advances at the pace of the Runtime rather than the pace of the bus. Serialising the
+ *   requests costs nothing structural: the number of requests one viewport needs is
+ *   bounded by the number of *bound assets*, not by the number of frames, so an
+ *   alternating two-channel viewport is two requests and not one per frame.
  * * **The newest viewport wins.** When a response completes, the coordinator re-reads the
  *   *current* realtime snapshot and the *current* bindings rather than replaying what it
  *   skipped. There is no queue of stale viewports to grind through, so a slow Runtime
@@ -53,13 +56,13 @@ import {
   RuntimeDbcApiError,
   RuntimeDbcContractError,
   RuntimeDbcTransportError,
-  type DecodeBatchResult,
-  type DecodeFrameBatchInput,
+  type DecodeFrameSetInput,
   type DecodedFrameOutcome,
+  type DecodedFrameSetResult,
 } from "../runtime/dbc-decode-client";
 import type { RuntimeFrame } from "../runtime/frame-schema";
 import type { RealtimeStreamState } from "../runtime/realtime-stream";
-import { MAX_BATCH_FRAMES, partitionDecodeRuns } from "./decode-partition";
+import { MAX_WORK_SET_FRAMES, partitionDecodeWorkSets } from "./decode-partition";
 import type { DecodeOutcome, DecodedFrameEntry, DecodedRealtimeStore } from "./decoded-realtime";
 import type { DecodeBindings, WorkspaceSessionSnapshot } from "./session";
 
@@ -93,9 +96,9 @@ export interface WorkspaceDecodeDeps {
   /** The workspace's one decoded store, and the only thing this coordinator writes. */
   readonly decoded: DecodedRealtimeStore;
   /** The decode call itself, injected so a test can hold a response open. */
-  readonly decode: (input: DecodeFrameBatchInput) => Promise<DecodeBatchResult>;
-  /** The largest batch to submit. Defaults to the Runtime's own limit. */
-  readonly maxBatchFrames?: number;
+  readonly decode: (input: DecodeFrameSetInput) => Promise<DecodedFrameSetResult>;
+  /** The largest work set to submit. Defaults to the Runtime's own limit. */
+  readonly maxWorkSetFrames?: number;
 }
 
 /** The stable request-level codes the coordinator records, one per failure family. */
@@ -112,7 +115,7 @@ const UNKNOWN_FAILURE_CODE = "dbc.decode_failed";
  */
 export class WorkspaceDecodeCoordinator {
   readonly #deps: WorkspaceDecodeDeps;
-  readonly #maxBatchFrames: number;
+  readonly #maxWorkSetFrames: number;
   #inFlight = false;
   /** Advanced by every change that invalidates an in-flight answer. */
   #generation = 0;
@@ -127,7 +130,7 @@ export class WorkspaceDecodeCoordinator {
 
   constructor(deps: WorkspaceDecodeDeps) {
     this.#deps = deps;
-    this.#maxBatchFrames = deps.maxBatchFrames ?? MAX_BATCH_FRAMES;
+    this.#maxWorkSetFrames = deps.maxWorkSetFrames ?? MAX_WORK_SET_FRAMES;
   }
 
   /**
@@ -195,7 +198,7 @@ export class WorkspaceDecodeCoordinator {
   }
 
   /**
-   * Submit the next run, or note that there is more to do.
+   * Submit the next work set, or note that there is more to do.
    *
    * The store is read *now*, not from a cached snapshot: a pass that starts after a slow
    * response must work on the viewport that exists, not the one that was current when the
@@ -228,12 +231,12 @@ export class WorkspaceDecodeCoordinator {
     const signature = `${viewport.streamId}|${pending.map((frame) => frame.sequence).join(",")}`;
     if (signature === this.#blockedSignature) return;
 
-    const run = partitionDecodeRuns(
+    const work = partitionDecodeWorkSets(
       pending,
       (channelId) => this.#deps.session.assetForChannel(channelId),
-      this.#maxBatchFrames,
+      this.#maxWorkSetFrames,
     )[0];
-    if (run === undefined) return;
+    if (work === undefined) return;
 
     this.#inFlight = true;
     this.#deps.decoded.markPending();
@@ -241,8 +244,8 @@ export class WorkspaceDecodeCoordinator {
 
     void this.#deps
       .decode({
-        assetId: run.assetId,
-        frames: run.frames,
+        assetId: work.assetId,
+        frames: work.frames,
         projectPath,
         streamId: viewport.streamId,
       })
@@ -250,10 +253,10 @@ export class WorkspaceDecodeCoordinator {
         // An answer to a question that has been superseded is not an answer.
         if (requestGeneration !== this.#generation) return;
         this.#deps.decoded.applyBatch({
-          assetId: run.assetId,
+          assetId: work.assetId,
           entries: result.records.map(
             (record): DecodedFrameEntry => ({
-              assetId: run.assetId,
+              assetId: work.assetId,
               frame: record.frame,
               outcome: toDecodeOutcome(record.outcome),
             }),

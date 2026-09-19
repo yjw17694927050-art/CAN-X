@@ -1,12 +1,18 @@
 import { QueryClientProvider, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { createDockview, type CreateComponentOptions, type IContentRenderer } from "dockview";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createDockview,
+  type CreateComponentOptions,
+  type DockviewApi,
+  type IContentRenderer,
+} from "dockview";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useTranslation } from "react-i18next";
 
 import { LiveTracePanel } from "../trace/LiveTracePanel";
 import { startVirtualCapture, stopCapture } from "../../runtime/capture-client";
-import { decodeDbcFrameBatch } from "../../runtime/dbc-decode-client";
+import { createCaptureLifecycle, type CapturePhase } from "../../runtime/capture-lifecycle";
+import { decodeDbcFrameSet } from "../../runtime/dbc-decode-client";
 import { realtimeStream, useRealtimeStream } from "../../runtime/realtime-stream";
 import { LivePlotPanel } from "../plot/LivePlotPanel";
 import { DbcWorkspace } from "../dbc/DbcWorkspace";
@@ -79,9 +85,36 @@ export interface DockWorkspaceProps {
 export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspaceProps = {}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
+  /**
+   * The translator the layout effect is allowed to read without depending on it.
+   *
+   * Measured, not assumed: `useTranslation()` hands back a **new** `i18n` object when the
+   * language changes — and that object is not the module instance either — so a dependency
+   * on `i18n` re-runs the layout effect and rebuilds every panel, which is exactly the
+   * defect the effect below exists to avoid. A ref keeps the *current* translator reachable
+   * from an effect that has no business re-running for a translation.
+   */
+  const translate = useRef(t);
+  /**
+   * The layout this mount built.
+   *
+   * A ref because two effects need it: the one that builds the layout, and the one that
+   * retitles the panels a language change leaves in place.
+   */
+  const layout = useRef<DockviewApi | null>(null);
   const queryClient = useQueryClient();
   const { connection, decodeMs } = useRealtimeStream();
-  const [runtimeState, setRuntimeState] = useState<"starting" | "capturing" | "failed">("starting");
+  // One capture lifecycle per mounted workspace, created exactly once — the same rule as the
+  // session and the decoded store below. It replaces the closure boolean this mount used to
+  // own, and both of that boolean's failures are ordering failures: a boolean set inside a
+  // fire-and-forget `.then` cannot tell a cleanup that already ran whether there is anything
+  // left to stop, and a second StrictMode setup would POST a second start against an endpoint
+  // that answers `capture.already_running`. See `createCaptureBinding` below.
+  const [capture] = useState(createCaptureBinding);
+  // What the header says, projected from the lifecycle's own phase. Reading through
+  // `useSyncExternalStore` makes the shell a subscriber of the lifecycle rather than a copy
+  // of it, so the phase that renders is the phase the store holds.
+  const runtimeState = useSyncExternalStore(capture.subscribe, capture.readRuntimeState);
   // One session per mounted workspace, created once and never replaced. Its identity is
   // stable for the whole mount, which is what lets the Dockview layout below outlive a
   // project change instead of being torn down and rebuilt for one.
@@ -101,7 +134,7 @@ export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspa
    */
   useEffect(() => {
     const coordinator = new WorkspaceDecodeCoordinator({
-      decode: decodeDbcFrameBatch,
+      decode: decodeDbcFrameSet,
       decoded: decodedStore,
       realtime: realtimeStream,
       session: store,
@@ -109,18 +142,21 @@ export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspa
     return coordinator.start();
   }, [decodedStore, store]);
 
+  /**
+   * The capture this workspace wants live, for exactly as long as it is mounted.
+   *
+   * This effect only *records intent* — acquire on mount, release on unmount — and the
+   * lifecycle reconciles that intent against its own phase, one control-plane call at a time.
+   * That split is what makes the two orderings that matter come out right: an answer that
+   * arrives after unmount is stopped by the continuation that learns the capture was owned,
+   * and a StrictMode replay is one intent rather than two starts. Neither a failed start nor a
+   * failed stop rejects into a promise nobody holds — the lifecycle records them as its
+   * `failed` phase.
+   */
   useEffect(() => {
-    let ownsCapture = false;
-    void startVirtualCapture()
-      .then((started) => {
-        ownsCapture = started;
-        setRuntimeState("capturing");
-      })
-      .catch(() => setRuntimeState("failed"));
-    return () => {
-      if (ownsCapture) void stopCapture();
-    };
-  }, []);
+    capture.acquire();
+    return () => capture.release();
+  }, [capture]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -133,24 +169,30 @@ export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspa
         new WorkspacePanelRenderer(options, store, queryClient, decodedStore),
     });
 
-    api.addPanel({ component: "project", id: "project", title: t("workspace.project") });
+    // The titles, in whatever language `i18n` is in right now. Read from the instance rather
+    // than from the render's `t`, because `i18n` is the stable identity and `t` is not: a
+    // language change hands back a new `t` and the same `i18n`. That is the whole distinction
+    // this effect's dependency array needs, and it is measured rather than assumed —
+    // `DockWorkspace.test.tsx` observes one layout across a `changeLanguage`, and observed a
+    // second one for as long as `t` was listed here.
+    api.addPanel({ component: "project", id: "project", title: translate.current("workspace.project") });
     api.addPanel({
       component: "trace",
       id: "trace",
       position: { direction: "right", referencePanel: "project" },
-      title: t("workspace.trace"),
+      title: translate.current("workspace.trace"),
     });
     api.addPanel({
       component: "plot",
       id: "plot",
       position: { direction: "right", referencePanel: "trace" },
-      title: t("workspace.plot"),
+      title: translate.current("workspace.plot"),
     });
     api.addPanel({
       component: "agent",
       id: "agent",
       position: { direction: "below", referencePanel: "plot" },
-      title: t("workspace.agent"),
+      title: translate.current("workspace.agent"),
     });
     // DBC joins the trace group as a sibling tab: a permanent engineering workspace,
     // not a separate floating view.
@@ -158,17 +200,42 @@ export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspa
       component: "dbc",
       id: "dbc",
       position: { direction: "within", referencePanel: "trace" },
-      title: t("workspace.dbc"),
+      title: translate.current("workspace.dbc"),
     });
 
+    layout.current = api;
+
     return () => api.dispose();
-    // `store`, `decodedStore` and `queryClient` are stable identities for the whole mount, so
-    // this layout is built exactly once. Project state deliberately does NOT appear here: it
-    // reaches the panels through the session (a subscription), so opening or switching a
-    // project updates panels in place rather than disposing and rebuilding every panel —
-    // and therefore never tears down the Trace/Plot roots that hold the realtime
-    // subscription, nor restarts the capture lifecycle.
-  }, [t, queryClient, store, decodedStore]);
+    // `i18n`, `store`, `decodedStore` and `queryClient` are stable identities for the whole
+    // mount, so this layout is built exactly once, in whatever language it was built in.
+    // Project state deliberately does NOT appear here, and neither does the translation
+    // function: both change for reasons that have nothing to do with the layout, and rebuilding
+    // would dispose and recreate every panel — tearing down the Trace/Plot roots that hold the
+    // realtime subscription and restarting the capture lifecycle. A project change reaches the
+    // panels through the session (a subscription), so panels update in place; a language change
+    // reaches the titles through the effect below.
+  }, [queryClient, store, decodedStore]);
+
+  /**
+   * Retitle the panels when the language changes.
+   *
+   * The other half of not rebuilding the layout for a translation: the panels are the same
+   * instances, so their labels have to be brought forward rather than left in whatever
+   * language the layout happened to be built in. Depending on `t` — not on `i18n` — is
+   * deliberate and is the whole reason this is a separate effect: `t` is the identity that
+   * changes with the language, and this effect sets five strings and disposes nothing, so
+   * running it once per language change costs nothing.
+   */
+  useEffect(() => {
+    translate.current = t;
+    const api = layout.current;
+    if (api === null) return;
+    api.getPanel("project")?.setTitle(t("workspace.project"));
+    api.getPanel("trace")?.setTitle(t("workspace.trace"));
+    api.getPanel("plot")?.setTitle(t("workspace.plot"));
+    api.getPanel("agent")?.setTitle(t("workspace.agent"));
+    api.getPanel("dbc")?.setTitle(t("workspace.dbc"));
+  }, [t]);
 
   return (
     <main aria-label={t("workspace.label")} className="workspace-shell">
@@ -182,4 +249,52 @@ export function DockWorkspace({ decoded: injectedDecoded, session }: DockWorkspa
       <div className="dockview-theme-dark" ref={containerRef} />
     </main>
   );
+}
+
+/** What the workspace header says about the Runtime, as this component renders it. */
+type CaptureRuntimeState = "starting" | "capturing" | "failed";
+
+/**
+ * The header's word for each phase the capture lifecycle can be in.
+ *
+ * `owned` and `observed` both mean a capture is live, so both read as `capturing`: the
+ * difference between them is an obligation this component holds, not something a user needs
+ * told. `failed` is the one phase that reports the Runtime rather than the capture, which is
+ * the same text the header already used for a start that did not answer.
+ */
+const RUNTIME_STATE_OF_PHASE: Readonly<Record<CapturePhase, CaptureRuntimeState>> = {
+  failed: "failed",
+  idle: "starting",
+  observed: "capturing",
+  owned: "capturing",
+  starting: "starting",
+  stopping: "capturing",
+};
+
+/** The one capture lifecycle a mounted workspace owns, and the header's view of it. */
+interface CaptureBinding {
+  /** Declare that this workspace wants a capture to be live. Idempotent. */
+  acquire(): void;
+  /** The header's word for the lifecycle's phase, as a primitive snapshot. */
+  readRuntimeState(): CaptureRuntimeState;
+  /** Declare that nothing wants the capture any more. Idempotent. */
+  release(): void;
+  subscribe(listener: () => void): () => void;
+}
+
+/**
+ * Build the workspace's capture lifecycle, wired to the Runtime's capture control plane.
+ *
+ * The projection is the point: {@link CaptureBinding.readRuntimeState} answers with a
+ * *string*, so React's identity check on the store is about the phase rather than about a
+ * state object that every phase change would have replaced.
+ */
+function createCaptureBinding(): CaptureBinding {
+  const lifecycle = createCaptureLifecycle({ start: startVirtualCapture, stop: stopCapture });
+  return {
+    acquire: () => lifecycle.acquire(),
+    readRuntimeState: () => RUNTIME_STATE_OF_PHASE[lifecycle.getState().phase],
+    release: () => lifecycle.release(),
+    subscribe: lifecycle.subscribe,
+  };
 }
