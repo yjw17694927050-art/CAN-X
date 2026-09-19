@@ -2,15 +2,19 @@
 
 The data flow is deliberately linear and holds one page at a time::
 
-    DataSession (persisted, validated)
-        └── ReplaySource.pages()          bounded QueryService pagination
-                └── ReplaySession         recorded timing on an injected clock
-                        └── ReplaySink.emit(ReplayFrameEvent)
+    ProjectService.open(project_root)  the project domain validates the root
+        └── DataSession (persisted)    resolved only inside a validated project
+                └── ReplaySource.pages()          bounded QueryService pagination
+                        └── ReplaySession         recorded timing on an injected clock
+                                └── ReplaySink.emit(ReplayFrameEvent)
 
-There is **no** device in that picture. Offline replay never calls an adapter,
-never opens a bus and never transmits: a frame leaves the domain only through
-the sink the caller supplied. Real CAN replay — which does need a transmit path
-and therefore a safety gate — is a later phase and is not prepared for here.
+The project domain opens the root **first**: replay never trusts a directory that
+is not a valid CAN-X project, and only a validated root is used to resolve the
+session and read its frames. There is **no** device in that picture: offline
+replay never calls an adapter, never opens a bus and never transmits — a frame
+leaves the domain only through the sink the caller supplied. Real CAN replay,
+which does need a transmit path and therefore a safety gate, is a later phase and
+is not prepared for here.
 
 Timing is the recording's own: frame ``n`` is scheduled at
 ``normalized_timestamp(n) - normalized_timestamp(first_frame)`` seconds after the
@@ -40,6 +44,8 @@ from canx.data.errors import (
 from canx.data.model import DataSession, DataSessionState
 from canx.data.session import DataSessionService
 from canx.domain.frame import Frame
+from canx.project.errors import ProjectError
+from canx.project.service import ProjectHandle, ProjectService
 from canx.query.errors import QueryError
 from canx.query.model import FrameQueryPage
 from canx.query.service import QueryService
@@ -72,6 +78,12 @@ from canx.replay.source import ReplaySource, SessionReplaySource
 #: given. A virtual clock is exact, so this tolerance never affects a
 #: deterministic replay.
 SCHEDULE_TOLERANCE_SECONDS = 0.005
+
+#: Project-domain causes that mean the root path itself is unusable, rather than
+#: a broken project at a usable path. They keep the replay domain's existing
+#: "invalid project root" arm; every deeper project failure is reported as
+#: ``replay.project_unavailable`` with the project's own cause code attached.
+_INVALID_PROJECT_ROOT_CAUSES = frozenset({"project.not_found", "project.not_a_directory"})
 
 
 class ReplaySession:
@@ -119,24 +131,37 @@ class ReplaySession:
     ) -> ReplaySession:
         """Resolve ``session_id`` inside a project and prepare its replay.
 
-        This is the production entry point: it reads the persisted session
-        metadata, applies the configured policies and wires the bounded
-        query-backed source. Nothing is replayed until :meth:`run` is called.
+        This is the production entry point, and the project domain is its first
+        authority: the root is opened through the project service before anything
+        about the recording is read. A directory that is not a valid CAN-X
+        project — no manifest, an unreadable manifest, a missing database, a
+        mismatched identity or an unsupported version — is refused there rather
+        than trusted as a place to look for frames. Only a validated project's
+        own root is then used to resolve the session metadata, wire the bounded
+        query-backed source and apply the configured policies. Nothing is
+        replayed until :meth:`run` is called.
 
         Raises:
             ReplayValidationError: If the session id or the configuration is
                 unusable.
-            ReplayProjectError: If the project root is not a directory, or its
-                data store is missing or unusable.
+            ReplayProjectError: If the project domain refuses the root. The
+                project's own stable cause is carried in ``details["cause"]``.
             ReplaySessionError: If the session is not registered, is not
                 replayable under the configured policy, or is empty and empty
                 sessions are rejected.
         """
         resolved_config = _require_config(config)
-        root = Path(project_root)
-        session = _resolve_data_session(root, session_id)
+        handle = _open_project(Path(project_root))
+        try:
+            validated_root = handle.root
+        finally:
+            # The project handle is released as soon as validation is done: the
+            # replay reads the recording through the query domain's own
+            # short-lived connections, never through this handle.
+            _close_project(handle)
+        session = _resolve_data_session(validated_root, session_id)
         source = SessionReplaySource(
-            QueryService(root),
+            QueryService(validated_root),
             session.session_id,
             page_size=resolved_config.page_size,
         )
@@ -560,13 +585,63 @@ def _require_ordered_after(previous: Frame | None, frame: Frame) -> None:
         )
 
 
+def _open_project(project_root: Path) -> ProjectHandle:
+    """Open the root through the project domain's own authority.
+
+    Raises:
+        ReplayProjectError: If the project domain refuses the root, carrying the
+            project's stable cause code in ``details["cause"]``.
+    """
+    try:
+        return ProjectService().open(project_root)
+    except ProjectError as error:
+        raise _translate_project_error(error) from error
+
+
+def _close_project(handle: ProjectHandle) -> None:
+    """Close a validated project handle, translating a close failure.
+
+    Raises:
+        ReplayProjectError: If the project database could not be closed, so a raw
+            project error never crosses the replay boundary.
+    """
+    try:
+        handle.close()
+    except ProjectError as error:
+        raise _translate_project_error(error) from error
+
+
+def _translate_project_error(error: ProjectError) -> ReplayProjectError:
+    """Translate a project-domain failure into the replay failure contract.
+
+    The replay domain owns its own taxonomy, so a project failure becomes a
+    :class:`ReplayProjectError`. Only the project's stable cause code crosses the
+    boundary: the project domain's own details carry absolute host paths, which
+    must never leave the project layer through a replay error.
+    """
+    if error.code in _INVALID_PROJECT_ROOT_CAUSES:
+        return ReplayProjectError(
+            "The replay project root is not an existing directory.",
+            code="replay.invalid_project",
+            details={"cause": error.code},
+        )
+    return ReplayProjectError(
+        "The project is not a usable CAN-X project and cannot be replayed.",
+        code="replay.project_unavailable",
+        details={"cause": error.code},
+    )
+
+
 def _resolve_data_session(project_root: Path, session_id: str) -> DataSession:
     """Read one persisted session, translating data failures into replay ones.
 
+    The project root has already been validated by the project domain, so this
+    only resolves the session inside it: it never re-validates the project, and
+    the authority stays :class:`~canx.project.service.ProjectService`.
+
     Raises:
         ReplayValidationError: If the session id is not a UUID string.
-        ReplayProjectError: If the root is not a directory, or the project's data
-            store is missing or unusable.
+        ReplayProjectError: If the project's data store is missing or unusable.
         ReplaySessionError: If the session is not registered in this project.
     """
     if not isinstance(session_id, str) or not session_id.strip():
@@ -574,12 +649,6 @@ def _resolve_data_session(project_root: Path, session_id: str) -> DataSession:
             "session_id must be a non-empty UUID string.",
             code="replay.invalid_session_id",
             details={"session_id": repr(session_id)},
-        )
-    if not project_root.is_dir():
-        raise ReplayProjectError(
-            "The replay project root is not an existing directory.",
-            code="replay.invalid_project",
-            details={"project_root": str(project_root)},
         )
     try:
         return DataSessionService(project_root).get_session(session_id)
@@ -589,7 +658,7 @@ def _resolve_data_session(project_root: Path, session_id: str) -> DataSession:
         raise ReplayProjectError(
             "The project data store is not available for replay.",
             code="replay.project_unavailable",
-            details={"project_root": str(project_root), "cause": error.code},
+            details={"cause": error.code},
         ) from error
     except DataSessionError as error:
         raise ReplaySessionError(
@@ -607,7 +676,7 @@ def _resolve_data_session(project_root: Path, session_id: str) -> DataSession:
         raise ReplayProjectError(
             "The project data store is not available for replay.",
             code="replay.project_unavailable",
-            details={"project_root": str(project_root), "cause": error.code},
+            details={"cause": error.code},
         ) from error
 
 

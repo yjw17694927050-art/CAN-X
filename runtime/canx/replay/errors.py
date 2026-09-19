@@ -65,8 +65,13 @@ class ReplayValidationError(ReplayError):
 class ReplayProjectError(ReplayError):
     """Raised when the project root cannot serve as a replay source.
 
-    Covers a root that is not a directory and a project whose data store is
-    missing or unusable — in both cases nothing about the recording is claimed.
+    Covers a root that is not a directory, a directory that is not a valid CAN-X
+    project, and a project whose data store is missing or unusable — in every
+    case nothing about the recording is claimed. The project domain's own stable
+    cause is carried in ``details["cause"]`` (for example
+    ``project.manifest_missing`` or ``project.identity_mismatch``); the project
+    domain's details are never copied verbatim, because they carry absolute host
+    paths that must not leave the project layer.
     """
 
     def __init__(
