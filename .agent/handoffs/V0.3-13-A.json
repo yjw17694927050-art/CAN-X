@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-13-A",
+  "agent": "sub-a",
+  "execution_mode": "native-shared",
+  "branch": "feature/v0.3-13-project-dbc-workspace-integration",
+  "base_sha": "1196bf10822600d31ac2922773b535429db269b4",
+  "head_sha": "d223337b8294550d9099ad29c50332b0207f9f9a",
+  "commits": [
+    "d223337b8294550d9099ad29c50332b0207f9f9a feat(desktop): add the Project Open production UI (V0.3-13-A)"
+  ],
+  "changed_files": [
+    "apps/desktop/src/components/project/ProjectControls.test.tsx",
+    "apps/desktop/src/components/project/ProjectControls.tsx"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "frontend-focused-test",
+      "command": "vitest run <this task's spec files>",
+      "result": "13 passed"
+    },
+    {
+      "name": "frontend-test",
+      "command": "pnpm test",
+      "result": "passed — 22 files / 317 tests"
+    },
+    {
+      "name": "frontend-typecheck",
+      "command": "pnpm typecheck",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-lint",
+      "command": "pnpm lint",
+      "result": "passed"
+    }
+  ],
+  "lint": "eslint . --max-warnings 0 — exit 0 (re-run by the Main Agent)",
+  "typecheck": "tsc -b --pretty false — exit 0 (re-run by the Main Agent)",
+  "ci": "recorded on the pull request for feature/v0.3-13-project-dbc-workspace-integration; the Main Agent's local gates above are the verification this handoff rests on",
+  "dependencies": [],
+  "known_issues": [
+    "Contract defect, confirmed by the Main Agent: criterion 4 forbade rendering 'the project id' while criterion 5 and the objective required rendering projectId. The criteria contradict each other; criterion 4 was meant to forbid the project DIRECTORY. The worker resolved it in favour of criterion 5 (render projectId, never the path) and pinned both directions with tests. Recorded as a defect in the brief, not in the code. The contract is re-issued at revision 2.",
+    "The harness write gate returned this work order as blocked (a scoped tsc that did not run to completion), not because of a test failure. Every number above was re-run by the Main Agent on the integrated tree."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}

@@ -10,7 +10,7 @@
     "A global current project, a module-level store, or a second session instance",
     "Recent-projects, project create/rename/delete/repair/upgrade, or any runtime/Rust/IPC change"
   ],
-  "base_sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348",
+  "base_sha": "1196bf10822600d31ac2922773b535429db269b4",
   "execution_mode": "native-shared",
   "branch": null,
   "worktree": null,
@@ -62,6 +62,6 @@
     "State explicitly that no integration surface (App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx, workspace/**, i18n/**), no Rust file and no Runtime file was touched"
   ],
   "risk_class": "LOW",
-  "status": "PLANNED",
-  "revision": 1
+  "status": "HANDOFF_READY",
+  "revision": 2
 }

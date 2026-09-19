@@ -10,7 +10,7 @@
     "A CAN channel manager, device configuration, channel configuration or TX capability",
     "A global active DBC, or binding driven implicitly by the browse selection"
   ],
-  "base_sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348",
+  "base_sha": "74a882fea39969931be0715fa643f9ec6b455f09",
   "execution_mode": "native-shared",
   "branch": null,
   "worktree": null,
@@ -66,6 +66,6 @@
     "State explicitly that no integration surface (App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx, workspace/**, i18n/**), no Rust file and no Runtime file was touched, and that no second realtime consumer is created"
   ],
   "risk_class": "LOW",
-  "status": "PLANNED",
+  "status": "HANDOFF_READY",
   "revision": 1
 }

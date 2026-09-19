@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-13-C",
+  "agent": "sub-c",
+  "execution_mode": "native-shared",
+  "branch": "feature/v0.3-13-project-dbc-workspace-integration",
+  "base_sha": "74a882fea39969931be0715fa643f9ec6b455f09",
+  "head_sha": "48939ab03c9c68defc7ca1143e1955bb62d2a3e6",
+  "commits": [
+    "48939ab03c9c68defc7ca1143e1955bb62d2a3e6 feat(desktop): add the DBC decode-binding UI (V0.3-13-C)"
+  ],
+  "changed_files": [
+    "apps/desktop/src/components/dbc/DbcBindingControl.test.tsx",
+    "apps/desktop/src/components/dbc/DbcBindingControl.tsx",
+    "apps/desktop/src/components/dbc/observed-channels.test.ts",
+    "apps/desktop/src/components/dbc/observed-channels.ts"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "frontend-focused-test",
+      "command": "vitest run <this task's spec files>",
+      "result": "21 passed (2 files)"
+    },
+    {
+      "name": "frontend-test",
+      "command": "pnpm test",
+      "result": "passed — 22 files / 317 tests"
+    },
+    {
+      "name": "frontend-typecheck",
+      "command": "pnpm typecheck",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-lint",
+      "command": "pnpm lint",
+      "result": "passed"
+    }
+  ],
+  "lint": "eslint . --max-warnings 0 — exit 0 (re-run by the Main Agent)",
+  "typecheck": "tsc -b --pretty false — exit 0 (re-run by the Main Agent)",
+  "ci": "recorded on the pull request for feature/v0.3-13-project-dbc-workspace-integration; the Main Agent's local gates above are the verification this handoff rests on",
+  "dependencies": [],
+  "known_issues": [
+    "Design decision, accepted by the Main Agent: the channel list is the OBSERVED projection, so a channel that stops carrying frames disappears from it while its binding remains — the binding is then neither visible nor removable until the next project switch clears it. The worker deliberately did not fold the binding key set into the list, because that would make the binding map itself a channel source. Recorded as a known limitation; deferred.",
+    "The Bind gate is stricter than the contract's minimum: it also requires an open project and a writable session, because WorkspaceSessionStore.bindChannel throws without a project and cannot verify asset ownership."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}
