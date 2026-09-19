@@ -272,6 +272,33 @@ async def test_a_tampered_asset_is_a_409_integrity_failure(tmp_path: Path) -> No
         assert body["recoverable"] is False
 
 
+async def test_a_tampered_asset_is_refused_after_a_successful_decode(tmp_path: Path) -> None:
+    """A warm decode must not let the next request skip the integrity proof."""
+    root, asset_ids = _imported_project(tmp_path, BASIC)
+    target = root / "dbc" / f"{asset_ids[0]}.dbc"
+
+    async with _client() as client:
+        warm = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA)},
+        )
+        assert warm.status_code == 200, warm.text
+
+        target.write_bytes(target.read_bytes() + b"\n")
+
+        tampered = await client.post(
+            f"/dbc/assets/{asset_ids[0]}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA)},
+        )
+
+    assert tampered.status_code == 409, tampered.text
+    body = tampered.json()
+    assert set(body) == ENVELOPE_FIELDS
+    assert body["code"] == "dbc.asset_integrity_failed"
+    assert body["source"] == "dbc"
+    assert body["recoverable"] is False
+
+
 async def test_a_missing_asset_file_is_a_409_not_a_404(tmp_path: Path) -> None:
     """The asset is registered; its file is gone. Those are different facts."""
     root, asset_ids = _imported_project(tmp_path, BASIC)
