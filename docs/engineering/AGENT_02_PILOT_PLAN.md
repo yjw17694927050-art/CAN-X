@@ -1,50 +1,67 @@
-# CAN-X — AGENT-02 Pilot Plan (first real pilot)
+# CAN-X — AGENT-02 Pilot Plan (native harness)
 
 > **Document**: `docs/engineering/AGENT_02_PILOT_PLAN.md`
-> **Scope**: The first **real** Main Agent + Sub-Agent development pilot: workload, DAG,
-> ownership, conflicts, worktrees, tests, integration order, failure recovery.
-> **Status**: DESIGNED · **REAL PILOT NOT STARTED** · contract drafts are `PLANNED`, never dispatched.
-> **Drafted at**: `maintenance/agent-02-preparation` @ `63a1b26` (from `origin/main` `bf88873`).
-> **Read first**: `docs/engineering/MULTI_AGENT_PROTOCOL.md`,
-> `docs/ADR/0002-parallel-development-serial-integration.md`, `docs/engineering/INTEGRATION_POLICY.md`,
-> `docs/engineering/AGENT_02_READINESS.md` (the audit this plan rests on).
+> **Scope**: The first **real** Main Agent + worker pilot — workload, execution mode, ownership,
+> conflicts, isolation, tests, integration order, failure recovery, acceptance boundary.
+> **Status**: DESIGNED · **REAL PILOT NOT STARTED** · contracts are `PLANNED`, never dispatched.
+> **Execution mode**: **Tianshu native `/team`** — *not* a CAN-X-built Sub-Agent runtime.
+> **Branch**: `maintenance/agent-02-preparation` (PR #18, kept open for independent re-acceptance).
+> **Read first**: `docs/ADR/0003-native-agent-harness-orchestration.md` (the boundary this plan
+> rests on), `docs/engineering/MULTI_AGENT_PROTOCOL.md`, `docs/ADR/0002-parallel-development-serial-integration.md`,
+> `docs/engineering/INTEGRATION_POLICY.md`, `docs/engineering/AGENT_02_READINESS.md`.
 
 ## 1. Objective
 
-Prove the **coordination machinery** on real work — not throughput:
+Prove the **governance layer** holds when a **native orchestrator** runs real workers — not
+throughput, and not a runtime CAN-X built itself:
 
 ```text
-real parallel execution      two Sub-Agents implementing at the same time
-branch isolation             one branch, one agent, one task
-worktree isolation           .worktrees/agent-02-a · .worktrees/agent-02-b
-TaskContract                 ownership enforced, not requested
-handoff                      a real handoff from real work, validated against Git
-evidence                     ownership re-derived from base..head history
-conflict management          the C0 claim verified, not assumed
-serial integration           one PR at a time onto a moving integration head
+native execution             the Harness /team spawns the workers (CAN-X spawns nothing)
+TaskContract enforcement      ownership enforced, not requested — a permission surface
+context isolation             each worker gets its contract + minimal bootstrap, not Main history
+handoff validation            the native worker result validated against real Git evidence
+conflict management           the C0 claim verified, not assumed
+serial integration            one PR at a time onto a moving integration head (ADR-0002)
+acceptance boundary           the phase ends at "awaiting independent acceptance", never self-closed
 ```
 
-Explicitly **not** the objective: maximum parallelism, new product capability, V0.3-12, CD-01,
-Safety work, or a schema change.
+Explicitly **not** the objective: a CAN-X worker scheduler, a model router, a message broker, a
+message/agent runtime — those are **Harness-owned** (`ADR-0003`). Also not the objective: maximum
+parallelism, a new product capability, V0.3-12, CD-01, Safety work, or a schema change.
 
-## 2. Why 1 Main Agent + 2 Sub-Agents
+## 2. Why the execution mode changed
 
-`max_sub_agents` stays **4** (unchanged). The first pilot runs **2**, because the thing being
-tested is whether the protocol holds when two Sub-Agents are genuinely concurrent — a third and
-fourth add capacity contention and C2+ surfaces without adding a new failure mode. After one
-successful 1 + 2 pilot, a 1 + 4 **scale** validation becomes a separate, later task.
+`AGENT-02-PREP-01` designed the pilot as "the Main Agent dispatches Sub-Agents through CAN-X
+tooling". The workspace inspection for this task found that the **host Harness is already a
+multi-agent orchestrator** and exposes `/team`, `/scout`, `/council` natively, with worker
+sessions, parallel scheduling, context isolation and model routing. Building a second one inside
+CAN-X would be duplication (`ADR-0003`, rejected alternative).
 
-A 1 + 4 first pilot would confound "does coordination work?" with "does the capacity cap behave?".
-Both matter; only the first is unproven.
+The pilot therefore runs in the native mode:
+
+```text
+1 coordinator (Main Agent)  +  2 native Tianshu workers   — via /team
+```
+
+`max_sub_agents` stays **4** (unchanged, `AGENT-02 §2`). The first pilot runs **2**, because the
+thing under test is whether CAN-X governance holds across two genuinely concurrent workers; a
+third and fourth add capacity contention and C2+ surfaces without adding a new failure mode. A
+1 + 4 **scale** validation is a separate, later task.
+
+**Hard constraint:** the pilot must not quietly become "CAN-X dispatches workers". If a worker is
+spawned by CAN-X tooling rather than by the Harness, the pilot no longer tests this architecture
+and the run is void.
 
 ## 3. The two candidates
 
-Both are written as real `PLANNED` contracts, executable through the shipped tooling:
+Both remain suitable after the architecture review: each is `LOW` risk, `PLANNED`, written as a
+real contract, and the pair is **ownership-disjoint** and **C0** — which matters more in the
+shared-workspace native mode (see §6). They stay in `.agent/tasks/`:
 
 ```text
 .agent/tasks/AGENT-02-A.json
 .agent/tasks/AGENT-02-B.json
-.agent/tasks/agent-02-pilot.plan.json        (the plan document the `plan` command consumes)
+.agent/tasks/agent-02-pilot.plan.json        (the plan document the CAN-X `plan` command consumes)
 ```
 
 ### Candidate A — `AGENT-02-A` · desktop DBC read-model client validation parity
@@ -55,12 +72,11 @@ Both are written as real `PLANNED` contracts, executable through the shipped too
 | Value | Closes the limitation recorded in `docs/PROJECT_STATE.md` §9 ("client-side validation is contract-shape validation, not a domain-semantics replica") |
 | Risk | `LOW` — one client validator plus its suite; no Runtime, no Rust, no UI |
 | Owner | `sub-a` |
-| Branch | `agent/AGENT-02-A-dbc-client-validation` |
-| Worktree | `.worktrees/agent-02-a` |
+| Branch (governance intent) | `agent/AGENT-02-A-dbc-client-validation` |
 | Allowed paths | `apps/desktop/src/runtime/dbc-client.ts`, `apps/desktop/src/runtime/dbc-client.test.ts` |
 | Forbidden | `apps/desktop/src-tauri/**`, `runtime/**`, `.agent/**` |
 | Dependencies | none |
-| Shared contract | `runtime/canx/api/dbc.py` (the read-model shape it consumes), pinned at base |
+| Shared contract | `runtime/canx/api/dbc.py` (consumed, pinned at base) |
 | Conflict | **C0** — verified |
 
 ### Candidate B — `AGENT-02-B` · read-only DBC asset orphan inspection
@@ -71,8 +87,7 @@ Both are written as real `PLANNED` contracts, executable through the shipped too
 | Value | Gives the recorded crash window (§9) the observability it lacks; a precondition for any future cleanup decision |
 | Risk | `LOW` — read path plus unit tests; no migration, no HTTP endpoint, no Safety path |
 | Owner | `sub-b` |
-| Branch | `agent/AGENT-02-B-dbc-orphan-inspection` |
-| Worktree | `.worktrees/agent-02-b` |
+| Branch (governance intent) | `agent/AGENT-02-B-dbc-orphan-inspection` |
 | Allowed paths | `runtime/canx/dbc/project_service.py`, `runtime/canx/dbc/repository.py`, `tests/unit/dbc/**` |
 | Forbidden | `runtime/canx/api/**`, `runtime/canx/safety/**`, `runtime/canx/data/**`, `.agent/**` |
 | Dependencies | none |
@@ -83,92 +98,152 @@ Both are recorded limitations in the project's own register, not invented module
 Safety surface, a schema migration, a protected path, or a public-truth path, so neither can
 deadlock the pair.
 
-## 4. Task DAG
+**Re-suitability check under native mode (why they still hold).** The native worker path is not
+guaranteed to give each worker its own working tree (§6). The pair is still safe to run because it
+was selected to be **path-disjoint and C0 by construction**: no file is owned by both, so
+concurrent writers cannot collide even in one workspace — *provided* the TaskContract is enforced
+(which is exactly what the pilot tests). A pair that shared a file would not be re-usable here.
+
+## 4. Execution DAG
 
 ```mermaid
 graph TD
-    M["Main Agent (owner: main)<br/>base = origin/main head at dispatch"]
-    A["AGENT-02-A · sub-a<br/>apps/desktop/src/runtime/dbc-client.{ts,test.ts}<br/>risk LOW · C0"]
-    B["AGENT-02-B · sub-b<br/>runtime/canx/dbc/{project_service,repository}.py<br/>tests/unit/dbc/** · risk LOW · C0"]
-    A --> I1["A: handoff → validate-handoff → check-integration"]
-    B --> I2["B: handoff → validate-handoff → check-integration"]
-    I1 --> R1["A: PR → CI → protected merge onto current head"]
-    R1 --> R2["B: PR rebased onto the new head → CI → protected merge"]
-    M -.->|"owns the DAG, the integration head, and the merges"| A
-    M -.->|"never a second agent on one branch"| B
+    U["User / independent reviewer"]
+    M["Tianshu Main Agent (product, mode=code)<br/>reads CAN-X governance, owns the DAG + integration head"]
+    T["/team — native Tianshu orchestration<br/>(spawns workers; CAN-X spawns nothing)"]
+    A["Worker A · AGENT-02-A<br/>allowed: apps/desktop/src/runtime/dbc-client.{ts,test.ts}<br/>C0 · LOW"]
+    B["Worker B · AGENT-02-B<br/>allowed: runtime/canx/dbc/{project_service,repository}.py · tests/unit/dbc/**<br/>C0 · LOW"]
+    G["CAN-X governance (per worker)<br/>TaskContract · allowed/forbidden paths · required tests · handoff requirements<br/>+ minimal bootstrap (AGENTS.md · PROJECT_STATE · CONTEXT_INDEX)"]
+    E["tests + Git evidence<br/>(history_touched_paths is the authority)"]
+    V["Main Agent validation<br/>validate-handoff → check-integration"]
+    I["serial protected integration<br/>one PR at a time onto the current head (ADR-0002)"]
+    R["independent acceptance<br/>(not the author)"]
+
+    U --> M --> T
+    T --> A
+    T --> B
+    A --> G
+    B --> G
+    G --> E
+    E --> V
+    V --> I
+    I --> R
+    M -.->|"owns the DAG, the integration head, the merges"| I
 ```
 
-No edges between A and B: independent by construction. Integration is **serial** (ADR-0002) —
-A first, then B rebased onto A's merge, because the integration head moves after every merge.
+No edges between A and B: independent by construction. Integration is **serial** (ADR-0002) — A
+first, then B rebased onto A's merge, because the integration head moves after every merge.
 
-## 5. Ownership boundaries and shared contracts
+## 5. What the Harness does and what CAN-X does, per worker
 
 ```text
-ownership = a permission surface, not a request. Anything not listed is not editable.
+Harness decides HOW   spawn the worker · pick its model · isolate its context ·
+                      persist its session · run how many in parallel ·
+                      implement /team /scout /council
+
+CAN-X decides WHAT    the TaskContract: objective · allowed_paths · forbidden_paths ·
+                      shared_contracts · acceptance_criteria · required_tests ·
+                      risk_class · handoff_requirements
 ```
 
-- The two surfaces are disjoint: `apps/desktop/src/runtime/**` versus `runtime/canx/dbc/**` +
-  `tests/unit/dbc/**`. Neither task may touch the other's files, and neither may touch `.agent/**`.
-- A declares one shared contract (`runtime/canx/api/dbc.py`) it **consumes** and may not change.
-  B declares none. A Sub-Agent that finds a consumed contract wrong reports `BLOCKED` with a change
-  request; it never edits it (`sub-agent.prompt.md`).
-- Neither task may touch `runtime/canx/safety/**`, `runtime/canx/api/**` (A is forbidden from it
-  explicitly), the protected path set, or any `public_truth_paths` entry. That is what keeps the
-  pair at C0.
+CAN-X does **not** spawn the worker, does **not** choose its model, and does **not** build its
+prompt transport. The Main Agent hands the native worker its contract and the minimal bootstrap;
+everything else about the worker's execution is the Harness's.
 
-## 6. Conflict classification (verified, not asserted)
+## 6. Isolation — what is enforced where (observed, and to be recorded)
 
-Run through the shipped classifier at the drafted head:
+The workspace inspection produced two observable facts and one that must be **measured by the
+pilot itself** (never assumed):
 
 ```text
-python -m tools.agent.cli validate-task --file .agent/tasks/AGENT-02-A.json   -> exit 0
-python -m tools.agent.cli validate-task --file .agent/tasks/AGENT-02-B.json   -> exit 0
-python -m tools.agent.cli plan --file .agent/tasks/agent-02-pilot.plan.json   -> exit 0
-
-classify_pair(A, B)        -> C0   auto_resolvable = True   overlapping_paths = (none)
-parallel_safe_pairs(A, B)  -> (('AGENT-02-A', 'AGENT-02-B'),)
-requires_serial_review     -> A False · B False
-risk_class                 -> LOW · LOW
+observed   the native worker delegation path builds its coordinator with sharedWorktree: true
+observed   the Harness separately has worker isolation: workerIsolationMode() ← RIVET_WORKER_ISOLATION
+           (default enabled) → "isolated snapshot worktree"; Session Manager has isolatedWorktree
+           (per-session worktree + branch + baseline, squash-merged back)
+to measure whether two concurrent /team workers on THIS machine land in one working tree or in
+           isolated worktrees, and where their commits land
 ```
 
-`C0` is the expected and acceptable level for a first pilot. Had the classifier returned `C2`,
-`C3` or `C4`, the pair would not run in parallel and the workload would be re-selected.
+The observable facts disagree at the level of the shipped code, and obfuscated runtime text is not
+authority. So the **first recorded step of the pilot is an isolation observation** — a one-line
+`git worktree list` / `git branch` capture while both workers are live. It is cheap, decisive, and
+it converts the ambiguity into a recorded fact instead of a guess.
 
-## 7. Worktree and branch layout
+Two consequences either way, both already decided:
+
+- **Ownership is enforced by policy, not by the filesystem.** `allowed_paths` in the TaskContract
+  plus Git-derived `history_touched_paths` at validation is the enforcement. This is
+  filesystem-independent and therefore holds whether or not the native path isolates worktrees.
+  The C0/disjoint pair is what makes this sufficient for a first pilot.
+- **The CAN-X worktree helper is retained as a governance adapter, not a runtime allocator**
+  (`ADR-0003`). `tools/agent/worktree.py` encodes the CAN-X branch convention, binds a worktree to
+  a task, and fails closed on unsafe states — governance the Harness does not implement. Whether
+  the native runner materialises per-task worktrees is an observation the pilot records; it is not
+  an assumption the plan rests on.
+
+`TaskContract.branch` / `.worktree` in the two drafts record the **governance intent**; branch and
+worktree identity are checked at the integration boundary (readiness rows R35 / R36), where CAN-X
+can actually decide.
+
+## 7. Workers and capacity
 
 ```text
-branch     agent/AGENT-02-A-dbc-client-validation
-worktree   .worktrees/agent-02-a
-branch     agent/AGENT-02-B-dbc-orphan-inspection
-worktree   .worktrees/agent-02-b
+coordinator    1   the Tianshu Main Agent — a product session (mode=code), reads CAN-X governance
+workers        2   spawned by the Harness through /team, each handed one TaskContract
+parallelism    native (Harness schedules); CAN-X still reports capacity for its own planning
+max_sub_agents 4   unchanged ceiling in .agent/config.json (below which CAN-X defers)
 ```
 
-Created with the shipped helper only:
+CAN-X's `plan` / capacity accounting (R24, R25) is retained as **governance input**: the Main
+Agent asks it "is this pair dispatchable and conflict-free?" before it calls `/team`. It does not
+schedule the workers; it authorises them. Over-dispatch is still reported rather than rounded away.
 
-```bash
-python -m tools.agent.cli worktree create --task-id AGENT-02-A \
-  --branch agent/AGENT-02-A-dbc-client-validation \
-  --path .worktrees/agent-02-a --base <origin/main head at dispatch>
-python -m tools.agent.cli worktree validate --path .worktrees/agent-02-a \
-  --branch agent/AGENT-02-A-dbc-client-validation
+## 8. Worker context (what a worker receives)
+
+Each worker runs in a **native, isolated context** — it does **not** inherit the Main Agent's
+history (`AGENT_CONTEXT_GOVERNANCE.md` §6, and the Harness's own `subagentPromptBlocks`). The
+brief is exactly:
+
+```text
+task objective            from the TaskContract
+allowed paths             the whole permission surface — anything else is not the worker's
+forbidden paths           the explicit holes inside that surface
+required authority        the Tier-1 sections the contract's surface touches
+                          (resolved through docs/CONTEXT_INDEX.md)
+required tests            the test names the handoff must report
+handoff requirements      the exact evidence the worker must return
++ minimal bootstrap       AGENTS.md · docs/PROJECT_STATE.md · docs/CONTEXT_INDEX.md  (Tier 0 only)
 ```
 
-One branch, one agent, one task, one worktree. Worktree creation refuses a dirty repository, an
-existing path or branch, and an unresolvable base — the preconditions are the tool's, not a
-convention.
+No Main-Agent history. No full-project dump. The load rules stay
+`docs/engineering/AGENT_CONTEXT_GOVERNANCE.md`; the routing stays `docs/CONTEXT_INDEX.md`. This
+matches the Harness's own child-worker construction (a fresh `PromptEngine`, not the parent's
+frozen prefix).
 
-**`base_sha` generation rule.** The `base_sha` in the two drafts is the current known integration
-head (`bf88873`) and exists so the contracts are parseable *now*. At dispatch, both are regenerated
-to the then-current `origin/main` head. `base_sha` is not one of the frozen fields
-(`FROZEN_FIELDS = objective, allowed_paths, shared_contracts`), so regenerating it needs no revision
-bump; changing any frozen field does.
+## 9. Handoff — consume native output, validate in CAN-X
 
-**Pre-flight (from the readiness audit, O-3).** Refresh the local `main` ref (`git fetch`) before any
-cleanup: the local `main` was stale at `ae22b82` while `origin/main` was `bf88873`, and
-`worktree remove` defaults its containment check to the local name. Pass
-`--integration-branch origin/main` when the local ref is behind.
+The Harness already returns a structured worker result (`workOrderId · status · summary ·
+findings · artifacts · changedFiles · risks · nextActions · evidenceStatus · failureReason`).
+CAN-X does **not** build a second handoff runtime (`ADR-0003`).
 
-## 8. Required tests and handoff requirements
+```text
+produced by   the native worker (Harness result envelope), mapped into the CAN-X handoff shape
+validated by  python -m tools.agent.cli validate-handoff   (schema + Git-backed evidence)
+              python -m tools.agent.cli check-integration  (ownership, base/head, deps, conflicts)
+```
+
+The **validation envelope is kept** because it decides things the native envelope only describes:
+whether the history actually touched only owned paths (`history_touched_paths`), whether the base
+is the current integration head (`check_base` → `agent.base_stale`), and whether the handoff's
+`changed_files`/`commits` agree with real history. The Harness reports; CAN-X authorises.
+
+Both handoffs must report: `task_id · agent · branch · base_sha · head_sha · commits ·
+changed_files · ownership_compliance · tests[name, command, result] · lint · typecheck · ci ·
+dependencies · known_issues · deferred_items · ready_for_integration`. `result` is one of
+`passed / failed / skipped / not_run`; `not_run` is a complete answer and a pass nobody observed
+is not. `validate-handoff` runs **before** `check-integration`.
+
+## 10. Required tests
 
 ```text
 AGENT-02-A   frontend-test        pnpm test          (root; delegates to @canx/desktop)
@@ -179,54 +254,48 @@ AGENT-02-B   unit                python -m pytest tests/unit/dbc -q
 ```
 
 A required test must be reported `passed`. `not_run`, `skipped` and `failed` remain legitimate
-*reports* — they are simply not an integration-passing result.
+*reports* — they are simply not an integration-passing result. No test is skipped, deleted or
+weakened to make anything green.
 
-Both handoffs must report: `task_id · agent · branch · base_sha · head_sha · commits ·
-changed_files · ownership_compliance · tests[name, command, result] · lint · typecheck · ci ·
-dependencies · known_issues · deferred_items · ready_for_integration`. `changed_files` is the union
-of every path the task history touched — the same set the verifier derives, so an honest handoff and
-the gate agree by construction.
-
-`validate-handoff` runs **before** `check-integration` (readiness audit O-1: the write half of the
-handoff has no CLI command, so the Sub-Agent produces the JSON and the validator is the only check).
-
-## 9. Expected integration order
+## 11. Expected integration order
 
 ```text
-1  A: handoff → validate-handoff → check-integration → PR → CI → protected merge
-2  head moved by A's merge
-3  B: rebase onto the new head → re-run tests → CI → protected merge
+1  observe    capture git worktree list / branch while both workers are live   (§6, recorded)
+2  A          handoff → validate-handoff → check-integration → PR → CI → protected merge
+3  head moved by A's merge
+4  B          rebase onto the new head → re-run tests → CI → protected merge
 ```
 
-Serial integration is the protocol, not a limitation to work around (ADR-0002). B's
-`check-integration` is expected to fail with `agent.base_stale` until B is rebased onto A's merge —
-that refusal is the mechanism working.
+Serial integration is the protocol, not a limitation (ADR-0002). B's `check-integration` is
+expected to fail with `agent.base_stale` until B is rebased onto A's merge — that refusal is the
+mechanism working.
 
-## 10. Failure recovery
+## 12. Failure recovery
 
 | Failure | Expected mechanism |
 | --- | --- |
-| A Sub-Agent needs a file outside `allowed_paths` | report `BLOCKED`; the Main Agent re-issues the contract at revision + 1; the Sub-Agent never widens its own surface |
+| A worker needs a file outside `allowed_paths` | report `BLOCKED`; the Main Agent re-issues the contract at revision + 1; the worker never widens its own surface |
 | A handoff claims `ready_for_integration` while its history touched an unowned path | `agent.ownership_violation` + `agent.handoff_evidence_mismatch`; rebase/re-issue, never edit the handoff to match |
-| A required test is not green | `agent.handoff_invalid`; the Sub-Agent reports the real result rather than a pass |
+| Two workers collide in the shared workspace | the C0/disjoint selection should prevent it; if it happens anyway it is a **recorded** result about the native isolation model, and the run stops — it is not patched over |
+| A required test is not green | `agent.handoff_invalid`; the worker reports the real result rather than a pass |
 | Base went stale between green CI and merge | `agent.base_stale`; update onto the current head, re-run CI, then merge |
-| A Sub-Agent terminates without integrating | the later conflicting task is *not* silently released; `replan_required` names the dead owner (C0 here, so this path is not armed) |
-| Worktree left dirty after a failed run | `worktree remove` refuses (`agent.worktree_dirty`) — the scene is preserved for inspection, never force-deleted |
-| Capacity: a third task appears | `capacity_deferred`, never an over-dispatch; `active_over_capacity` is reported rather than rounded away |
+| A worker terminates without integrating | the later conflicting task is *not* silently released; `replan_required` names the dead owner (C0 here, so this path is not armed) |
+| The native runner spawns nothing / ignores the contract | **the run is void** — the pilot exists to test native execution under CAN-X governance; fall back to planning, not to a CAN-X dispatch runtime |
 
-## 11. Main Agent responsibilities
+## 13. Main Agent responsibilities
 
 ```text
-own the DAG and the integration head           one PR at a time, onto the current head
-write both TaskContracts and validate them     never widen a surface after the fact
-allocate branch + worktree per task            never two agents on one branch
-dispatch both Sub-Agents with their contracts  no context the contract does not name
-validate every handoff before integration      validate-handoff, then check-integration
-integrate serially through the protected flow  never a direct push, never a bypass
-record what is deferred and why                never self-accept the phase
+own the DAG and the integration head            one PR at a time, onto the current head
+write both TaskContracts and validate them      never widen a surface after the fact
+authorise the pair with CAN-X plan/conflicts    then call /team — the Harness spawns the workers
+hand each worker its contract + minimal bootstrap   no context the contract does not name
+record the isolation observation (§6)           never assume the isolation model
+validate every handoff before integration       validate-handoff, then check-integration
+integrate serially through the protected flow   never a direct push, never a bypass
+record what is deferred and why                 never self-accept the phase
 ```
 
-## 12. Independent acceptance boundary
+## 14. Independent acceptance boundary
 
 ```text
 The pilot ends at:  awaiting independent acceptance.
@@ -236,4 +305,6 @@ The Main Agent may not write   Final Acceptance: PASS · Status: CLOSED · "mult
 ```
 
 A green CI is not acceptance (`docs/PROJECT_STATE.md` §14). This plan does not start the pilot, and
-nothing in it may be cited as a pilot result: **REAL PILOT NOT STARTED**.
+nothing in it may be cited as a pilot result: **REAL PILOT NOT STARTED**. A future genuinely
+long-running pilot may also test long-duration context endurance; that endurance is
+**NOT VERIFIED** and is not claimed by this plan.

@@ -62,7 +62,8 @@ task changes what that report accepted.
 **The safety summary in `PROJECT_STATE` §3 is orientation only; it never replaces the authority.**
 
 ### Agent orchestration — AGENT-01 / AGENT-02, tasks, handoffs, integration
-`Tier 1`: `docs/engineering/MULTI_AGENT_PROTOCOL.md` ·
+`Tier 1`: `docs/ADR/0003-native-agent-harness-orchestration.md` (the Harness ↔ CAN-X boundary) ·
+`docs/engineering/MULTI_AGENT_PROTOCOL.md` ·
 `docs/ADR/0002-parallel-development-serial-integration.md` · `docs/engineering/INTEGRATION_POLICY.md`
 §17 · `.agent/config.json` · the relevant `.agent/schemas/*`.
 *History when* a handoff dispute → the archive §18.

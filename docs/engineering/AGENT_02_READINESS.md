@@ -2,10 +2,14 @@
 
 > **Document**: `docs/engineering/AGENT_02_READINESS.md`
 > **Scope**: Can a first real AGENT-02 pilot start on the AGENT-01 foundation as it stands?
-> **Status**: PREPARATION COMPLETE · awaiting independent acceptance.
-> **Not claimed**: `Final Acceptance: PASS`, `Status: CLOSED`, "multi-agent verified".
-> **Audited head**: `maintenance/agent-02-preparation` @ `63a1b26` (from `origin/main` `bf88873`).
-> **Related**: `docs/engineering/MULTI_AGENT_PROTOCOL.md` (the protocol),
+> **Status**: PREPARATION COMPLETE · ARCHITECTURE PIVOTED to native harness orchestration ·
+> awaiting independent re-acceptance.
+> **Not claimed**: `Final Acceptance: PASS`, `Status: CLOSED`, "multi-agent verified",
+> long-duration context endurance (**NOT VERIFIED**).
+> **Audited head**: `maintenance/agent-02-preparation` @ `63a1b26` (from `origin/main` `bf88873`);
+> the native-harness boundary was established at the AGENT-02-NATIVE-HARNESS-PIVOT task head.
+> **Related**: `docs/ADR/0003-native-agent-harness-orchestration.md` (the boundary),
+> `docs/engineering/MULTI_AGENT_PROTOCOL.md` (the protocol),
 > `docs/engineering/INTEGRATION_POLICY.md` (the merge side),
 > `.agent/config.json` (the knobs), `AGENT_01_*` close-outs in `docs/project-state/`.
 
@@ -15,9 +19,11 @@ protocol and it does not reproduce logs.
 ```text
 Question:  does the AGENT-01 foundation actually support a first real pilot?
 Verdict:   READY FOR PILOT
-           — 48 READY, 2 PARTIAL, 0 BLOCKED, 0 NOT IMPLEMENTED
+           — CAN-X governance: 48 READY, 2 PARTIAL, 0 BLOCKED, 0 NOT IMPLEMENTED
            — no P0-like blocker, no P1-like blocker
-           — 2 P2-like notes (R29, R49), both with a documented workaround
+           — 2 PARTIAL matrix rows (R29, R49) — both with a documented workaround
+           — 4 P2-like observations (O-1 … O-4) — none blocking
+           — Harness runtime: SUPPORTED (native /team, /scout, /council) — see §3
 ```
 
 ## 1. How the matrix was produced
@@ -125,12 +131,77 @@ Baseline suite run for this audit (this head):
 | R49 | cleanup refusal on unsafe state | `worktree.py:remove_worktree` | T `test_agent_worktree_lifecycle.py:215,233,253,271,289,294` | PARTIAL | **P2.** Refusal is correct, but the default integration ref is the **local** `main`, which is stale here (`ae22b82`, behind `origin/main` `bf88873`; verified with `merge-base --is-ancestor`). A branch already contained in `origin/main` is therefore refused with `agent.branch_unmerged` unless `--integration-branch origin/main` is passed. See O-3. |
 | R50 | structured error codes / no bare crash | `errors.py:EXIT_CODES`, `cli.py:main` envelope | R + L: `agent.dag_cycle` → 2, `agent.protected_path_conflict` → 3, `agent.task_invalid` → 2, success → 0, all with a JSON envelope and no traceback | READY | No automated test asserts the CLI exit-code contract; verified live in this audit only |
 
-## 3. Findings
+## 3. Native Harness Boundary
+
+The pilot is executed by the **host Agent Harness** (Tianshu), not by a CAN-X-built runtime
+(`ADR-0003`). Readiness therefore has two independent halves, and the matrix in §2 is only the
+second of them.
+
+```text
+Harness runtime readiness      does the host supply execution / orchestration?    → §3.1
+CAN-X governance readiness     does CAN-X supply contract / evidence / authority? → §2, R01–R50
+```
+
+### 3.1 Harness runtime readiness — observed on this machine
+
+Established by reading the **installed runtime**, not the product description.
+
+| Capability | Evidence (installed Tianshu `3.22.0` · `product: tianshu-desktop` · `mode: code` · tier `pro`) |
+| --- | --- |
+| native commands | literal `"/team"`, `"/scout"`, `"/council"`, `"/plan"`, `"/galaxy"`, `"/starflow"` in the shipped runtime |
+| worker spawning | `rivet-runtime/agent/worker-process/child.js` — `DelegationCoordinator`, `buildWorkerRuntime`, `runWorkerSession` |
+| parallel execution | `resolveMaxWorkers()` → `config.workers.maxWorkers` → `RIVET_MAX_WORKERS` → default `3` |
+| read-only vs write worker | `filterToolRegistry(registry, allowedTools)` + `profileRegistry.writeProfiles()` |
+| context isolation | `subagentPromptBlocks()`; a child builds its own `PromptEngine`, not the parent's frozen prefix |
+| model routing | `config.workers.{profiles,routing,patcherTier,escalationCap}` (e.g. `code_edit → cheap-flash`) |
+| worker results | structured envelope: `workOrderId · status · summary · findings · artifacts · changedFiles · risks · nextActions · evidenceStatus · failureReason` |
+| persisted worker sessions | `TianshuData/.rivet/subagents` — 100 work-order records (`wo_*.json` + `*.session.jsonl`) |
+| worker isolation | `workerIsolationMode()` ← `RIVET_WORKER_ISOLATION` (default **enabled**) → "isolated snapshot worktree"; Session Manager `isolatedWorktree` (per-session worktree + branch + baseline, squash-merged back) |
+
+**Status: SUPPORTED.** The native execution/orchestration surface a pilot needs is present. One
+thing is deliberately *not* claimed: the exact per-worker **filesystem** isolation on this machine
+is **NOT YET OBSERVED at runtime**. The shipped code contains both a coordinator built with
+`sharedWorktree: true` and a default-on isolation mode, and obfuscated runtime text is not
+authority. The pilot's first recorded step is therefore a one-line observation of where two live
+workers' commits land (`AGENT_02_PILOT_PLAN.md` §6), so the model is measured, not assumed.
+
+### 3.2 CAN-X governance readiness — §2, unchanged
+
+Rows R01–R50 remain exactly what they were: 48 READY · 2 PARTIAL · 0 BLOCKED · 0 NOT IMPLEMENTED.
+The pivot does not invalidate them; it changes **what they govern**. Every row is still a statement
+about CAN-X's ability to define *what* a worker may do and to decide *whether the result is true* —
+ownership, base/head evidence, conflicts, protected integration, acceptance. Two rows are re-framed
+by the pivot, with no change of status:
+
+```text
+R29  handoff write half           PARTIAL → re-framed: the "write half" is now the native worker
+                                  result; CAN-X keeps only the validation envelope (ADR-0003)
+R49  stale local main on cleanup  PARTIAL → unchanged: a CAN-X cleanup predicate, unrelated to the
+                                  Harness
+```
+
+### 3.3 What neither half yet proves
+
+```text
+a real /team pilot run under CAN-X governance     NOT STARTED
+per-worker filesystem isolation on this machine   NOT OBSERVED at runtime
+long-duration context endurance                   NOT VERIFIED
+the Harness enforcing CAN-X ownership             out of scope — CAN-X keeps that duty (by design)
+```
+
+## 4. Findings
 
 ### P0-like: none. P1-like: none.
 
-Both `PARTIAL` rows are P2: each has a working path and a documented workaround, and
-neither prevents a pilot from starting, committing, handing off or integrating.
+Both `PARTIAL` matrix rows are P2-like — R29 ↔ O-1, R49 ↔ O-3 — and each has a working path and a
+documented workaround, so neither prevents a pilot from starting, committing, handing off or
+integrating. Two further P2-like observations, **O-2** and **O-4**, are hygiene notes that map to
+no matrix row. The two axes stay separate and are never summed:
+
+```text
+PARTIAL matrix rows        2   (R29 handoff write half · R49 stale local main on cleanup)
+P2-like observations       4   (O-1, O-2, O-3, O-4)
+```
 
 **O-1 — the handoff write half is untested and unwired (R29, P2).**
 `build_handoff` is tested and Git-derived. `write_handoff` / `render_markdown` are not
@@ -173,10 +244,11 @@ recorded in `docs/PROJECT_STATE.md` §AGENT-CONTEXT-PROTECTION. Verified end-to-
 Sub-Agent contract owning the router is refused with `agent.protected_path_conflict`
 (exit 3) through the real CLI.
 
-## 4. What this audit does not prove
+## 5. What this audit does not prove
 
 ```text
 no Sub-Agent was launched                     -> "multi-agent verified" is NOT claimed
+no native /team worker was launched           -> the native execution path is read, not observed live
 the local gate never contacts GitHub          -> R48 is a boundary, not a verified check
 no real CAN hardware, no macOS                -> unchanged; this audit adds no platform claim
 CI for this branch                            -> belongs to the PR, not to this document
@@ -185,17 +257,20 @@ CI for this branch                            -> belongs to the PR, not to this 
 The readiness verdict is about the *tooling contract*. A pilot adds the one thing no
 audit can substitute for: a real Sub-Agent producing a real handoff from real work.
 
-## 5. Verdict
+## 6. Verdict
 
 ```text
-READY FOR PILOT
+CAN-X governance readiness        READY FOR PILOT
   READY             48
   PARTIAL            2   (R29 handoff write half · R49 stale local main on cleanup)
   BLOCKED            0
   NOT IMPLEMENTED    0
   P0-like blockers   0
   P1-like blockers   0
-  P2-like notes      4   (O-1, O-2, O-3, O-4)
+  P2-like observations  4   (O-1, O-2, O-3, O-4)
+
+Harness runtime readiness         SUPPORTED   (native /team · /scout · /council; §3.1)
+  per-worker filesystem isolation   NOT OBSERVED at runtime (pilot step 1)
 
 REAL PILOT NOT STARTED.
 ```
