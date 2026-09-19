@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "task_id": "AGENT-02-B",
+  "title": "Read-only inspection of DBC asset files that have no registry row",
+  "objective": "A read-only inspection reports every file present under the project DBC asset directory that has no matching dbc_assets registry row - the crash window recorded in docs/PROJECT_STATE.md §9, where the asset file is written and the registry row is not committed. Registry state stays authoritative: the inspection deletes nothing, repairs nothing and writes nothing.",
+  "scope": "The DBC project service / registry read path and its unit tests.",
+  "non_goals": [
+    "Automatic cleanup, deletion or repair of any file - an explicit recorded decision",
+    "Any SQLite schema or migration change",
+    "Any HTTP endpoint, API contract or runtime capability change",
+    "Any change under runtime/canx/safety/**"
+  ],
+  "base_sha": "bf88873d583a82b28ca7e52bafac208e8c2c7f81",
+  "branch": "agent/AGENT-02-B-dbc-orphan-inspection",
+  "worktree": ".worktrees/agent-02-b",
+  "owner": "sub-b",
+  "allowed_paths": [
+    "runtime/canx/dbc/project_service.py",
+    "runtime/canx/dbc/repository.py",
+    "tests/unit/dbc/**"
+  ],
+  "forbidden_paths": [
+    "runtime/canx/api/**",
+    "runtime/canx/safety/**",
+    "runtime/canx/data/**",
+    ".agent/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [],
+  "acceptance_criteria": [
+    "An asset file present with no matching registry row is reported as an orphan together with its project-relative path",
+    "A registered asset whose file is missing is reported separately as a missing file, never conflated with an orphan",
+    "A clean project reports neither, and the inspection mutates nothing: no row inserted, updated or deleted, and no file written or removed"
+  ],
+  "required_tests": [
+    "unit"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for the focused pytest run over tests/unit/dbc",
+    "Report the exact command and result for ruff and mypy over runtime and tools",
+    "State explicitly that no migration was added and that the inspection is read-only"
+  ],
+  "risk_class": "LOW",
+  "status": "PLANNED",
+  "revision": 1
+}

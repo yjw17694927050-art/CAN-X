@@ -429,18 +429,51 @@ Earlier CLOSED — DOC-GOV-01, Documentation & Agent Context Governance
   → `main` e183c53 (protected merge, no bypass) · post-merge CI 35361083707 SUCCESS on attempt 1.
   Docs-only: no product code, runtime, safety, schema, API, dependency or CI-semantics change.
 
-Next prerequisite task — AGENT-CONTEXT-PROTECTION (Context Governance Protected Truth Surface)
-  Status: NOT STARTED · REQUIRED BEFORE AGENT-02
-  docs/CONTEXT_INDEX.md and docs/engineering/AGENT_CONTEXT_GOVERNANCE.md are not yet in
-  .agent/config.json protected_paths / public_truth_paths. That change belongs to the AGENT-01
-  enforcement surface and needs its own design, tests and acceptance.
+Prerequisite task — AGENT-CONTEXT-PROTECTION (Context Governance Protected Truth Surface)
+  Status: IMPLEMENTED · INDEPENDENT ENGINEERING ACCEPTANCE: PASS · NOT YET MERGED
+          (branch maintenance/agent-02-preparation, PR #18; integration on HOLD)
+  docs/CONTEXT_INDEX.md and docs/engineering/AGENT_CONTEXT_GOVERNANCE.md now enter
+  .agent/config.json protected_paths **and** public_truth_paths — two independent invariants over one
+  surface, exact paths only (no `docs/**` widening). Regression coverage:
+  tests/unit/agent_tools/test_context_protection.py (A1–A9) and
+  tests/integration/test_agent_context_protection.py (git-backed transient-touch: a modify-then-restore
+  leaves the net diff clean and is still refused). Not self-accepted — the verdict is external.
 
-Immediate next engineering task — AGENT-02, real 1 Main Agent + up to 4 Sub-Agent pilot
-  Status: NOT STARTED · BLOCKED BY AGENT-CONTEXT-PROTECTION (RELIABILITY-01: CLEARED)
-  Read first when it starts: docs/engineering/MULTI_AGENT_PROTOCOL.md,
-  docs/ADR/0002-parallel-development-serial-integration.md, docs/engineering/INTEGRATION_POLICY.md.
+Preparation task — AGENT-02-PREP-01 (Readiness Audit + Real Pilot Design)
+  Status: PREPARATION COMPLETE · ENGINEERING ACCEPTANCE: PASS (head `17305d6`) · INTEGRATION: HOLD ·
+          REAL PILOT NOT STARTED
+  Readiness audited R01–R50 against real executable behaviour: 48 READY · 2 PARTIAL matrix rows (R29 the
+  handoff write half is untested and unwired; R49 the stale local `main` ref can refuse a legitimate
+  cleanup) · 4 P2-like observations (O-1…O-4) · 0 BLOCKED · 0 NOT IMPLEMENTED · no P0/P1-like blocker.
+  Pilot designed as 1 Main Agent + 2 workers, C0 verified with the shipped classifier, ownership-disjoint,
+  both contracts `PLANNED` in .agent/tasks/. See docs/engineering/AGENT_02_READINESS.md.
 
-NOT STARTED: AGENT-CONTEXT-PROTECTION · AGENT-02 · V0.3-12 · CD-01.
+Pivot task — AGENT-02-NATIVE-HARNESS-PIVOT (Adopt Tianshu Native Multi-Agent Orchestration)
+  Status: ARCHITECTURE PIVOT COMPLETE · NATIVE TIANSHU HARNESS SELECTED FOR ORCHESTRATION ·
+          REAL PILOT NOT STARTED · AWAITING INDEPENDENT RE-ACCEPTANCE
+  The execution environment is itself a multi-agent orchestrator (Tianshu 3.22.0, product
+  `tianshu-desktop`, mode `code`): native `/team` · `/scout` · `/council`, worker sessions, parallel
+  scheduling, context isolation and model routing — verified by reading the installed runtime, not the
+  product description. CAN-X therefore adopts the host Harness for execution/orchestration and does NOT
+  implement a competing Agent Runtime; CAN-X retains repository identity, Task ownership policy,
+  protected/public-truth/safety path classification, conflict policy, Git-backed handoff evidence,
+  stale-base protection, the Quality Gate, protected integration and the independent acceptance
+  boundary. AGENT-01 is not deleted: its components are classified KEEP / ADAPT / HARNESS-OWNED /
+  DEPRECATE-LATER, and no large deletion is performed in this task. The pilot is re-specified to run
+  through native `/team` (1 Main Agent + 2 native workers) while still using the C0, disjoint
+  .agent/tasks/AGENT-02-{A,B}.json contracts as the worker governance brief. Long-duration context
+  endurance: NOT VERIFIED. Not merged; PR #18 remains open.
+  Decision: docs/ADR/0003-native-agent-harness-orchestration.md ·
+  Plan: docs/engineering/AGENT_02_PILOT_PLAN.md · Audit: docs/engineering/AGENT_02_READINESS.md §3.
+
+Immediate next engineering task — AGENT-02, real native-harness pilot (1 Main Agent + 2 workers via /team)
+  Status: NOT STARTED · prerequisite AGENT-CONTEXT-PROTECTION implemented (above) · pilot DESIGNED only
+  Read first when it starts: docs/ADR/0003-native-agent-harness-orchestration.md,
+  docs/engineering/MULTI_AGENT_PROTOCOL.md, docs/ADR/0002-parallel-development-serial-integration.md,
+  docs/engineering/INTEGRATION_POLICY.md, docs/engineering/AGENT_02_READINESS.md,
+  docs/engineering/AGENT_02_PILOT_PLAN.md.
+
+NOT STARTED: AGENT-02 (real pilot) · V0.3-12 · CD-01.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
 ```
 
