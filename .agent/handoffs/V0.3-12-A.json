@@ -37,7 +37,8 @@
   "known_issues": [
     "The delivery range is base_sha=8522c0f -> head_sha=cd284ed, i.e. exactly this task's own commit. In native-shared mode base_sha is the integration head the delivery was applied to, not the dispatch base (451352f); the contract was re-issued at revision 2 to record the execution coordinates it actually had.",
     "The worker envelope for this task came back with status 'blocked' from the harness write gate (a scoped tsc that did not run to completion), not from a test failure. The Main Agent re-ran every required test itself; the results above are those runs.",
-    "The runtime client has no production UI caller yet — this increment is a foundation (AGENT_02_PILOT_PLAN / V0.3-12 non-goals: no Project Picker UI)."
+    "The runtime client has no production UI caller yet — this increment is a foundation (AGENT_02_PILOT_PLAN / V0.3-12 non-goals: no Project Picker UI).",
+    "V0.3-12-FIX-2 re-issued this contract at revision 3. Its revision-2 objective and acceptance criteria required BOTH that the Runtime's five-field envelope be preserved intact AND that no error message or error field contain projectPath — which cannot both hold, because the Runtime's own project diagnostics populate `details` with str(path) (runtime/canx/project/storage.py, manifest.py). The absolute criterion was replaced with the accurate boundary it was meant to state: Desktop-authored transport/contract diagnostics add neither projectPath, the request URL nor the raw response body, while a structured Runtime API failure preserves the Runtime-provided envelope unre-sanitised. This is a contract correction, not a product change; the delivery range and the reported tests are unchanged. Pinned by four new tests in project-client.test.ts."
   ],
   "deferred_items": [
     "A live-Runtime smoke of inspectProject against a running sidecar on 127.0.0.1:8765 (NOT VERIFIED; all assertions use a stubbed fetch)"

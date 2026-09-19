@@ -354,6 +354,73 @@ describe("a structured Runtime failure", () => {
   });
 });
 
+describe("the Runtime's own details are the only place a path may appear", () => {
+  /**
+   * The Runtime fills `details` with `str(path)` on its own project failures, and
+   * its five-field envelope is preserved intact by contract — so a Runtime-provided
+   * path *does* reach the ApiError surface. What this client must never do is add
+   * one of its own, or strip the Runtime's down.
+   */
+  const RUNTIME_PATH = "C:\\customer\\secret-program";
+
+  function apiFailure(details: Record<string, unknown>): void {
+    stubFetch(
+      jsonResponse(
+        {
+          code: "project.not_found",
+          message: "The project could not be opened.",
+          details,
+          recoverable: false,
+          source: "project",
+        },
+        404,
+      ),
+    );
+  }
+
+  it("preserves a Runtime-provided path in details, unchanged and complete", async () => {
+    apiFailure({ path: RUNTIME_PATH });
+
+    const failure = (await rejectionOf(inspectProject(PROJECT_PATH))) as RuntimeProjectApiError;
+
+    expect(failure).toBeInstanceOf(RuntimeProjectApiError);
+    expect(failure.details).toEqual({ path: RUNTIME_PATH });
+    expect(failure.details["path"]).toBe(RUNTIME_PATH);
+  });
+
+  it("keeps the five-field envelope intact and invents no sixth field", async () => {
+    apiFailure({ path: RUNTIME_PATH, schema_version: 1 });
+
+    const failure = (await rejectionOf(inspectProject(PROJECT_PATH))) as RuntimeProjectApiError;
+
+    expect(failure.status).toBe(404);
+    expect(failure.code).toBe("project.not_found");
+    expect(failure.recoverable).toBe(false);
+    expect(failure.source).toBe("project");
+    expect(failure.details).toEqual({ path: RUNTIME_PATH, schema_version: 1 });
+  });
+
+  it("does not strip a Runtime details field it does not recognise", async () => {
+    apiFailure({ path: RUNTIME_PATH, missing_columns: ["created_at"] });
+
+    const failure = (await rejectionOf(inspectProject(PROJECT_PATH))) as RuntimeProjectApiError;
+
+    expect(Object.keys(failure.details).sort()).toEqual(["missing_columns", "path"]);
+    expect(failure.details["missing_columns"]).toEqual(["created_at"]);
+  });
+
+  it("adds no client-authored path, URL or raw body when the Runtime's details carry none", async () => {
+    apiFailure({ reason: "manifest_missing" });
+
+    const failure = (await rejectionOf(inspectProject(PROJECT_PATH))) as RuntimeProjectApiError;
+    const text = JSON.stringify(failure, Object.getOwnPropertyNames(failure));
+
+    expect(JSON.stringify(failure.details)).not.toContain(PROJECT_PATH);
+    expect(text).not.toContain(INSPECT_URL);
+    expect(text).not.toContain("project_path=");
+  });
+});
+
 describe("transport and contract failures", () => {
   it("reports a rejected fetch as a transport failure", async () => {
     stubRejectingFetch(new TypeError("Failed to fetch"));

@@ -44,10 +44,15 @@
  *   manifest name and no database name, because the Runtime's projection has none
  *   either. The caller already knows what it asked for; this layer invents no way
  *   to discover where the Runtime keeps things.
- * * **A failure never echoes the request.** Neither error type has a field into
- *   which a path or a payload could leak, and every message this layer authors is a
- *   static constant. A diagnosis that quoted the project path or the raw body would
- *   put what a user was working on into a place they did not choose.
+ * * **A failure carries the Runtime's diagnosis; this layer adds nothing to it.**
+ *   Every message this layer authors is a static constant, and neither the transport
+ *   nor the contract error has a field a path or a payload could enter. A structured
+ *   Runtime API failure is the deliberate exception, and it is deliberate for a
+ *   reason: its five-field envelope is preserved *intact*, so its `message` and
+ *   `details` are the Runtime's own diagnostics — including a `path` the Runtime
+ *   chose to report — and this client neither strips them down nor supplements them.
+ *   What this layer never does is add the project path, the request URL or the raw
+ *   response body on its own account.
  */
 
 /** Where the packaged Runtime sidecar listens. Same origin as every other client. */
@@ -88,9 +93,10 @@ export interface ProjectReadModel {
  * translated: `code` stays branchable (`project.not_found`,
  * `project.manifest_malformed`, `api.request_validation_failed` stay three
  * different facts), `recoverable` keeps its retry semantics, `source` keeps saying
- * *which* boundary refused, and `details` arrives as the Runtime rendered it.
- * Nothing here is reconstructed from the request, so a caller diagnosing a failure
- * can never be shown the payload it sent.
+ * *which* boundary refused, and `details` arrives as the Runtime rendered it — which
+ * may include a path, because the Runtime's own project diagnostics carry one. None
+ * of it is reconstructed from the request: a caller sees what the Runtime chose to
+ * report, never a re-rendering of the request it made.
  */
 export class RuntimeProjectApiError extends Error {
   /** The HTTP status the Runtime answered with. */
