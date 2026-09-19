@@ -10,8 +10,10 @@
     "Touching the worktree helper"
   ],
   "base_sha": "81f9c4131513c19d859fceac704d9b74449041f2",
+  "execution_mode": "isolated-worktree",
   "branch": "agent/AGENT-02-B-handoff-validator",
   "worktree": ".worktrees/agent-02-b",
+  "integration_paths": [],
   "owner": "sub-b",
   "allowed_paths": [
     "tools/agent/validation.py",

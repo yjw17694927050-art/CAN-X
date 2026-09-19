@@ -13,8 +13,6 @@
     "scope",
     "non_goals",
     "base_sha",
-    "branch",
-    "worktree",
     "owner",
     "allowed_paths",
     "forbidden_paths",
@@ -55,14 +53,25 @@
       "description": "The integration commit the task branched from. Full 40 hex only."
     },
     "branch": {
-      "type": "string",
+      "type": ["string", "null"],
       "minLength": 1,
-      "description": "Sub-agent branches must be <branch_prefix><task_id>-<slug>."
+      "description": "Sub-agent branches must be <branch_prefix><task_id>-<slug>. Required for execution_mode=isolated-worktree; must be absent (null) for native-shared, where the Harness executes in the Main Agent's worktree."
     },
     "worktree": {
-      "type": "string",
+      "type": ["string", "null"],
       "minLength": 1,
-      "description": "Repository-relative worktree path; must live under worktrees_dir."
+      "description": "Repository-relative worktree path; must live under worktrees_dir. Required for execution_mode=isolated-worktree; must be absent (null) for native-shared."
+    },
+    "execution_mode": {
+      "enum": ["isolated-worktree", "native-shared"],
+      "default": "isolated-worktree",
+      "description": "How the worker executes. isolated-worktree = the AGENT-01 model: the Sub-Agent owns a branch and a registered worktree. native-shared = the host Harness's default: the worker executes inside the Main Agent's single worktree, so the contract declares neither and the delivery is the real commit range base_sha..head_sha on the integration branch. The mode changes where the delivery lives, never who may touch what (ADR-0003)."
+    },
+    "integration_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": [],
+      "description": "native-shared only. Main-Agent-owned paths that may legitimately sit inside this task's delivery commit range (a cross-boundary integration test, for example). Empty for an isolated task. May never reach a protected, public-truth or safety path, nor overlap the task's own forbidden_paths, and it participates in conflict classification like allowed_paths."
     },
     "owner": {
       "type": "string",

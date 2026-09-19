@@ -23,8 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.agent.contracts import TaskContract
-from tools.agent.errors import WorktreeConflictError
+from tools.agent.contracts import ExecutionMode, TaskContract
+from tools.agent.errors import GitStateError, WorktreeConflictError
 from tools.agent.gitcmd import (
     commit_shas,
     contains,
@@ -45,6 +45,8 @@ from tools.agent.worktree import (
 #: Where the evidence was read from. Surfaced so a fallback is never silent.
 SOURCE_WORKTREE = "worktree"
 SOURCE_BRANCH_REF = "branch-ref"
+#: A native shared-worktree delivery: the Main Agent's own worktree (ADR-0003).
+SOURCE_NATIVE_SHARED = "native-shared"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -71,6 +73,13 @@ class RepositoryEvidence:
     #: from, when one could be read. Diagnostics only - the binding itself is
     #: enforced by ``validate_repository(expected_remote=...)``.
     repository_identity: str | None = None
+    #: The HEAD of the worktree the evidence was read from. In native-shared mode
+    #: that worktree *is* the integration worktree, so this is the integration
+    #: head, and the two flags below are the proof that the delivery is on it
+    #: (V0.3-12-FIX-1). ``None`` for the branch-ref fallback of an isolated task.
+    integration_head_sha: str | None = None
+    base_on_integration_head: bool = False
+    head_on_integration_head: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -83,6 +92,9 @@ class RepositoryEvidence:
             "head_sha": self.head_sha,
             "base_is_ancestor": self.base_is_ancestor,
             "clean": self.clean,
+            "integration_head_sha": self.integration_head_sha,
+            "base_on_integration_head": self.base_on_integration_head,
+            "head_on_integration_head": self.head_on_integration_head,
             "net_changed_paths": list(self.net_changed_paths),
             "history_touched_paths": list(self.history_touched_paths),
             "commits": list(self.commits),
@@ -160,7 +172,12 @@ def resolve_task_worktree(
 
 
 def collect_repository_evidence(
-    repo: Path, task: TaskContract, *, expected_repository: str | None = None
+    repo: Path,
+    task: TaskContract,
+    *,
+    expected_repository: str | None = None,
+    delivery_head_sha: str | None = None,
+    integration_head_sha: str | None = None,
 ) -> RepositoryEvidence:
     """Read the authoritative facts for ``task`` out of the repository.
 
@@ -181,6 +198,13 @@ def collect_repository_evidence(
     inspected and found clean" (FIX-2 §20).
     """
     root = validate_repository(repo, expected_remote=expected_repository)
+    if task.execution_mode is ExecutionMode.NATIVE_SHARED:
+        return _collect_native_shared(
+            root,
+            task,
+            delivery_head_sha=delivery_head_sha,
+            integration_head_sha=integration_head_sha,
+        )
     primary_root, record = resolve_task_worktree(root, task)
     if record is not None:
         source = SOURCE_WORKTREE
@@ -219,4 +243,94 @@ def collect_repository_evidence(
         commits=commit_shas(probe, base_sha, head_sha),
         diff_records=records,
         repository_identity=remote_identity(primary_root),
+    )
+
+
+def _collect_native_shared(
+    root: Path,
+    task: TaskContract,
+    *,
+    delivery_head_sha: str | None,
+    integration_head_sha: str | None = None,
+) -> RepositoryEvidence:
+    """Evidence for a worker that executed inside the Main Agent's worktree.
+
+    The AGENT-01 model resolves a *task* worktree through ``task.worktree`` and
+    ``task.branch``. A native-shared worker has neither: the host Harness is not
+    asked to create them, and the delivery is simply a commit range on the
+    branch the Main Agent already has checked out (ADR-0003, V0.3-12-FIX-1).
+
+    So there is nothing to resolve and nothing to trust. The integration
+    worktree is the only surface the delivery can be on, and it is read here:
+
+    * the **branch** comes from the repository, not from a field — a handoff
+      cannot name the branch it wishes it were on;
+    * the **head** is the commit the handoff claims, resolved to a real commit
+      and then required to be an ancestor of the integration head, so an
+      invented or foreign head is a refusal rather than an assumption;
+    * the **base** is ``task.base_sha``, and it too must be an ancestor of the
+      integration head: the delivery has to be *on* this branch;
+    * ownership is decided exactly as before, on
+      ``history_touched_paths(base, head)`` — the union of every path any commit
+      in the range touched, not the net tree delta.
+
+    ``clean`` means the integration worktree has no uncommitted work, so the
+    committed range really is the whole delivery.
+
+    Raises:
+        GitStateError: If the worktree is not on a named branch, if no delivery
+            head was supplied, or if the claimed head does not resolve.
+    """
+    primary_root = primary_worktree(root)
+    records = [
+        record
+        for record in list_worktrees(primary_root)
+        if record.path.resolve() == primary_root.resolve()
+    ]
+    if len(records) != 1:
+        raise GitStateError(
+            "the integration worktree could not be identified unambiguously",
+            details={"repository_root": str(primary_root), "matches": len(records)},
+        )
+    record = records[0]
+    branch = record.branch or ""
+    worktree_head_sha = record.head or resolve_revision("HEAD", cwd=primary_root)
+    if not branch:
+        raise GitStateError(
+            "the integration worktree is not on a named branch; a shared-worktree"
+            " delivery must be committed on one",
+            details={"repository_root": str(primary_root), "head": worktree_head_sha},
+        )
+    if delivery_head_sha is None:
+        raise GitStateError(
+            "a native-shared delivery must name the commit it claims",
+            details={"field": "delivery_head_sha", "task_id": task.task_id},
+        )
+    head_sha = resolve_revision(delivery_head_sha, cwd=primary_root)
+    base_sha = task.base_sha
+    # The integration head is named by the *caller*, exactly as it is in the
+    # isolated path: the tooling does not decide which branch is "the"
+    # integration branch. Without a caller-supplied head the checked-out branch's
+    # tip is used, which is the same answer for a single-worktree run — and the
+    # ancestry below is still decided by Git, never by the argument.
+    head_of_integration = resolve_revision(
+        integration_head_sha or worktree_head_sha, cwd=primary_root
+    )
+    return RepositoryEvidence(
+        repository_root=primary_root,
+        source=SOURCE_NATIVE_SHARED,
+        worktree_path=primary_root,
+        branch=branch,
+        base_sha=base_sha,
+        head_sha=head_sha,
+        base_is_ancestor=contains(primary_root, base_sha, head_sha),
+        clean=not git_lines(["status", "--porcelain"], cwd=primary_root),
+        net_changed_paths=touched_paths(primary_root, base_sha, head_sha),
+        history_touched_paths=history_touched_paths(primary_root, base_sha, head_sha),
+        commits=commit_shas(primary_root, base_sha, head_sha),
+        diff_records=diff_name_status(primary_root, base_sha, head_sha),
+        repository_identity=remote_identity(primary_root),
+        integration_head_sha=head_of_integration,
+        base_on_integration_head=contains(primary_root, base_sha, head_of_integration),
+        head_on_integration_head=contains(primary_root, head_sha, head_of_integration),
     )
