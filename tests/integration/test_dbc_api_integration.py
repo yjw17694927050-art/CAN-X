@@ -595,3 +595,100 @@ async def test_every_request_that_imports_the_same_content_gets_its_own_asset(
     assert sorted(path.name for path in (root / "dbc").iterdir()) == sorted(
         f"{item.json()['asset_id']}.dbc" for item in (first, second)
     )
+
+# --- decode work sets over HTTP ----------------------------------------------
+#
+# The fragmentation regression, end to end. A live viewport alternates two channels,
+# so each channel's own sequences are full of the other channel's gaps. Decoding
+# used to require the capture batch's contiguity, which made that viewport one
+# request per frame; the work-set surface accepts the frames each asset actually
+# has. What is asserted here is both halves: the request is accepted with gaps, *and*
+# every answer still belongs to the frame and the asset it was submitted for.
+
+
+async def test_interleaved_channels_decode_as_one_request_per_asset(tmp_path: Path) -> None:
+    """``1,3,5`` against one asset and ``2,4,6`` against another — two requests, six frames."""
+    root, asset_ids = _imported_project(tmp_path, BASIC, EXTENDED)
+    standard_id, extended_id = asset_ids
+
+    # can0 carries the standard document (odd sequences), can1 the extended one (even).
+    standard = [
+        _wire(ENGINE_DATA, sequence=sequence, is_extended=False) for sequence in (1, 3, 5)
+    ]
+    extended = [
+        _wire(TRUCK_DATA, sequence=sequence, is_extended=True) for sequence in (2, 4, 6)
+    ]
+
+    async with _client() as client:
+        standard_response = await client.post(
+            f"/dbc/assets/{standard_id}/decode-frames",
+            json={
+                "project_path": str(root),
+                "stream_id": STREAM_ID,
+                "frames": standard,
+            },
+        )
+        extended_response = await client.post(
+            f"/dbc/assets/{extended_id}/decode-frames",
+            json={
+                "project_path": str(root),
+                "stream_id": STREAM_ID,
+                "frames": extended,
+            },
+        )
+
+    assert standard_response.status_code == 200, standard_response.text
+    assert extended_response.status_code == 200, extended_response.text
+    standard_body = standard_response.json()
+    extended_body = extended_response.json()
+
+    # The submitted sequences are echoed, gaps and all.
+    assert standard_body["sequences"] == [1, 3, 5]
+    assert extended_body["sequences"] == [2, 4, 6]
+    assert standard_body["frame_count"] == extended_body["frame_count"] == 3
+
+    # Each outcome is about the frame at its own index, decoded against its own asset:
+    # no cross-asset answer, no reordering.
+    for body, sequences, message_name in (
+        (standard_body, (1, 3, 5), "EngineData"),
+        (extended_body, (2, 4, 6), "TruckStatus"),
+    ):
+        assert [outcome["frame"]["sequence"] for outcome in body["outcomes"]] == list(
+            sequences
+        )
+        assert [
+            outcome["decoded"]["message_name"] for outcome in body["outcomes"]
+        ] == [message_name] * 3
+
+
+async def test_a_work_set_answer_equals_the_single_frame_answer(tmp_path: Path) -> None:
+    """The work-set surface is a projection of the same decoder as ``/decode``."""
+    root, asset_ids = _imported_project(tmp_path, BASIC)
+    asset_id = asset_ids[0]
+
+    async with _client() as client:
+        alone = await client.post(
+            f"/dbc/assets/{asset_id}/decode",
+            json={"project_path": str(root), "frame": _wire(ENGINE_DATA, sequence=5)},
+        )
+        together = await client.post(
+            f"/dbc/assets/{asset_id}/decode-frames",
+            json={
+                "project_path": str(root),
+                "stream_id": STREAM_ID,
+                "frames": [
+                    _wire(ENGINE_DATA, sequence=1),
+                    _wire(ENGINE_DATA, sequence=5),
+                    _wire(ENGINE_DATA, sequence=7),
+                ],
+            },
+        )
+
+    assert alone.status_code == 200, alone.text
+    assert together.status_code == 200, together.text
+    middle = together.json()["outcomes"][1]["decoded"]
+    assert middle["message_name"] == alone.json()["message_name"]
+    assert [signal["name"] for signal in middle["signals"]] == [
+        signal["name"] for signal in alone.json()["signals"]
+    ]
+    assert middle["signals"] == alone.json()["signals"]

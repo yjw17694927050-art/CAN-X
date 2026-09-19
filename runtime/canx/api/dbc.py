@@ -1,6 +1,6 @@
 """DBC runtime HTTP surface — a thin adapter over the DBC and project domains.
 
-Six endpoints, and nothing else:
+Seven endpoints, and nothing else:
 
 ```text
 GET  /dbc/assets?project_path=…                     list registered assets
@@ -8,7 +8,8 @@ POST /dbc/assets                                    import one asset from conten
 GET  /dbc/assets/{id}?project_path=…                one asset's metadata
 GET  /dbc/assets/{id}/database?project_path=…       the canonical DBC definition
 POST /dbc/assets/{id}/decode                        decode one frame
-POST /dbc/assets/{id}/decode-batch                  decode a bounded batch
+POST /dbc/assets/{id}/decode-batch                  decode a bounded contiguous batch
+POST /dbc/assets/{id}/decode-frames                 decode an ordered work set (gaps allowed)
 ```
 
 Everything this module does is a translation: HTTP in, canonical model through,
@@ -41,8 +42,19 @@ Four properties are load-bearing:
   content identity, is scoped to its project, and a replaced or edited file fails
   integrity before the cache could ever be consulted.
 * **The request body is bounded.** A batch is capped at
-  :data:`MAX_BATCH_FRAMES`; the cap is an HTTP guard on this endpoint, not a
-  property of the ``FrameBatch`` domain, whose own limits are untouched.
+  :data:`MAX_BATCH_FRAMES` and a decode work set at
+  :data:`~canx.dbc.decode_set.DecodeFrameSet.MAX_FRAMES`; each cap belongs to the
+  container it guards. Neither is a property of the ``FrameBatch`` domain, whose own
+  limits are untouched, and neither is restated in the Desktop client as a second,
+  drifting number.
+* **Two decode containers, one decode path.** ``decode-batch`` carries a
+  ``FrameBatch`` — contiguous by definition, because a batch is a slice of one
+  stream's numbering — and ``decode-frames`` carries a ``DecodeFrameSet``, which
+  requires only that its frames are *ordered and non-repeating*. Both reach the same
+  :class:`~canx.dbc.decode.DbcDecoder` through the same
+  :meth:`~canx.dbc.project_service.ProjectDbcService.load_decoder`, so the second
+  surface adds a request shape and not a second implementation. The strict surface
+  keeps its strictness: ``1, 3`` is still refused as a batch.
 * **Nothing blocking runs on the event loop.** Loading an asset reads a file and
   verifies a hash, and — the first time a given verified content is seen — decodes
   text, parses it and compiles a decoder; decoding then runs that decoder's plan.
@@ -80,6 +92,7 @@ from canx.dbc.decode_model import (
     DecodedFrameOutcome,
     DecodedSignal,
 )
+from canx.dbc.decode_set import DecodedFrameSet, DecodeFrameSet
 from canx.dbc.model import DbcDatabase, DbcDocument, DbcMessage, DbcNode, DbcSignal
 from canx.dbc.project_service import ProjectDbcService
 from canx.domain.batch import FrameBatch
@@ -89,6 +102,10 @@ from canx.domain.frame import Frame
 #: stays a bounded amount of CPU, and kept here rather than in the domain: a
 #: ``FrameBatch`` is a realtime unit and its size is a pipeline decision, not an
 #: HTTP one.
+#:
+#: ``decode-frames`` uses :data:`~canx.dbc.decode_set.DecodeFrameSet.MAX_FRAMES`
+#: instead of this constant: that bound belongs to the work set, and duplicating the
+#: number here would let the two drift apart.
 MAX_BATCH_FRAMES = 1000
 
 #: The HTTP request guard on one content import. A bound on *this endpoint*, not a
@@ -461,12 +478,16 @@ class DecodeResponse(BaseModel):
     signals: list[DecodedSignalResponse]
 
 
-class DecodeBatchOutcomeResponse(BaseModel):
-    """What happened to exactly one frame of a batch.
+class DecodeOutcomeResponse(BaseModel):
+    """What happened to exactly one submitted frame.
 
     ``decoded`` and ``failure`` are mutually exclusive: exactly one is present, so
     a caller branches on one fact instead of guessing which field to trust. The
     frame is always present, whether or not it decoded.
+
+    Shared by the two decode surfaces — a frame's outcome does not depend on which
+    container carried the frame, so rendering it two ways would be two shapes for
+    one fact.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -486,7 +507,27 @@ class DecodeBatchResponse(BaseModel):
     first_sequence: int
     last_sequence: int
     frame_count: int
-    outcomes: list[DecodeBatchOutcomeResponse]
+    outcomes: list[DecodeOutcomeResponse]
+
+
+class DecodeFrameSetResponse(BaseModel):
+    """One outcome per submitted frame of a decode work set, in the submitted order.
+
+    The sibling of :class:`DecodeBatchResponse`, and deliberately not a superset of
+    it. There is no ``first_sequence``/``last_sequence``: a work set has no range,
+    and publishing one would invite a caller to reason about the frames *between*
+    two submitted sequences — frames this answer says nothing about. ``sequences``
+    is the caller's own account of what was submitted, echoed so an outcome can be
+    aligned to a frame without trusting position alone.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: int
+    stream_id: str
+    frame_count: int
+    sequences: list[int]
+    outcomes: list[DecodeOutcomeResponse]
 
 
 class DbcFramePayload(FrameWire):
@@ -540,6 +581,44 @@ class DbcDecodeBatchRequest(BaseModel):
         """
         try:
             FrameBatch.create(
+                stream_id=self.stream_id,
+                frames=[wire_to_frame(frame) for frame in self.frames],
+            )
+        except ValueError as error:
+            raise ValueError(str(error)) from error
+        return self
+
+
+class DbcDecodeFramesRequest(BaseModel):
+    """A bounded decode work set against one project-owned asset.
+
+    The same body as :class:`DbcDecodeBatchRequest` with one difference that is the
+    whole point: the frames must be **ordered and non-repeating**, and need not be
+    consecutive. A viewport that alternates two channels leaves each channel's
+    sequences full of the other channel's gaps, and a decode is frame-local, so
+    those frames are a perfectly well-formed request — they were only ever refused
+    because they were being measured against a capture batch's contract.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    project_path: str
+    stream_id: str = Field(min_length=1)
+    frames: list[DbcFramePayload] = Field(
+        min_length=1, max_length=DecodeFrameSet.MAX_FRAMES
+    )
+
+    @model_validator(mode="after")
+    def _reject_non_canonical_work_set(self) -> Self:
+        """Prove the submitted frames form a decode work set, before any work.
+
+        The bound comes from the container rather than a second constant here, so
+        the number a caller sees refused is the number the domain enforces. Checking
+        it at validation time rather than in the handler also means a rejected
+        request never opens a project or reads an asset.
+        """
+        try:
+            DecodeFrameSet.create(
                 stream_id=self.stream_id,
                 frames=[wire_to_frame(frame) for frame in self.frames],
             )
@@ -612,6 +691,21 @@ def create_dbc_router() -> APIRouter:
             _decode_batch, request.project_path, asset_id, request.stream_id, request.frames
         )
         return _batch_payload(decoded)
+
+    @router.post("/assets/{asset_id}/decode-frames", response_model=DecodeFrameSetResponse)
+    async def decode_frames(
+        asset_id: str, request: DbcDecodeFramesRequest
+    ) -> DecodeFrameSetResponse:
+        """Decode a work set; one outcome per frame, always in input order.
+
+        The surface the Desktop's realtime decode path uses. It exists so a request
+        can carry the frames one asset actually has in the viewport — ``1, 3, 5``
+        when another channel owns ``2`` and ``4`` — instead of one request per frame.
+        """
+        decoded = await asyncio.to_thread(
+            _decode_frames, request.project_path, asset_id, request.stream_id, request.frames
+        )
+        return _frame_set_payload(decoded)
 
     return router
 
@@ -689,6 +783,28 @@ def _decode_batch(
     )
     decoder = ProjectDbcService(Path(project_path)).load_decoder(asset_id)
     return decoder.decode_batch(batch)
+
+
+def _decode_frames(
+    project_path: str,
+    asset_id: str,
+    stream_id: str,
+    payloads: list[DbcFramePayload],
+) -> DecodedFrameSet:
+    """Build the work set, load the asset's decoder and decode. Blocking.
+
+    The sibling of :func:`_decode_batch`, over the decode-specific container, and
+    deliberately not a second decode path: both reach the decoder through
+    ``ProjectDbcService.load_decoder``, so the file is read, its size and SHA-256 are
+    proven, and the compiled decoder is reused from the same bounded, project-scoped
+    cache. This function adds a request *shape* — ordered frames with gaps — and
+    nothing else.
+    """
+    work = DecodeFrameSet.create(
+        stream_id=stream_id, frames=[_canonical_frame(payload) for payload in payloads]
+    )
+    decoder = ProjectDbcService(Path(project_path)).load_decoder(asset_id)
+    return decoder.decode_frames(work)
 
 
 def _canonical_frame(payload: DbcFramePayload) -> Frame:
@@ -802,11 +918,22 @@ def _batch_payload(batch: DecodedFrameBatch) -> DecodeBatchResponse:
     )
 
 
-def _outcome_payload(outcome: DecodedFrameOutcome) -> DecodeBatchOutcomeResponse:
+def _frame_set_payload(decoded: DecodedFrameSet) -> DecodeFrameSetResponse:
+    """Render one decoded work set, keeping its order and its submitted sequences."""
+    return DecodeFrameSetResponse(
+        schema_version=decoded.schema_version,
+        stream_id=decoded.stream_id,
+        frame_count=decoded.frame_count,
+        sequences=list(decoded.sequences),
+        outcomes=[_outcome_payload(outcome) for outcome in decoded.outcomes],
+    )
+
+
+def _outcome_payload(outcome: DecodedFrameOutcome) -> DecodeOutcomeResponse:
     """Render one frame's outcome, keeping ``decoded`` and ``failure`` exclusive."""
     decoded = outcome.decoded
     failure = outcome.failure
-    return DecodeBatchOutcomeResponse(
+    return DecodeOutcomeResponse(
         frame=frame_to_wire(outcome.frame),
         decoded=(
             None
