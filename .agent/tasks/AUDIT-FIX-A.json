@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "task_id": "AUDIT-FIX-A",
+  "title": "Enforce sequence continuity and timestamp monotonicity in the DataSession writer",
+  "objective": "The DataSession writer independently protects its own integrity invariants instead of relying on the recorder: (1) once a session has appended frames, a following batch's first_sequence must be exactly previous_last_sequence + 1, so a positive sequence gap is refused rather than silently persisted; (2) reading frames in sequence order yields a non-descending normalized_timestamp, so an intra-batch descent such as 1.0, 3.0, 2.0, 4.0 is refused rather than persisted. Equal consecutive timestamps stay legal - the domain permits them and this change must not tighten that. Additionally the persisted-segment integrity checks used by DataSession read and by Query are brought to one convergence on: registered segment metadata versus actual Parquet bytes (canonical relative path and containment, session_id, stream_id, segment_index, schema/layout, actual row_count == registered frame_count, actual file size == registered byte_size).",
+  "scope": "runtime/canx/data/**, runtime/canx/query/** and their tests. The recorder's own recorder.sequence_gap guard is defence-in-depth and is NOT removed or reduced: the writer must be independently correct.",
+  "non_goals": [
+    "Changing runtime/canx/domain/** - Frame and FrameBatch semantics are public truth and the fixes do not require them",
+    "Removing or weakening ProjectRecorder's recorder.sequence_gap protection",
+    "Adding a new persisted hash schema, a new column, or a SQLite migration",
+    "Adding a second integrity definition instead of sharing one",
+    "Any V0.4 feature"
+  ],
+  "base_sha": "42e8250ce23192a931466ba84d4685967e6cd0e2",
+  "branch": "agent/AUDIT-FIX-A-data-integrity",
+  "worktree": ".worktrees/audit-fix-a",
+  "execution_mode": "isolated-worktree",
+  "owner": "sub-a",
+  "allowed_paths": [
+    "runtime/canx/data/**",
+    "runtime/canx/query/**",
+    "tests/unit/data/**",
+    "tests/unit/query/**",
+    "tests/integration/test_data_session_persistence.py",
+    "tests/integration/test_data_session_recovery.py",
+    "tests/integration/test_query_across_segments.py",
+    "tests/integration/test_query_id_filters.py",
+    "tests/integration/test_query_pagination.py",
+    "tests/integration/test_query_project_reopen.py",
+    "tests/integration/test_query_recovery.py",
+    "tests/integration/test_query_timestamp_regression.py",
+    "tests/integration/test_parquet_smoke.py",
+    "tests/integration/test_duckdb_query_smoke.py"
+  ],
+  "forbidden_paths": [
+    "runtime/canx/domain/**",
+    "runtime/canx/dbc/**",
+    "runtime/canx/api/**",
+    "runtime/canx/recorder/**",
+    "runtime/canx/safety/**",
+    "apps/**",
+    "docs/**",
+    ".agent/**",
+    ".github/**",
+    "SPEC.md",
+    "AGENTS.md",
+    "PRD.md",
+    "pyproject.toml",
+    "package.json"
+  ],
+  "dependencies": [],
+  "shared_contracts": [],
+  "acceptance_criteria": [
+    "A first batch starting at any legal non-zero sequence is accepted",
+    "An exact continuation (first_sequence == previous_last_sequence + 1) is accepted",
+    "A regression and an overlap are refused with the existing typed data.integrity.sequence_regression code",
+    "A one-frame gap and a large gap are refused, including when the gap falls across a committed-segment boundary and when frames are still buffered",
+    "An intra-batch timestamp descent (1.0, 3.0, 2.0, 4.0) is refused; a cross-batch descent is refused",
+    "Equal consecutive timestamps remain accepted and have a test that locks that",
+    "Every refusal leaves the session in a defined state and no partial segment is registered",
+    "A persisted segment whose actual Parquet disagrees with its registered metadata (row count, byte size, session_id, stream_id, segment_index, layout) is refused by both the DataSession read path and the Query path with the same invariant",
+    "ProjectRecorder's recorder.sequence_gap behaviour is unchanged"
+  ],
+  "required_tests": [
+    "runtime-pytest",
+    "runtime-ruff",
+    "runtime-mypy"
+  ],
+  "handoff_requirements": [
+    "RED evidence first: the failing test and its real output before the fix",
+    "Exact commands and exact results for tests/unit/data, tests/unit/query, the touched integration tests, ruff and mypy",
+    "State explicitly that no file outside allowed_paths was touched, and that runtime/canx/domain/**, runtime/canx/api/** and runtime/canx/recorder/** are byte-identical to base_sha",
+    "State whether the writer and the recorder now agree on the sequence rule, or explain any deliberate remaining difference"
+  ],
+  "risk_class": "HIGH",
+  "status": "READY",
+  "revision": 1
+}

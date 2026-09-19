@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "task_id": "AUDIT-FIX-C",
+  "title": "Give the Desktop realtime, capture and panel lifecycles an explicit bounded state machine",
+  "objective": "Three Desktop lifecycles are currently implicit and fragile. (1) The realtime stream store has no reconnect lifecycle: after a socket close or error the connection stays closed while the worker and socket are never released, there is no bounded retry, no handler identity guard, and no worker error path, so a Runtime restart has no defined recovery. (2) Capture ownership in DockWorkspace is a closure boolean set inside a fire-and-forget async effect, so an unmount before start resolves, a StrictMode effect replay, or a capture.already_running answer can leave a capture running that nothing will ever stop, and a failed stop is an unhandled rejection. (3) A real Runtime transport floor already exists in runtime-http.ts but project-client and capture-client still carry their own base URL, fetch calls and error handling. Each lifecycle becomes explicit and bounded, and the duplicated transport becomes one shared floor that endpoint modules still use for their own payload validation and model mapping.",
+  "scope": "apps/desktop/src/runtime/**, apps/desktop/src/components/workspace/**, apps/desktop/src/components/plot/**, apps/desktop/src/workers/** and their co-located tests.",
+  "non_goals": [
+    "A second realtime pipeline - there must remain exactly one WebSocket and one frame Worker",
+    "A new UI, panel, redesign or user-visible feature",
+    "Changing the Runtime HTTP contract or any module under runtime/",
+    "Touching apps/desktop/src/workspace/decode-*.ts - those belong to AUDIT-FIX-B",
+    "Changing vite.config.ts, package.json, lockfiles or CI",
+    "Any V0.4 feature"
+  ],
+  "base_sha": "42e8250ce23192a931466ba84d4685967e6cd0e2",
+  "branch": "agent/AUDIT-FIX-C-desktop-lifecycle",
+  "worktree": ".worktrees/audit-fix-c",
+  "execution_mode": "isolated-worktree",
+  "owner": "sub-c",
+  "allowed_paths": [
+    "apps/desktop/src/runtime/**",
+    "apps/desktop/src/i18n/**",
+    "apps/desktop/src/components/workspace/**",
+    "apps/desktop/src/components/plot/**",
+    "apps/desktop/src/workers/**"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src/workspace/**",
+    "apps/desktop/src/components/dbc/**",
+    "apps/desktop/src/components/trace/**",
+    "apps/desktop/src/components/project/**",
+    "apps/desktop/src-tauri/**",
+    "runtime/**",
+    "vite.config.ts",
+    "tsconfig.json",
+    "package.json",
+    "docs/**",
+    ".agent/**",
+    ".github/**",
+    "SPEC.md",
+    "AGENTS.md",
+    "PRD.md"
+  ],
+  "dependencies": [],
+  "shared_contracts": [],
+  "acceptance_criteria": [
+    "The realtime store exposes an explicit connection state set that includes a retrying state, with a bounded backoff and a cap on attempts or rate",
+    "No unbounded reconnect loop is possible: a test proves the retry cadence is bounded, not immediate and not infinite",
+    "After dispose no reconnect can occur, and a late event from a superseded socket cannot overwrite the current connection state",
+    "Worker and socket lifetimes are paired: disposing releases both, and a worker error produces a defined state instead of silence",
+    "A Runtime restart has a defined recovery path that ends in an open connection without a second pipeline being created",
+    "Exactly one frame WebSocket and one frame Worker remain in production code",
+    "A stream change still invalidates previously decoded state",
+    "Capture ownership is explicit: unmount before start resolves still stops the capture, a StrictMode double-invoke does not leak a capture, a second start is idempotent, capture.already_running is handled without claiming ownership, and a failed stop is observed rather than an unhandled rejection",
+    "The Runtime transport floor (base URL, fetch, error envelope, transport-versus-contract split) is shared by the HTTP client modules that need it, and each endpoint module keeps its own payload validation and model mapping",
+    "A Dockview layout is not rebuilt by a translation identity change",
+    "The Plot chart survives panel resize and repeated resize, disposes on unmount, and leaks no observer"
+  ],
+  "required_tests": [
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint",
+    "frontend-build"
+  ],
+  "handoff_requirements": [
+    "The state machine as implemented (states, transitions, backoff policy, cap) and where it lives",
+    "For each of the three claims, what the code did before and what it does now, with file:line",
+    "Exact commands and exact results for pnpm test, pnpm typecheck, pnpm lint and pnpm build, including the test file and test count",
+    "Confirmation that exactly one WebSocket and one Worker constructor call remain in production code, with file:line",
+    "State explicitly that nothing under apps/desktop/src/workspace/** or runtime/** was touched",
+    "If the realtime state set gained a state with no i18n key, add the key in apps/desktop/src/i18n/config.ts and say so"
+  ],
+  "risk_class": "HIGH",
+  "status": "READY",
+  "revision": 1
+}
