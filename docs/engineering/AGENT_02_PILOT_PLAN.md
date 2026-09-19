@@ -462,3 +462,22 @@ speedup verified      NO — no single-agent baseline exists, so no speed-up is 
 §13's requirement that the run be *proved* concurrent rather than *asserted* now has an
 instrument that satisfies it, and the instrument is reusable: it lives in the dispatch brief
 (heartbeat) and in an external sampler, not in product code.
+
+**V0.3-12-FIX-2 closed the two gaps this section left open.**
+
+1. **The concurrency evidence is now recomputable from the pull request.** The rerun's raw
+   artefacts lived under the gitignored `.rivet/`, so a reviewer could not re-derive the figures
+   above. They are transcribed verbatim into the committed
+   `.agent/telemetry/v0.3-12-concurrency-rerun.json`, and
+   `tests/unit/pilot/test_concurrency_telemetry.py` recomputes worker first/last heartbeats, the
+   activity windows, the peak simultaneously-active count and the strict three-way overlap from
+   the raw heartbeat and sampler sequences, refusing any disagreement with the reported numbers.
+   The strict figure is defined precisely: it is the **longest continuous** interval in which all
+   three workers are inside an activity window (two such intervals exist — 22 s and 25 s; the
+   reported 25 s is the longer), and 114 s remains the conditional reading in which worker B's
+   single 67 s gap is one long tool call.
+2. **`integration_paths` no longer claims provenance it cannot prove.** Per
+   `docs/ADR/0003-native-agent-harness-orchestration.md` and `MULTI_AGENT_PROTOCOL.md` §20.1, the
+   field names Main-Agent-*reviewed* files permitted to coexist in a delivery *range*, each an
+   exact repository-relative path (globs refused). The Git gate proves the range's composition and
+   its governed-path safety; it never proves per-file writer provenance inside a shared worktree.

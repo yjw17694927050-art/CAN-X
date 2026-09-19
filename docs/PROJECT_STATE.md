@@ -546,10 +546,13 @@ Immediate next engineering task — none. AGENT-02's real native-harness pilot h
   docs/engineering/INTEGRATION_POLICY.md, docs/engineering/AGENT_02_READINESS.md,
   docs/engineering/AGENT_02_PILOT_PLAN.md.
 
-AWAITING INDEPENDENT ACCEPTANCE: V0.3-12 · AGENT-02 (real pilot).
+AWAITING INDEPENDENT ACCEPTANCE: V0.3-12 · V0.3-12-FIX-2 · AGENT-02 (real pilot).
 NOT STARTED: CD-01.
 Neither V0.3-12 nor the pilot is CLOSED, and no `Final Acceptance: PASS` is claimed for either —
-an independent reviewer decides both, on a protected merge with a green Quality Gate.
+an independent reviewer decides both, on a protected merge with a green Quality Gate. The
+V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface cleanup)
+carries the same status: `IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE`, on
+`feature/v0.3-12-desktop-project-open-foundation`.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
 ```
 
