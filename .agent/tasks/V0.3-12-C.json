@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-12-C",
+  "title": "Desktop project directory bridge and project-open orchestration",
+  "objective": "Two connected pieces, both in the renderer. (A) A typed desktop bridge over the native select_project_directory command: selectProjectDirectory(): Promise<string | null>, invoked with no caller arguments, resolving null when the user cancelled and the selected project directory string otherwise; a native structured rejection becomes a typed bridge error and a malformed successful IPC payload is a contract error. The bridge reads no project.json, validates nothing, never calls a filesystem API directly and creates no global project state. (B) A pure project-open orchestration that composes the selection boundary with a project inspection boundary WITHOUT importing the Runtime client's implementation details, so it stays parallel-safe: it takes selectDirectory and inspectProject as injected functions (dependency injection or a structural function type) and the project read model as a generic / type-only seam, never as a duplicated copy of the Runtime project schema. Flow: selectProjectDirectory() -> null means cancelled and ends the function before any inspection call; otherwise the selected path is forwarded verbatim to inspectProject, and the outcome is an opened { projectPath, project } discriminated union. No path normalisation, no global current project, no persistent state, no DBC coupling and no error translation: a selection error and an inspection error both propagate exactly as thrown.",
+  "scope": "The new TypeScript desktop directory bridge and the new project-open orchestration module, each with its vitest suite.",
+  "non_goals": [
+    "Any Rust change - the native command is V0.3-12-B's surface and is consumed here only as a string",
+    "Importing or re-implementing the Runtime project client; the inspection boundary is injected",
+    "Any project picker UI, recent-projects list, project mutation or global current-project state",
+    "Duplicating the Runtime project read-model schema as a second authority"
+  ],
+  "base_sha": "451352faad16e44c36a9bebae3ab1ab355746aa5",
+  "branch": "agent/V0.3-12-C-desktop-project-open-flow",
+  "worktree": ".worktrees/v0.3-12-c",
+  "owner": "sub-c",
+  "allowed_paths": [
+    "apps/desktop/src/desktop/project-directory-bridge.ts",
+    "apps/desktop/src/desktop/project-directory-bridge.test.ts",
+    "apps/desktop/src/orchestration/project-open.ts",
+    "apps/desktop/src/orchestration/project-open.test.ts"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src-tauri/**",
+    "apps/desktop/src/runtime/**",
+    "runtime/**",
+    ".agent/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [],
+  "acceptance_criteria": [
+    "The TypeScript bridge invokes the command named select_project_directory with no arguments, resolving null on cancel and the selected path on success",
+    "The bridge sorts a native rejection into a typed bridge error and a malformed successful IPC payload into a contract error; a bridge that is unavailable is reported as its own code",
+    "openProjectFromNativeDialog(selectDirectory, inspectProject) returns { status: 'cancelled' } without calling inspectProject when the selection is null",
+    "A selected path is forwarded to inspectProject exactly as returned - character for character - and one selection produces exactly one inspection call",
+    "An opened outcome carries { projectPath, project } with the read model typed structurally / generically, and a selection failure or an inspection failure propagates unchanged",
+    "No module-level mutable state: two sequential calls never share a project"
+  ],
+  "required_tests": [
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for pnpm test, pnpm typecheck and pnpm lint at the repository root",
+    "Name every new test case and state the RED observation that preceded each new behaviour",
+    "State explicitly that no Rust file, no Runtime file and no Runtime-client file was touched, and that no project read-model schema was duplicated"
+  ],
+  "risk_class": "LOW",
+  "status": "PLANNED",
+  "revision": 1
+}
