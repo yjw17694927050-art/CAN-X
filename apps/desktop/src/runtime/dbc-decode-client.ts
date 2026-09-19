@@ -166,9 +166,38 @@ export async function decodeDbcFrameBatch(
   if (input.frames.length < 1 || input.frames.length > MAX_BATCH_FRAMES) {
     throw new RuntimeDbcContractError(INVALID_REQUEST_MESSAGE);
   }
+  requireContiguous(input.frames);
   const submitted = input.frames.map((frame) => frameToWire(frame));
   const payload = await readResponse(await post(input, submitted));
   return readBatch(payload, input, submitted);
+}
+
+/**
+ * Refuse a batch whose sequences are not consecutive.
+ *
+ * A decode batch is a *slice of one stream's numbering*, which is what makes `first_sequence` and
+ * `last_sequence` meaningful and what lets the Runtime read the frames as a range. A hole in the
+ * middle is therefore not a smaller batch — it is a different claim about which frames these are.
+ *
+ * This is the HTTP boundary's own invariant, not a restatement of the coordinator's partitioning:
+ * the coordinator decides *which* frames belong to one asset, and this decides whether the batch
+ * it hands over is well formed. A caller that assembled frames by hand cannot slip a hole past it.
+ *
+ * Throws:
+ *   {@link RuntimeDbcContractError} before anything is sent, using the same static request
+ *   message as the size guard — there is one reason a request is refused, and one message for it.
+ */
+function requireContiguous(frames: readonly RuntimeFrame[]): void {
+  for (let index = 1; index < frames.length; index += 1) {
+    const previous = frames[index - 1];
+    const current = frames[index];
+    if (previous === undefined || current === undefined) {
+      throw new RuntimeDbcContractError(INVALID_REQUEST_MESSAGE);
+    }
+    if (current.sequence !== previous.sequence + 1n) {
+      throw new RuntimeDbcContractError(INVALID_REQUEST_MESSAGE);
+    }
+  }
 }
 
 /**
@@ -221,6 +250,16 @@ function readBatch(
   }
   const firstSequence = readSequence(record["first_sequence"], message);
   const lastSequence = readSequence(record["last_sequence"], message);
+  // The summary must describe the slice that was submitted, and it is checked independently of
+  // the echoed frames. The Runtime sends this bookkeeping precisely so a client can verify it: a
+  // response whose outcomes happen to echo correctly is still not *this* batch if its summary
+  // says it covers a different range.
+  if (
+    firstSequence !== input.frames[0]?.sequence ||
+    lastSequence !== input.frames[input.frames.length - 1]?.sequence
+  ) {
+    throw new RuntimeDbcContractError(message);
+  }
   const frameCount = readInteger(record["frame_count"], message);
   const outcomes = readArray(record["outcomes"], message, (item) => readOutcome(item, message));
   if (frameCount !== outcomes.length || frameCount !== submitted.length) {
@@ -288,10 +327,24 @@ function readSignalValue(value: unknown, message: string): DecodedSignalValue {
   };
 }
 
-/** Validate one per-frame failure, keeping the code a caller branches on. */
+/**
+ * Validate one per-frame failure against the Runtime's shared ErrorResponse shape.
+ *
+ * The whole envelope is checked — `code`, `message`, `details`, `recoverable`, `source` — before
+ * any of it is used, because an envelope that is only partly there is a contract mismatch rather
+ * than a failure code. Only `code` is projected: the UI branches on it, and the other four
+ * fields would be a place for Runtime internals to reach a Trace cell. Validating the wire
+ * contract and keeping a safe projection are two different jobs, and this does both in that
+ * order.
+ */
 function readFailure(value: unknown, message: string): { code: string } {
   const record = readObject(value, message);
-  return { code: readString(record["code"], message) };
+  const code = readString(record["code"], message);
+  readString(record["message"], message);
+  readObject(record["details"], message);
+  readBoolean(record["recoverable"], message);
+  readString(record["source"], message);
+  return { code };
 }
 
 /**

@@ -617,3 +617,194 @@ describe("the decode-batch failures", () => {
     expect((cause as Error).message).not.toContain("secret-program");
   });
 });
+
+describe("decode-batch request contiguity", () => {
+  /**
+   * The Runtime's own batch type is a contiguous slice of one stream's numbering, so a batch
+   * with a hole in it is not a batch. The client must refuse it rather than rely on the
+   * coordinator always supplying contiguous runs: the HTTP boundary is the last place that can
+   * fail closed, and a caller that assembled frames by hand must not be able to slip a hole past
+   * it to a Runtime that would either reject it or mis-decode it.
+   */
+  const contiguous = [
+    frame({ sequence: 1n }),
+    frame({ sequence: 2n }),
+    frame({ sequence: 3n }),
+  ];
+
+  it("accepts a contiguous batch and sends exactly one request", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireBatchFor(contiguous), 200));
+
+    const result = await decodeDbcFrameBatch({ ...INPUT, frames: contiguous });
+
+    expect(calls).toHaveLength(1);
+    expect(result.records.map((record) => record.frame.sequence)).toEqual([1n, 2n, 3n]);
+  });
+
+  it("refuses a batch with a hole, and sends nothing", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireBatchFor(INPUT.frames), 200));
+
+    await expect(
+      decodeDbcFrameBatch({
+        ...INPUT,
+        frames: [frame({ sequence: 1n }), frame({ sequence: 3n })],
+      }),
+    ).rejects.toBeInstanceOf(RuntimeDbcContractError);
+
+    // The refusal happens before the transport, so no request reaches the Runtime at all.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a batch that is contiguous except for one gap, and sends nothing", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireBatchFor(INPUT.frames), 200));
+
+    await expect(
+      decodeDbcFrameBatch({
+        ...INPUT,
+        frames: [frame({ sequence: 10n }), frame({ sequence: 11n }), frame({ sequence: 13n })],
+      }),
+    ).rejects.toBeInstanceOf(RuntimeDbcContractError);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a batch whose sequences descend", async () => {
+    const { calls } = stubFetch(rawJsonResponse(wireBatchFor(INPUT.frames), 200));
+
+    await expect(
+      decodeDbcFrameBatch({
+        ...INPUT,
+        frames: [frame({ sequence: 2n }), frame({ sequence: 1n })],
+      }),
+    ).rejects.toBeInstanceOf(RuntimeDbcContractError);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still accepts a single-frame batch", async () => {
+    stubFetch(rawJsonResponse(wireBatchFor(INPUT.frames), 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).resolves.toBeDefined();
+  });
+});
+
+describe("decode-batch response bookkeeping", () => {
+  /**
+   * The Runtime echoes `first_sequence` and `last_sequence` as redundant bookkeeping. Redundant
+   * is the point: a client that only checked the outcomes would accept a response whose summary
+   * contradicts them, and the summary is what a caller uses to decide which slice it holds.
+   */
+  it("refuses a first_sequence below the submitted batch", async () => {
+    stubFetch(rawJsonResponse({ ...wireBatchFor(INPUT.frames), first_sequence: 0 }, 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a first_sequence above the submitted batch", async () => {
+    stubFetch(rawJsonResponse({ ...wireBatchFor(INPUT.frames), first_sequence: 2 }, 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a last_sequence below the submitted batch", async () => {
+    stubFetch(rawJsonResponse({ ...wireBatchFor(INPUT.frames), last_sequence: 0 }, 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a last_sequence above the submitted batch", async () => {
+    stubFetch(rawJsonResponse({ ...wireBatchFor(INPUT.frames), last_sequence: 2 }, 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a summary that contradicts correct outcomes for a multi-frame batch", async () => {
+    const source = [frame({ sequence: 5n }), frame({ sequence: 6n })];
+
+    // The outcomes are perfect; only the summary lies about which slice this is.
+    stubFetch(rawJsonResponse({ ...wireBatchFor(source), first_sequence: 4 }, 200));
+
+    await expect(decodeDbcFrameBatch({ ...INPUT, frames: source })).rejects.toBeInstanceOf(
+      RuntimeDbcContractError,
+    );
+  });
+});
+
+describe("decode-batch per-frame failure envelope", () => {
+  /**
+   * A per-frame failure travels in the Runtime's shared ErrorResponse shape. The Desktop keeps
+   * only `code` — a UI has no use for a message, a details blob or a stack's worth of context —
+   * but it must first *validate* the whole envelope, because a payload that is only half there is
+   * a contract mismatch, not a failure code.
+   */
+  const VALID_FAILURE = {
+    code: "dbc.frame_not_decodable",
+    details: {},
+    message: "No message matched this frame.",
+    recoverable: false,
+    source: "dbc",
+  };
+
+  function withFailure(failure: unknown): Record<string, unknown> {
+    return batchWithOutcome({ decoded: null, failure, frame: wireFrame() });
+  }
+
+  /** A structurally complete envelope with exactly one field removed. */
+  function withoutField(field: keyof typeof VALID_FAILURE): Record<string, unknown> {
+    const incomplete: Record<string, unknown> = { ...VALID_FAILURE };
+    delete incomplete[field];
+    return incomplete;
+  }
+
+  it("accepts a structurally complete failure", async () => {
+    stubFetch(rawJsonResponse(withFailure(VALID_FAILURE), 200));
+
+    const result = await decodeDbcFrameBatch(INPUT);
+
+    expect(result.records[0]?.outcome.failure?.code).toBe("dbc.frame_not_decodable");
+  });
+
+  it("projects only the code, never the message, details or source", async () => {
+    stubFetch(rawJsonResponse(withFailure(VALID_FAILURE), 200));
+
+    const result = await decodeDbcFrameBatch(INPUT);
+
+    expect(Object.keys(result.records[0]?.outcome.failure ?? {})).toEqual(["code"]);
+  });
+
+  it("refuses a failure without a message", async () => {
+    stubFetch(rawJsonResponse(withFailure(withoutField("message")), 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a failure without details", async () => {
+    stubFetch(rawJsonResponse(withFailure(withoutField("details")), 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a failure whose details is an array", async () => {
+    stubFetch(rawJsonResponse(withFailure({ ...VALID_FAILURE, details: [1, 2] }), 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a failure whose recoverable is a string", async () => {
+    stubFetch(rawJsonResponse(withFailure({ ...VALID_FAILURE, recoverable: "false" }), 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a failure without a source", async () => {
+    stubFetch(rawJsonResponse(withFailure(withoutField("source")), 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+
+  it("refuses a failure whose code is not a string", async () => {
+    stubFetch(rawJsonResponse(withFailure({ ...VALID_FAILURE, code: 404 }), 200));
+
+    await expect(decodeDbcFrameBatch(INPUT)).rejects.toBeInstanceOf(RuntimeDbcContractError);
+  });
+});
