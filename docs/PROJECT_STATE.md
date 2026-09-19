@@ -775,6 +775,16 @@ V0.3-CODE-AUDIT REMEDIATION SPRINT — IMPLEMENTED · SELF-VERIFIED · AWAITING 
                   (was: close/error never released the worker or socket, so no reconnect was possible)
     AUDIT-FIX-05  capture ownership · transport floor · Dockview ·     Implemented · Verified
                   Plot resize
+  ── Round 2 — the one P1 the independent verdict left open ────────────────────────────────
+    AUDIT-FIX-03-R2  live DBC decode request fragmentation             Implemented · Verified
+                  (was: a decode request was shaped like a capture batch, so a viewport that
+                   alternates two channels was submitted one frame per request — 400 alternating
+                   frames over two different DBCs cost 400 HTTP requests at 316 frames/s, against
+                   a virtual capture producing 1000 frames/s. Now: a decode-specific work set,
+                   `POST /dbc/assets/{asset_id}/decode-frames`, collected per asset — the same
+                   viewport costs 2 requests, measured at 17,402 frames/s on the handlers and
+                   8,271 frames/s over real HTTP. `/decode-batch` is unchanged and still refuses
+                   `1, 3`; the capture batch's contiguity invariant was not touched.)
   Baseline `42e8250` · worker commits `d4ba695` (A) · `217cbaf`+`0bfea5e` (B) · `09ef970` (C) ·
   integration `5fe1308` · `352e8c8` · `a14fceb` · `90733ac` · no merge conflicts.
   Integrated gates: pytest **2859 passed / 1 skipped** · ruff clean · mypy 99 files clean ·
@@ -784,6 +794,11 @@ V0.3-CODE-AUDIT REMEDIATION SPRINT — IMPLEMENTED · SELF-VERIFIED · AWAITING 
   New P0: 0 · New P1: 0 · New P2: 0. The V0.3-FINAL P2 (`pnpm tauri dev` port mismatch) is still
   outstanding and was deliberately NOT fixed in this sprint. Residual and `NOT VERIFIED` items are
   listed in the remediation report §6.
+  Round-2 gates on the same branch: pytest **2902 passed / 1 skipped** · ruff clean · mypy 100 files
+  clean · frontend **33 files / 533 tests** with lint / typecheck / build clean · packaged smoke
+  **7 passed** against a sidecar rebuilt from the round-2 tree. Round-2 commits `5b536bc` (runtime
+  work set) · `4186fc4` (desktop partition and decode client) · `35c8d21` (measurement and packaged
+  round trip); per-finding detail in `docs/acceptance/v0.3-code-audit-remediation.md` §9.
   No Final Acceptance is claimed here — that verdict is external.
 
 V0.4 — NOT STARTED. The V0.3-CODE-AUDIT returned REMEDIATION REQUIRED, not PASS; whether these five
