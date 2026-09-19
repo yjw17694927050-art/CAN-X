@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "plan_id": "V0.3-12-VERIFY",
+  "description": "The P1-3 concurrency-verification rerun: 1 Main Agent + 3 native workers, pairwise C0, ownership-disjoint, read-only verification with a single evidence file each, completed to HANDOFF_READY with a real one-commit delivery range per task. Dispatched to obtain independent active-worker telemetry; it is not a product increment.",
+  "tasks": [
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-12-VERIFY-A",
+      "title": "Independent verification of the V0.3-12-A surface",
+      "objective": "Independently verify the delivered V0.3-12-A surface by reading apps/desktop/src/runtime/project-client.ts and its test file, and report, with evidence, which acceptance claims you can confirm from the code and which you cannot. Nothing may be modified: this is a read-only verification whose only written artefact is the evidence JSON named in allowed_paths. The point of this task is to be a real, strictly limited engineering task that a worker executes while independent active-worker telemetry is recorded by the Main Agent.",
+      "scope": "Read-only verification of one V0.3-12 delivery surface, plus one evidence file.",
+      "non_goals": [
+        "Modifying any product file",
+        "Re-running or replacing the V0.3-12 acceptance evidence",
+        "Any change to tools/agent, .agent/schemas or the CI configuration"
+      ],
+      "base_sha": "c35be8b6ecd060e0d4c0ca63a4237b9f9004ba66",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-a",
+      "allowed_paths": [
+        ".agent/telemetry/v0.3-12-verification-a.json"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src-tauri/**",
+        "apps/desktop/src/desktop/**",
+        "apps/desktop/src/orchestration/**",
+        "apps/desktop/src/runtime/**",
+        "runtime/**",
+        "tools/**",
+        "docs/**",
+        ".agent/schemas/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [],
+      "acceptance_criteria": [
+        "The evidence file names the exact file paths read and the exact commands run",
+        "Each claimed finding cites the file and the line or symbol it came from",
+        "At least one claim is marked as not confirmable, or the absence of one is stated"
+      ],
+      "required_tests": [
+        "verification"
+      ],
+      "handoff_requirements": [
+        "Report the exact commands run and their exit codes",
+        "Report the evidence JSON as changed_files"
+      ],
+      "risk_class": "LOW",
+      "status": "HANDOFF_READY",
+      "revision": 2
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-12-VERIFY-B",
+      "title": "Independent verification of the V0.3-12-B surface",
+      "objective": "Independently verify the delivered V0.3-12-B surface by reading apps/desktop/src-tauri/src/project_directory_bridge.rs and its test file, and report, with evidence, which acceptance claims you can confirm from the code and which you cannot. Nothing may be modified: this is a read-only verification whose only written artefact is the evidence JSON named in allowed_paths. The point of this task is to be a real, strictly limited engineering task that a worker executes while independent active-worker telemetry is recorded by the Main Agent.",
+      "scope": "Read-only verification of one V0.3-12 delivery surface, plus one evidence file.",
+      "non_goals": [
+        "Modifying any product file",
+        "Re-running or replacing the V0.3-12 acceptance evidence",
+        "Any change to tools/agent, .agent/schemas or the CI configuration"
+      ],
+      "base_sha": "015a9a76793580e42335b48d9667c0c34547effe",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-b",
+      "allowed_paths": [
+        ".agent/telemetry/v0.3-12-verification-b.json"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src-tauri/**",
+        "apps/desktop/src/desktop/**",
+        "apps/desktop/src/orchestration/**",
+        "apps/desktop/src/runtime/**",
+        "runtime/**",
+        "tools/**",
+        "docs/**",
+        ".agent/schemas/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [],
+      "acceptance_criteria": [
+        "The evidence file names the exact file paths read and the exact commands run",
+        "Each claimed finding cites the file and the line or symbol it came from",
+        "At least one claim is marked as not confirmable, or the absence of one is stated"
+      ],
+      "required_tests": [
+        "verification"
+      ],
+      "handoff_requirements": [
+        "Report the exact commands run and their exit codes",
+        "Report the evidence JSON as changed_files"
+      ],
+      "risk_class": "LOW",
+      "status": "HANDOFF_READY",
+      "revision": 2
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-12-VERIFY-C",
+      "title": "Independent verification of the V0.3-12-C surface",
+      "objective": "Independently verify the delivered V0.3-12-C surface by reading apps/desktop/src/orchestration/project-open.ts and its test file, and report, with evidence, which acceptance claims you can confirm from the code and which you cannot. Nothing may be modified: this is a read-only verification whose only written artefact is the evidence JSON named in allowed_paths. The point of this task is to be a real, strictly limited engineering task that a worker executes while independent active-worker telemetry is recorded by the Main Agent.",
+      "scope": "Read-only verification of one V0.3-12 delivery surface, plus one evidence file.",
+      "non_goals": [
+        "Modifying any product file",
+        "Re-running or replacing the V0.3-12 acceptance evidence",
+        "Any change to tools/agent, .agent/schemas or the CI configuration"
+      ],
+      "base_sha": "c8816d2b4705214b0bb55e09a033b2a8f2537afe",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-c",
+      "allowed_paths": [
+        ".agent/telemetry/v0.3-12-verification-c.json"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src-tauri/**",
+        "apps/desktop/src/desktop/**",
+        "apps/desktop/src/orchestration/**",
+        "apps/desktop/src/runtime/**",
+        "runtime/**",
+        "tools/**",
+        "docs/**",
+        ".agent/schemas/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [],
+      "acceptance_criteria": [
+        "The evidence file names the exact file paths read and the exact commands run",
+        "Each claimed finding cites the file and the line or symbol it came from",
+        "At least one claim is marked as not confirmable, or the absence of one is stated"
+      ],
+      "required_tests": [
+        "verification"
+      ],
+      "handoff_requirements": [
+        "Report the exact commands run and their exit codes",
+        "Report the evidence JSON as changed_files"
+      ],
+      "risk_class": "LOW",
+      "status": "HANDOFF_READY",
+      "revision": 2
+    }
+  ]
+}

@@ -110,7 +110,14 @@ def test_a_missing_file_reports_its_path_not_a_traceback() -> None:
 
 def test_frozen_snapshot_names_only_the_immutable_fields() -> None:
     task = make_task()
-    assert set(task.frozen_snapshot()) == {"objective", "allowed_paths", "shared_contracts"}
+    # `integration_paths` is part of the ownership surface - it decides what a
+    # delivery may contain - so it freezes with the rest of it (V0.3-12-FIX-1).
+    assert set(task.frozen_snapshot()) == {
+        "objective",
+        "allowed_paths",
+        "shared_contracts",
+        "integration_paths",
+    }
 
 
 def test_the_required_field_constants_are_not_empty() -> None:

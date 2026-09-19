@@ -24,6 +24,7 @@ use super::{
     BASE64, DBC_EXTENSION, DbcFileBridgeError, MAX_DBC_IMPORT_BYTES, SELECT_DBC_FILE_COMMAND,
     SelectedDbcContent, read_bounded_exact_bytes, read_selected_dbc,
 };
+use crate::project_directory_bridge::SELECT_PROJECT_DIRECTORY_COMMAND;
 
 /// Every failure code this bridge can produce, so a test can assert that a refusal
 /// is one of the declared ones rather than merely "an error".
@@ -441,6 +442,12 @@ fn crate_source(relative: &str) -> &'static str {
                 "/src/dbc_file_bridge.rs"
             ))
         }
+        "project_directory_bridge.rs" => {
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/project_directory_bridge.rs"
+            ))
+        }
         other => panic!("unknown source file {other}"),
     }
 }
@@ -507,16 +514,25 @@ fn the_registered_command_surface_is_exactly_what_we_intend() {
 
     assert_eq!(
         names,
-        ["restart_runtime", "runtime_status", SELECT_DBC_FILE_COMMAND],
-        "the desktop shell must keep the runtime lifecycle commands and add the DBC bridge, \
-         and must not grow a command this test has not reviewed"
+        [
+            "restart_runtime",
+            "runtime_status",
+            SELECT_DBC_FILE_COMMAND,
+            SELECT_PROJECT_DIRECTORY_COMMAND
+        ],
+        "the desktop shell must keep the runtime lifecycle commands and add the reviewed \
+         bridges, and must not grow a command this test has not reviewed"
     );
 }
 
 #[test]
 fn no_first_party_command_accepts_a_caller_supplied_filesystem_path() {
     let mut checked = 0;
-    for relative in ["lib.rs", "dbc_file_bridge.rs"] {
+    for relative in [
+        "lib.rs",
+        "dbc_file_bridge.rs",
+        "project_directory_bridge.rs",
+    ] {
         for parameters in command_parameter_lists(crate_source(relative)) {
             checked += 1;
             let lowered = parameters.to_ascii_lowercase();
@@ -528,7 +544,7 @@ fn no_first_party_command_accepts_a_caller_supplied_filesystem_path() {
             }
         }
     }
-    assert_eq!(checked, 3, "every first-party command must be inspected");
+    assert_eq!(checked, 4, "every first-party command must be inspected");
 }
 
 #[test]

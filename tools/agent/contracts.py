@@ -43,10 +43,21 @@ BRANCH_SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$
 TEST_RESULTS: Final[frozenset[str]] = frozenset({"passed", "failed", "skipped", "not_run"})
 
 #: A task may not silently mutate these once it is under way (AGENT-01 §36).
-FROZEN_FIELDS: Final[tuple[str, ...]] = ("objective", "allowed_paths", "shared_contracts")
+#: ``integration_paths`` widens the delivery range, so it is frozen with the rest
+#: of the surface it belongs to (V0.3-12-FIX-1).
+FROZEN_FIELDS: Final[tuple[str, ...]] = (
+    "objective",
+    "allowed_paths",
+    "shared_contracts",
+    "integration_paths",
+)
 
 #: Fields a task document must carry. ``task.schema.json`` mirrors this list
 #: exactly; a test asserts the two never drift (AGENT-01 §19, §53).
+#:
+#: ``branch`` / ``worktree`` are deliberately **not** here: they are required
+#: only for ``execution_mode == "isolated-worktree"``, and the parser enforces
+#: that conditionally (V0.3-12-FIX-1).
 TASK_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "schema_version",
     "task_id",
@@ -55,8 +66,6 @@ TASK_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "scope",
     "non_goals",
     "base_sha",
-    "branch",
-    "worktree",
     "owner",
     "allowed_paths",
     "forbidden_paths",
@@ -98,6 +107,32 @@ class RiskClass(StrEnum):
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     SAFETY_CRITICAL = "SAFETY_CRITICAL"
+
+
+class ExecutionMode(StrEnum):
+    """How a task's worker executes (ADR-0003, V0.3-12-FIX-1).
+
+    ``ISOLATED_WORKTREE``
+        The AGENT-01 model: the Sub-Agent owns its own branch and its own
+        registered worktree, and the contract freezes both. ``branch`` and
+        ``worktree`` are required, and every downstream gate resolves that
+        worktree back through Git.
+
+    ``NATIVE_SHARED``
+        The host Harness's default: the worker executes inside the **Main
+        Agent's** single worktree. No task branch is created and no task
+        worktree exists, so the contract declares neither — the integration
+        coordinates are read from the repository instead of asserted, and the
+        delivery is the real commit range ``base_sha..head_sha`` on the
+        integration branch.
+
+    The mode changes *where the delivery lives*, never *who may touch what*:
+    ownership, protected/public-truth/safety classification, history-based
+    evidence, the stale-base rule and the acceptance boundary are identical.
+    """
+
+    ISOLATED_WORKTREE = "isolated-worktree"
+    NATIVE_SHARED = "native-shared"
 
 
 def _expect_mapping(value: object, *, where: str, error: ErrorType) -> dict[str, Any]:
@@ -170,6 +205,17 @@ def _expect_schema_version(data: dict[str, Any], *, where: str, error: ErrorType
     return SCHEMA_VERSION
 
 
+def _expect_execution_mode(data: dict[str, Any], *, error: ErrorType) -> ExecutionMode:
+    """Parse ``execution_mode``, defaulting to the AGENT-01 isolated model."""
+    raw = data.get("execution_mode", ExecutionMode.ISOLATED_WORKTREE.value)
+    if not isinstance(raw, str) or raw not in {item.value for item in ExecutionMode}:
+        raise error(
+            f"task.execution_mode must be one of {[item.value for item in ExecutionMode]}",
+            details={"field": "task.execution_mode", "value": repr(raw)},
+        )
+    return ExecutionMode(raw)
+
+
 @dataclass(frozen=True, kw_only=True)
 class ContractRef:
     """A shared contract a task is built against (AGENT-01 §35)."""
@@ -227,8 +273,11 @@ class TaskContract:
     scope: str
     non_goals: tuple[str, ...]
     base_sha: str
-    branch: str
-    worktree: str
+    #: The Sub-Agent's own branch. ``None`` in ``NATIVE_SHARED`` mode, where the
+    #: worker executes in the Main Agent's worktree and owns no branch.
+    branch: str | None
+    #: Repository-relative task worktree. ``None`` in ``NATIVE_SHARED`` mode.
+    worktree: str | None
     owner: str
     allowed_paths: tuple[str, ...]
     forbidden_paths: tuple[str, ...]
@@ -240,6 +289,18 @@ class TaskContract:
     risk_class: RiskClass = RiskClass.LOW
     status: TaskStatus = TaskStatus.PLANNED
     revision: int = 1
+    #: ``NATIVE_SHARED`` only: repository-relative exact *files* (never globs) that
+    #: the **Main Agent** reviewed and permitted to coexist inside this task's
+    #: delivery commit range — a cross-boundary integration test, for example.
+    #:
+    #: It widens which paths the range may contain; it is **not** a claim about who
+    #: wrote them. A shared worktree records a file's presence in a commit range,
+    #: not its author, so this field proves nothing about per-file provenance. Empty
+    #: for an isolated task, may never reach a protected/public-truth/safety path,
+    #: and participates in conflict classification like any other delivery surface
+    #: (V0.3-12-FIX-2).
+    integration_paths: tuple[str, ...] = ()
+    execution_mode: ExecutionMode = ExecutionMode.ISOLATED_WORKTREE
     schema_version: int = SCHEMA_VERSION
 
     @classmethod
@@ -269,6 +330,29 @@ class TaskContract:
                 "task.shared_contracts must be a list",
                 details={"field": "task.shared_contracts"},
             )
+        execution_mode = _expect_execution_mode(payload, error=error)
+        branch = _expect_optional_str(payload, "branch", where="task", error=error)
+        worktree = _expect_optional_str(payload, "worktree", where="task", error=error)
+        # The two modes are mutually exclusive about their execution coordinates.
+        # An isolated task must name them; a native-shared task must not, because
+        # a branch or worktree it declared would be one Git can never resolve —
+        # which is exactly the defect this mode removes (V0.3-12-FIX-1).
+        if execution_mode is ExecutionMode.ISOLATED_WORKTREE:
+            mode = str(execution_mode)
+            for field_name, value in (("branch", branch), ("worktree", worktree)):
+                if value is None:
+                    raise error(
+                        f"task.{field_name} is required in isolated-worktree execution mode",
+                        details={"field": f"task.{field_name}", "execution_mode": mode},
+                    )
+        else:
+            mode = str(execution_mode)
+            for field_name, value in (("branch", branch), ("worktree", worktree)):
+                if value is not None:
+                    raise error(
+                        f"task.{field_name} must be absent in native-shared execution mode",
+                        details={"field": f"task.{field_name}", "execution_mode": mode},
+                    )
         return cls(
             schema_version=_expect_schema_version(payload, where="task", error=error),
             task_id=_expect_str(payload, "task_id", where="task", error=error),
@@ -277,8 +361,8 @@ class TaskContract:
             scope=_expect_str(payload, "scope", where="task", error=error),
             non_goals=_expect_str_tuple(payload, "non_goals", where="task", error=error),
             base_sha=_expect_str(payload, "base_sha", where="task", error=error),
-            branch=_expect_str(payload, "branch", where="task", error=error),
-            worktree=_expect_str(payload, "worktree", where="task", error=error),
+            branch=branch,
+            worktree=worktree,
             owner=_expect_str(payload, "owner", where="task", error=error),
             allowed_paths=_expect_str_tuple(payload, "allowed_paths", where="task", error=error),
             forbidden_paths=_expect_str_tuple(
@@ -293,6 +377,10 @@ class TaskContract:
             handoff_requirements=_expect_str_tuple(
                 payload, "handoff_requirements", where="task", error=error
             ),
+            integration_paths=_expect_str_tuple(
+                payload, "integration_paths", where="task", error=error, required=False
+            ),
+            execution_mode=execution_mode,
             risk_class=RiskClass(risk_raw),
             status=TaskStatus(status_raw),
             revision=_expect_int(payload, "revision", where="task", error=error),
@@ -317,6 +405,8 @@ class TaskContract:
             "acceptance_criteria": list(self.acceptance_criteria),
             "required_tests": list(self.required_tests),
             "handoff_requirements": list(self.handoff_requirements),
+            "integration_paths": list(self.integration_paths),
+            "execution_mode": str(self.execution_mode),
             "risk_class": str(self.risk_class),
             "status": str(self.status),
             "revision": self.revision,
@@ -326,6 +416,30 @@ class TaskContract:
         """The fields that may not change without a revision bump (§36)."""
         full = self.to_dict()
         return {name: full[name] for name in FROZEN_FIELDS}
+
+    def ownership_surface(self) -> tuple[str, ...]:
+        """Every path this task's *delivery range* may contain (V0.3-12-FIX-1).
+
+        ``allowed_paths`` is the **worker's declared permission surface**. For a
+        native-shared task the surface additionally admits the declared
+        ``integration_paths`` — the repository-relative files the **Main Agent**
+        reviewed and permitted to coexist inside the same delivery commit range (a
+        cross-boundary integration test, for example).
+
+        Those are two different kinds of declaration, and conflating them is what
+        FIX-2 corrects. ``allowed_paths`` says what the worker may edit;
+        ``integration_paths`` says which additional files a reviewer allowed the
+        *range* to contain. What the surface decides is whether the range is
+        composed only of paths some task was permitted to touch — it is not
+        evidence of who wrote each file, which a shared worktree cannot record.
+        ``validate_task`` still constrains the declared integration paths: each must
+        be an exact repository-relative file, disjoint from every governed path and
+        from the task's own ``forbidden_paths``, and ``classify_pair`` treats the
+        whole surface like any other when it classifies two tasks.
+        """
+        if self.execution_mode is ExecutionMode.NATIVE_SHARED:
+            return (*self.allowed_paths, *self.integration_paths)
+        return tuple(self.allowed_paths)
 
 
 @dataclass(frozen=True, kw_only=True)

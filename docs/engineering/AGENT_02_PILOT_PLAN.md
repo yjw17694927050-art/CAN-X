@@ -3,7 +3,16 @@
 > **Document**: `docs/engineering/AGENT_02_PILOT_PLAN.md`
 > **Scope**: The first **real** Main Agent + worker pilot — workload, execution mode, ownership,
 > conflicts, isolation, tests, integration order, failure recovery, acceptance boundary.
-> **Status**: DESIGNED · **REAL PILOT NOT STARTED** · contracts are `PLANNED`, never dispatched.
+> **Status**: **EXECUTED — the first real pilot — · SELF-VERIFIED · AWAITING INDEPENDENT
+> ACCEPTANCE**. The design below is preserved as the plan it was. The run is recorded in **§15**,
+> and it used **1 Main Agent + 3 native Tianshu workers** — not the `1 + 2` this design assumed,
+> because the host's native default worker concurrency is 3 and the pilot's purpose was to
+> validate that default rather than a reconfigured harness.
+> **Evidence**: `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`
+> **Remediation**: `V0.3-12-FIX-1` closed three P1 findings from independent acceptance — the
+> governance step §9/§11 defines had never been run (the model could not express the measured
+> shared-worktree mode), and §15.3's concurrency figure was withdrawn as unsupported and
+> re-measured. See **§15.6**.
 > **Execution mode**: **Tianshu native `/team`** — *not* a CAN-X-built Sub-Agent runtime.
 > **Foundation**: `AGENT-02-NATIVE-HARNESS-PIVOT` **CLOSED** (head `cd44abc` → `main` `d652b4c`,
 > protected PR #18, post-merge main CI `35415938987` SUCCESS). This plan is not yet executed.
@@ -309,3 +318,166 @@ A green CI is not acceptance (`docs/PROJECT_STATE.md` §14). This plan does not 
 nothing in it may be cited as a pilot result: **REAL PILOT NOT STARTED**. A future genuinely
 long-running pilot may also test long-duration context endurance; that endurance is
 **NOT VERIFIED** and is not claimed by this plan.
+
+---
+
+## 15. Pilot execution record — the first real run
+
+> Status: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. Not `PASS`, not
+> `CLOSED` — those are the independent reviewer's words to write. Full evidence:
+> `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`.
+
+The pilot ran against **V0.3-12**, on `feature/v0.3-12-desktop-project-open-foundation` from
+`main` `451352f`, with three workers instead of the two this design assumed.
+
+### 15.1 Shape of the run
+
+```text
+1 Main Agent  +  3 native Tianshu workers        (the design said 1 + 2)
+effective maxWorkers                     3
+Harness concurrency configuration        NOT MODIFIED
+                                         (Tianshu source, desktop runtime, RIVET_MAX_WORKERS and
+                                          workers.maxWorkers all unchanged — no config editing
+                                          was required, because 3 is the native default)
+Worker A  V0.3-12-A  Desktop Runtime project read-model client        work order batch:0
+Worker B  V0.3-12-B  Native project directory bridge                  work order batch:1
+Worker C  V0.3-12-C  TS directory bridge + project-open orchestration work order batch:2
+```
+
+The three contracts were the ownership-disjoint, pairwise-**C0** pair this plan selected,
+extended to a third: `plan` reported `runnable = [A, B, C]`, `conflicts` `(A,B) (A,C) (B,C)` all
+`C0 auto_resolvable`, and no contract touching a protected, public-truth or safety path.
+
+### 15.2 What §6 asked the pilot to *measure*, and what it measured
+
+§6 left the per-worker filesystem model as a runtime observation, because the shipped code
+contains both a coordinator built with `sharedWorktree: true` and a default-on isolation mode.
+
+```text
+Filesystem mode:  SHARED WORKTREE
+```
+
+Measured with an independent 2-second sampler over the whole dispatch window (151 samples,
+389 s): `git worktree list` returned a **constant set of 5 worktrees** — the repository root on
+the feature branch plus four pre-existing ones — and **no new worktree or branch appeared**.
+All three workers' artifacts landed in the same working tree, on the same branch, in the same
+`git status --porcelain`. No sample classifies as isolated.
+
+This is the first real datum for the `workerIsolationMode()` / `sharedWorktree` ambiguity, and
+it is why the C0/disjoint contract selection — not the filesystem — is what has to carry
+ownership safety in native mode. It did: no two workers wrote the same file, so the shared-
+worktree STOP condition in §6 was never reached.
+
+### 15.3 Concurrency, context and ownership
+
+```text
+Three-worker concurrent overlap   WITHDRAWN as originally stated and re-measured — see §15.6.
+                                  The first run's active-execution overlap is NOT VERIFIED;
+                                  the instrumented rerun measured 25 s of strict three-way
+                                  overlap (114 s if one long tool call counts as continued
+                                  execution) with a peak of 3 simultaneously active workers.
+Context isolation                 PARTIAL — each worker received only its own contract brief
+                                  and no Main-Agent history (by dispatch construction and by
+                                  observed behaviour); the assembled worker prompt itself was
+                                  not directly observable, so full isolation is not claimed
+Ownership from real Git           overlap NONE · forbidden-path violations NONE ·
+                                  protected/public-truth/safety touches NONE (all paths C1)
+Native worker envelopes           three, consumed as reports only and re-derived from the
+                                  repository before any of them was cited as fact
+```
+
+### 15.4 What the run changed in this plan
+
+- **§7 capacity.** Workers ran 3, not 2. `max_sub_agents` in `.agent/config.json` is still 4 and
+  was not touched; the native ceiling that actually bound the run was the Harness default of 3.
+  A 1 + 4 **scale** validation remains a separate, later task.
+- **§6/§11 isolation step.** Measured and recorded (§15.2) rather than assumed.
+- **§9 handoff.** The native envelopes were consumed as reports and re-derived against Git. One
+  worker envelope carried absolute Windows paths alongside its relative ones; the mismatch was
+  resolved by re-deriving `history_touched_paths` rather than by trusting either list.
+- **§12 failure recovery.** Not exercised — no worker FAILED. Two of the three envelopes came
+  back `blocked` from the Harness's own write gate (a scoped `tsc` that did not run to
+  completion), with their own focused suites green; the Main Agent re-ran the full gates
+  independently instead of treating either the block or the claim as evidence.
+
+### 15.5 What this run still does not prove
+
+```text
+scale beyond 1 + 3                            NOT VERIFIED
+long-duration context endurance               NOT VERIFIED
+the Harness enforcing CAN-X ownership         out of scope by design — CAN-X keeps that duty
+per-worker filesystem isolation               NOT PRESENT in this run (measured SHARED)
+independent acceptance                        PENDING — the reviewer's verdict, not the author's
+```
+
+### 15.6 V0.3-12-FIX-1 — the closure this run was missing
+
+Independent acceptance of the run above returned three P1 findings. Two were about **this plan
+not being carried out**, and one was about **a claim stronger than its evidence**. Their
+resolution is recorded in full in
+`docs/acceptance/v0.3-12-desktop-project-open-foundation.md` §10; the parts that belong to *this
+plan* are:
+
+**§9 and §11 were not executed.** The three worker contracts stayed `PLANNED`, no handoff was
+written, and `validate-handoff` / `check-integration` were never run — the exact step §9 defines
+and §11 step 2–4 order. The root cause was not an operator omission: the AGENT-01 contract froze
+`branch` + `worktree`, this run measured a **shared worktree** (§15.2) in which neither exists,
+and `collect_repository_evidence` therefore failed closed with `agent.git_state_error` before it
+could inspect the delivery. A model that cannot describe the execution mode cannot validate its
+result.
+
+That gap is now closed by an explicit **`execution_mode`** (`isolated-worktree` | `native-shared`)
+plus **`integration_paths`**, defined in ADR-0003 and `MULTI_AGENT_PROTOCOL.md` §20. What this
+plan said in §9 — consume the native envelope, validate it in CAN-X, prove ownership from Git —
+is unchanged; what changed is that the contract can now name the mode it is validating. The
+three contracts were re-issued at revision 2 and all six governance commands now run green:
+
+```text
+validate-task     V0.3-12-{A,B,C}   exit 0 · exit 0 · exit 0
+validate-handoff  V0.3-12-{A,B,C}   exit 0 · exit 0 · exit 0
+check-integration V0.3-12-{A,B,C}   exit 0 · exit 0 · exit 0   ready = True · blockers = []
+```
+
+**§15.3's concurrency figure was wrong.** "All three workers' artifacts present for 302 s" is a
+statement about the working tree, not about workers executing; it is withdrawn, and the first
+run's active-execution overlap is `NOT VERIFIED` — the harness work orders carry no timestamps
+at all, and the per-worker checkpoints have internally inconsistent field semantics. §13 of this
+plan asks for provable concurrency, so it was re-measured with an instrumented rerun (1 Main +
+3 native workers, pairwise C0, ownership-disjoint, read-only), each worker emitting a heartbeat
+that only it writes, read by an independent sampler alongside the OS process table:
+
+```text
+dispatch window                    03:59:56 → 04:03:57 UTC   (105 samples, 241 s)
+all three first heartbeats         04:00:10 — the same second
+strict three-way overlap           25 s   (activity-gap threshold 60 s)
+                                    114 s if one 67 s gap counts as continued execution
+max simultaneously active workers  3
+node.exe                            baseline 5 → peak 12
+Harness maxWorkers                 3          concurrency config modified: NO
+
+parallelism verified  YES
+speedup verified      NO — no single-agent baseline exists, so no speed-up is claimed
+```
+
+§13's requirement that the run be *proved* concurrent rather than *asserted* now has an
+instrument that satisfies it, and the instrument is reusable: it lives in the dispatch brief
+(heartbeat) and in an external sampler, not in product code.
+
+**V0.3-12-FIX-2 closed the two gaps this section left open.**
+
+1. **The concurrency evidence is now recomputable from the pull request.** The rerun's raw
+   artefacts lived under the gitignored `.rivet/`, so a reviewer could not re-derive the figures
+   above. They are transcribed verbatim into the committed
+   `.agent/telemetry/v0.3-12-concurrency-rerun.json`, and
+   `tests/unit/pilot/test_concurrency_telemetry.py` recomputes worker first/last heartbeats, the
+   activity windows, the peak simultaneously-active count and the strict three-way overlap from
+   the raw heartbeat and sampler sequences, refusing any disagreement with the reported numbers.
+   The strict figure is defined precisely: it is the **longest continuous** interval in which all
+   three workers are inside an activity window (two such intervals exist — 22 s and 25 s; the
+   reported 25 s is the longer), and 114 s remains the conditional reading in which worker B's
+   single 67 s gap is one long tool call.
+2. **`integration_paths` no longer claims provenance it cannot prove.** Per
+   `docs/ADR/0003-native-agent-harness-orchestration.md` and `MULTI_AGENT_PROTOCOL.md` §20.1, the
+   field names Main-Agent-*reviewed* files permitted to coexist in a delivery *range*, each an
+   exact repository-relative path (globs refused). The Git gate proves the range's composition and
+   its governed-path safety; it never proves per-file writer provenance inside a shared worktree.

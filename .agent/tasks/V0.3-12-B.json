@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-12-B",
+  "title": "Native project directory selection bridge",
+  "objective": "Add one native Tauri command, select_project_directory, that opens the OS directory dialog in Rust, lets the user choose a directory, and returns the chosen directory path (Ok(Some(path)) on selection, Ok(None) when the dialog is dismissed). The command accepts ZERO caller-supplied filesystem arguments: a caller cannot pass path, directory or project_path - Rust obtains the selection from the OS dialog itself. This does not weaken the renderer boundary, because a CAN-X project path is already the explicit input of the Runtime's GET /project/inspect contract. Rust must NOT validate that the selection is a CAN-X project: no reading project.json, no opening project.db, no schema check, no project-identity check, no copy of ProjectService logic. Project authority stays with the Python Runtime ProjectService; this bridge owns only the user filesystem selection. Errors are typed, static and bounded, and never echo the selected path. Reuse the existing tauri_plugin_dialog directory picker; add no dependency and do not modify Cargo.toml.",
+  "scope": "The new Rust project-directory bridge module, its tests, the lib.rs command registration, and the DBC bridge's registered-command-surface regression test that the new registration invalidates.",
+  "non_goals": [
+    "Any project validation, project identity check or ProjectService logic in Rust",
+    "Reading project.json, opening project.db or checking a schema from Rust",
+    "Any new crate dependency, any Cargo.toml / Cargo.lock change",
+    "Any renderer capability change, any TypeScript change and any Runtime change"
+  ],
+  "base_sha": "cd284ed9b042bb47e200b035ed5bc00a7e92b8c9",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-b",
+  "allowed_paths": [
+    "apps/desktop/src-tauri/src/project_directory_bridge.rs",
+    "apps/desktop/src-tauri/src/project_directory_bridge/tests.rs",
+    "apps/desktop/src-tauri/src/lib.rs",
+    "apps/desktop/src-tauri/src/dbc_file_bridge/tests.rs"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src-tauri/Cargo.toml",
+    "apps/desktop/src-tauri/Cargo.lock",
+    "apps/desktop/src-tauri/capabilities/**",
+    "runtime/**",
+    ".agent/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [],
+  "acceptance_criteria": [
+    "Exactly one new command is registered, named select_project_directory, and its only argument is the Tauri-injected AppHandle - no caller-supplied filesystem argument exists",
+    "The registered command surface regression in dbc_file_bridge/tests.rs is updated to the new reviewed surface AND its parameter scan is extended to project_directory_bridge.rs with its inspected-command count raised accordingly - the invariant is preserved, not weakened",
+    "Cancel resolves to Ok(None) and selection resolves to Ok(Some(directory path)); the bridge performs no project validation of the selection",
+    "Every failure is a declared typed code with static message text, and no published payload or error contains the selected directory path",
+    "cargo fmt --check, cargo clippy --all-targets --all-features --locked -- -D warnings and cargo test --locked all pass"
+  ],
+  "required_tests": [
+    "rust-fmt",
+    "rust-clippy",
+    "rust-test"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for cargo fmt --check, cargo clippy --all-targets --all-features --locked -- -D warnings and cargo test --locked, run from apps/desktop/src-tauri",
+    "Name every new test case and state the RED observation that preceded each new behaviour, including the command-surface regression that the new registration turned red",
+    "State explicitly that Cargo.toml, Cargo.lock and capabilities/default.json were not modified, and that no project-validation logic was added to Rust"
+  ],
+  "risk_class": "LOW",
+  "status": "HANDOFF_READY",
+  "revision": 2
+}

@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "plan_id": "V0.3-12",
+  "description": "V0.3-12 Desktop Project Open Foundation, executed as the first real AGENT-02 native pilot: 1 Main Agent + 3 native Tianshu workers on a SHARED worktree, pairwise C0. Re-issued at revision 2 with execution_mode=native-shared and the delivery coordinates each task actually had; the originals are preserved in git history at 8522c0f. V0.3-12-FIX-2 bumped V0.3-12-A to revision 3: its objective and acceptance criteria had required both that the Runtime's five-field envelope be preserved intact AND that no error field contain projectPath, which the Runtime's own `details={\"path\": str(path)}` diagnostics make mutually exclusive. The absolute criterion was replaced with the accurate boundary it was meant to state; the product implementation was not changed for it.",
+  "tasks": [
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-12-A",
+      "title": "Desktop Runtime project read-model client",
+      "objective": "Implement inspectProject(projectPath) in the desktop Runtime HTTP boundary: it calls GET /project/inspect?project_path=... and returns a typed Desktop read model { projectId, displayName, schemaVersion, createdAt, updatedAt }, mapping the Runtime's snake_case JSON onto camelCase only inside this boundary. projectPath is an explicit parameter on every call; there is no global current project, and the path is never normalised, resolved, lower-cased or rewritten - it is encoded as the project_path query parameter with URLSearchParams (or an equivalent safe query encoding) and forwarded verbatim. A successful response is validated field by field and a fresh object is built from exactly the declared fields - never cast. Failures are distinguished into three typed classes: a structured Runtime API error (the shared five-field envelope code / message / details / recoverable / source is preserved intact), a transport error, and a contract error (a 2xx payload the contract does not describe). Desktop-authored transport and contract diagnostics never add or echo projectPath, the request URL or the raw response body; a structured Runtime API failure preserves the Runtime-provided five-field envelope unchanged, so its server-provided message and details are authoritative Runtime diagnostics that the Desktop client does not re-sanitise.",
+      "scope": "The new desktop Runtime project client module and its vitest suite.",
+      "non_goals": [
+        "Re-implementing the Runtime project domain - ProjectService stays the only project authority",
+        "Changing the Runtime HTTP contract or any module under runtime/",
+        "Any UI, project picker, recent-projects list or global current-project state",
+        "Any Rust, Tauri IPC or orchestration change"
+      ],
+      "base_sha": "8522c0f2d33391a2d2092e648c446f5813187e98",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-a",
+      "allowed_paths": [
+        "apps/desktop/src/runtime/project-client.ts",
+        "apps/desktop/src/runtime/project-client.test.ts"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src-tauri/**",
+        "runtime/**",
+        ".agent/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        {
+          "path": "runtime/canx/api/project.py",
+          "sha": "451352faad16e44c36a9bebae3ab1ab355746aa5"
+        }
+      ],
+      "acceptance_criteria": [
+        "inspectProject(projectPath) requests GET /project/inspect with project_path encoded by URLSearchParams, and a non-empty path reaches the query string byte for byte",
+        "A well-formed success payload is projected onto { projectId, displayName, schemaVersion, createdAt, updatedAt } with no extra field and no cast",
+        "A malformed success payload - missing field, wrong field type, non-object, array - is refused as a contract error and produces no read model",
+        "A structured Runtime failure keeps code / message / details / recoverable / source intact and is a Runtime API error, not a transport error",
+        "A transport failure and an uninterpretable failure response are transport errors",
+        "Desktop-authored transport and contract diagnostics add neither projectPath, the request URL nor the raw response body; a structured Runtime API failure preserves the Runtime-provided five-field envelope unchanged, so its message and details - which may legitimately carry a Runtime-provided path - are authoritative Runtime diagnostics that the Desktop client does not re-sanitise"
+      ],
+      "required_tests": [
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for pnpm test, pnpm typecheck and pnpm lint at the repository root",
+        "Name every new test case and state the RED observation that preceded each new behaviour",
+        "State explicitly that no Rust file, no Runtime file and no orchestration file was touched"
+      ],
+      "risk_class": "LOW",
+      "status": "HANDOFF_READY",
+      "revision": 3
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-12-B",
+      "title": "Native project directory selection bridge",
+      "objective": "Add one native Tauri command, select_project_directory, that opens the OS directory dialog in Rust, lets the user choose a directory, and returns the chosen directory path (Ok(Some(path)) on selection, Ok(None) when the dialog is dismissed). The command accepts ZERO caller-supplied filesystem arguments: a caller cannot pass path, directory or project_path - Rust obtains the selection from the OS dialog itself. This does not weaken the renderer boundary, because a CAN-X project path is already the explicit input of the Runtime's GET /project/inspect contract. Rust must NOT validate that the selection is a CAN-X project: no reading project.json, no opening project.db, no schema check, no project-identity check, no copy of ProjectService logic. Project authority stays with the Python Runtime ProjectService; this bridge owns only the user filesystem selection. Errors are typed, static and bounded, and never echo the selected path. Reuse the existing tauri_plugin_dialog directory picker; add no dependency and do not modify Cargo.toml.",
+      "scope": "The new Rust project-directory bridge module, its tests, the lib.rs command registration, and the DBC bridge's registered-command-surface regression test that the new registration invalidates.",
+      "non_goals": [
+        "Any project validation, project identity check or ProjectService logic in Rust",
+        "Reading project.json, opening project.db or checking a schema from Rust",
+        "Any new crate dependency, any Cargo.toml / Cargo.lock change",
+        "Any renderer capability change, any TypeScript change and any Runtime change"
+      ],
+      "base_sha": "cd284ed9b042bb47e200b035ed5bc00a7e92b8c9",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-b",
+      "allowed_paths": [
+        "apps/desktop/src-tauri/src/project_directory_bridge.rs",
+        "apps/desktop/src-tauri/src/project_directory_bridge/tests.rs",
+        "apps/desktop/src-tauri/src/lib.rs",
+        "apps/desktop/src-tauri/src/dbc_file_bridge/tests.rs"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src-tauri/Cargo.toml",
+        "apps/desktop/src-tauri/Cargo.lock",
+        "apps/desktop/src-tauri/capabilities/**",
+        "runtime/**",
+        ".agent/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [],
+      "acceptance_criteria": [
+        "Exactly one new command is registered, named select_project_directory, and its only argument is the Tauri-injected AppHandle - no caller-supplied filesystem argument exists",
+        "The registered command surface regression in dbc_file_bridge/tests.rs is updated to the new reviewed surface AND its parameter scan is extended to project_directory_bridge.rs with its inspected-command count raised accordingly - the invariant is preserved, not weakened",
+        "Cancel resolves to Ok(None) and selection resolves to Ok(Some(directory path)); the bridge performs no project validation of the selection",
+        "Every failure is a declared typed code with static message text, and no published payload or error contains the selected directory path",
+        "cargo fmt --check, cargo clippy --all-targets --all-features --locked -- -D warnings and cargo test --locked all pass"
+      ],
+      "required_tests": [
+        "rust-fmt",
+        "rust-clippy",
+        "rust-test"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for cargo fmt --check, cargo clippy --all-targets --all-features --locked -- -D warnings and cargo test --locked, run from apps/desktop/src-tauri",
+        "Name every new test case and state the RED observation that preceded each new behaviour, including the command-surface regression that the new registration turned red",
+        "State explicitly that Cargo.toml, Cargo.lock and capabilities/default.json were not modified, and that no project-validation logic was added to Rust"
+      ],
+      "risk_class": "LOW",
+      "status": "HANDOFF_READY",
+      "revision": 2
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-12-C",
+      "title": "Desktop project directory bridge and project-open orchestration",
+      "objective": "Two connected pieces, both in the renderer. (A) A typed desktop bridge over the native select_project_directory command: selectProjectDirectory(): Promise<string | null>, invoked with no caller arguments, resolving null when the user cancelled and the selected project directory string otherwise; a native structured rejection becomes a typed bridge error and a malformed successful IPC payload is a contract error. The bridge reads no project.json, validates nothing, never calls a filesystem API directly and creates no global project state. (B) A pure project-open orchestration that composes the selection boundary with a project inspection boundary WITHOUT importing the Runtime client's implementation details, so it stays parallel-safe: it takes selectDirectory and inspectProject as injected functions (dependency injection or a structural function type) and the project read model as a generic / type-only seam, never as a duplicated copy of the Runtime project schema. Flow: selectProjectDirectory() -> null means cancelled and ends the function before any inspection call; otherwise the selected path is forwarded verbatim to inspectProject, and the outcome is an opened { projectPath, project } discriminated union. No path normalisation, no global current project, no persistent state, no DBC coupling and no error translation: a selection error and an inspection error both propagate exactly as thrown.",
+      "scope": "The new TypeScript desktop directory bridge and the new project-open orchestration module, each with its vitest suite.",
+      "non_goals": [
+        "Any Rust change - the native command is V0.3-12-B's surface and is consumed here only as a string",
+        "Importing or re-implementing the Runtime project client; the inspection boundary is injected",
+        "Any project picker UI, recent-projects list, project mutation or global current-project state",
+        "Duplicating the Runtime project read-model schema as a second authority"
+      ],
+      "base_sha": "7add1390ff8b716199cc461d921ec4ee8b72491b",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [
+        "apps/desktop/src/orchestration/project-open.integration.test.ts"
+      ],
+      "owner": "sub-c",
+      "allowed_paths": [
+        "apps/desktop/src/desktop/project-directory-bridge.ts",
+        "apps/desktop/src/desktop/project-directory-bridge.test.ts",
+        "apps/desktop/src/orchestration/project-open.ts",
+        "apps/desktop/src/orchestration/project-open.test.ts"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src-tauri/**",
+        "apps/desktop/src/runtime/**",
+        "runtime/**",
+        ".agent/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [],
+      "acceptance_criteria": [
+        "The TypeScript bridge invokes the command named select_project_directory with no arguments, resolving null on cancel and the selected path on success",
+        "The bridge sorts a native rejection into a typed bridge error and a malformed successful IPC payload into a contract error; a bridge that is unavailable is reported as its own code",
+        "openProjectFromNativeDialog(selectDirectory, inspectProject) returns { status: 'cancelled' } without calling inspectProject when the selection is null",
+        "A selected path is forwarded to inspectProject exactly as returned - character for character - and one selection produces exactly one inspection call",
+        "An opened outcome carries { projectPath, project } with the read model typed structurally / generically, and a selection failure or an inspection failure propagates unchanged",
+        "No module-level mutable state: two sequential calls never share a project"
+      ],
+      "required_tests": [
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for pnpm test, pnpm typecheck and pnpm lint at the repository root",
+        "Name every new test case and state the RED observation that preceded each new behaviour",
+        "State explicitly that no Rust file, no Runtime file and no Runtime-client file was touched, and that no project read-model schema was duplicated"
+      ],
+      "risk_class": "LOW",
+      "status": "HANDOFF_READY",
+      "revision": 2
+    }
+  ]
+}

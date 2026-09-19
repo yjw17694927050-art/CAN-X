@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-12-VERIFY-B",
+  "agent": "sub-b",
+  "branch": "feature/v0.3-12-desktop-project-open-foundation",
+  "base_sha": "015a9a76793580e42335b48d9667c0c34547effe",
+  "head_sha": "c8816d2b4705214b0bb55e09a033b2a8f2537afe",
+  "commits": [
+    "c8816d2b4705214b0bb55e09a033b2a8f2537afe chore(agent): V0.3-12-VERIFY-B verification evidence"
+  ],
+  "changed_files": [
+    ".agent/telemetry/v0.3-12-verification-b.json"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "verification",
+      "command": "cd apps/desktop/src-tauri && cargo test --locked --lib project_directory_bridge",
+      "result": "passed"
+    }
+  ],
+  "lint": "not applicable - read-only verification, no source file modified",
+  "typecheck": "not applicable - read-only verification, no source file modified",
+  "ci": "not applicable to this verification task; the V0.3-12 product head carries the Quality Gate run",
+  "dependencies": [],
+  "known_issues": [
+    "changed_files is exactly the delivery range 015a9a7..c8816d2, which contains this evidence file and nothing else.",
+    "The reported test result was re-run by the Main Agent, not taken from the worker envelope: 14 passed / 0 failed.",
+    "Read-only: this task modified no product file, and its evidence JSON is its whole delivery."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}

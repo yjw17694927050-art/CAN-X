@@ -100,12 +100,18 @@ def classify_pattern(
 
 
 def classify_pair(left: TaskContract, right: TaskContract, config: AgentConfig) -> PairConflict:
-    """Classify the overlap between two tasks."""
+    """Classify the overlap between two tasks.
+
+    The comparison uses each task's full **ownership surface** — ``allowed_paths``
+    plus, for a native-shared task, its declared ``integration_paths``. Those are
+    delivery-range paths, so a delivery that reaches another task's surface must
+    classify as a conflict rather than slip past as C0 (V0.3-12-FIX-1).
+    """
     shared = _shared_contract_paths(left, right)
     overlaps: list[str] = []
     level = ConflictLevel.C0
-    for pattern in left.allowed_paths:
-        for other in right.allowed_paths:
+    for pattern in left.ownership_surface():
+        for other in right.ownership_surface():
             if not patterns_overlap(pattern, other):
                 continue
             overlaps.append(f"{pattern} ~ {other}")

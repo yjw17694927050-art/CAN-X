@@ -5,7 +5,10 @@
 > **Updated**: 2026-09-19 (CI-03 — Change-Aware Tiered Quality Gate — Final Acceptance: PASS ·
 > Status: CLOSED after protected integration: accepted head 6edac09, PR #16, merge 11d362e,
 > post-merge FULL main CI 35370751537 SUCCESS. DOC-GOV-01 — Documentation & Agent Context
-> Governance — Final Acceptance: PASS · Status: CLOSED.)
+> Governance — Final Acceptance: PASS · Status: CLOSED. **V0.3-12 — Desktop Project Open
+> Foundation — IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**, delivered
+> together with the **first real AGENT-02 native pilot**: 1 Main Agent + 3 native Tianshu
+> workers EXECUTED and self-verified on the same branch.)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -149,7 +152,10 @@ Do not swap these without a SPEC change.
 Current Phase:  V0.3 — Professional Trace & DBC Foundation
 Latest CLOSED numbered step:    V0.3-11 — Project Runtime Read Model API Foundation   PASS · CLOSED
 Previous CLOSED numbered step:  V0.3-10 — Read-Only DBC Workspace UI Foundation      PASS · CLOSED
-Current numbered step:          None. No V0.3-12 implementation exists in this tree.
+Current numbered step:          V0.3-12 — Desktop Project Open Foundation
+                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
+                                branch feature/v0.3-12-desktop-project-open-foundation, from
+                                main 451352f · evidence docs/acceptance/v0.3-12-…md
 
 Closed engineering infrastructure (not numbered product phases) — independently accepted, CLOSED:
   Maintenance CI-01   Continuous Integration Baseline Foundation .............. §14
@@ -165,7 +171,9 @@ Closed engineering infrastructure (not numbered product phases) — independentl
                       PASS · CLOSED (external acceptance, head cd44abc → main d652b4c)
   AGENT-02-NATIVE-HARNESS-PIVOT  Native Tianshu Harness Orchestration ....... §12
                       PASS · CLOSED (external acceptance, head cd44abc → main d652b4c)
-                      Real AGENT-02 pilot: NOT STARTED · V0.3-12: NOT STARTED
+                      Real AGENT-02 pilot: **EXECUTED**, self-verified, awaiting independent
+                      acceptance · V0.3-12: **IMPLEMENTED**, awaiting independent acceptance
+                      (both: docs/acceptance/v0.3-12-…md, §20)
 ```
 
 Closed-phase ledger — accepted heads, merges and post-merge CI, kept for traceability (full
@@ -239,6 +247,12 @@ Verified against the current working tree (Runtime routers, desktop modules, Age
    persistence · DBC decode (Runtime domain) · DBC Runtime HTTP read/decode API · Safe DBC content
    import (HTTP) · Desktop native DBC file bridge (Tauri) · Desktop DBC import orchestration ·
    Desktop DBC read-model client · DBC Workspace UI (read-only) · DBC asset browser UI (read-only)
+✅ Desktop project open foundation (V0.3-12) — Desktop Runtime project read-model client
+   (`inspectProject`) · native Tauri project-directory bridge (`select_project_directory`, zero
+   caller-supplied filesystem arguments) · typed TS directory bridge · project-open orchestration ·
+   cross-boundary integration test. No Project Picker UI, no global current project, no recent
+   projects, no project mutation. None of these has a production UI caller yet — a foundation, in
+   the same state `orchestration/dbc-import.ts` was left in.
 
 ❌ DBC editor · active DBC · channel ↔ DBC binding · Trace decoded signal columns · Plot signal
    binding · Frontend decode-batch integration · Agent dbc.* tools
@@ -330,7 +344,17 @@ audit durability across restart / tamper
   evidence (SAFETY-01)                         NOT IMPLEMENTED — in-memory trail
 external execution atomic with the decision    NOT IMPLEMENTED — the kernel's lock covers only
                                                its own state
-multi-agent behaviour at real scale            SIMULATION ONLY — no real AGENT-02 pilot
+multi-agent behaviour at real scale            PARTIAL — the first real AGENT-02 pilot ran
+                                               (1 Main + 3 native workers). Per-worker
+                                               active-execution overlap of the FIRST run is
+                                               NOT VERIFIED (the "302 s" working-tree-presence
+                                               figure is withdrawn); the instrumented rerun
+                                               measured max simultaneously active workers = 3
+                                               and a strict three-way overlap of 25 s, and is
+                                               recomputable from committed evidence at
+                                               .agent/telemetry/v0.3-12-concurrency-rerun.json.
+                                               Scale beyond 1 + 3 and long-duration context
+                                               endurance stay NOT VERIFIED
 ruleset strict_required_status_checks_policy   false — recorded gap (ADR-0002 alt. A)
 ```
 
@@ -417,7 +441,24 @@ this document it must attribute it, and must not present its own conclusion as t
 ## 12. Immediate Next Action
 
 ```text
-Just CLOSED — CI-03, Change-Aware Tiered Quality Gate
+Just DELIVERED — V0.3-12, Desktop Project Open Foundation
+  Developer status: IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE · NOT MERGED
+  Branch feature/v0.3-12-desktop-project-open-foundation (from main 451352f). No `Final
+  Acceptance: PASS` is claimed. Evidence: docs/acceptance/v0.3-12-desktop-project-open-foundation.md
+
+Also DELIVERED — AGENT-02, the first real native multi-agent pilot
+  Developer status: EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
+  1 Main Agent + 3 native Tianshu workers (native default maxWorkers = 3, NOT reconfigured).
+  Filesystem model MEASURED, not assumed: SHARED worktree — no per-worker worktree appeared.
+  FIRST-RUN active-execution overlap: NOT VERIFIED — the "302 s of verified three-worker
+  concurrency" figure counted working-tree presence, not workers executing, and is WITHDRAWN.
+  Instrumented rerun: max simultaneously active workers = 3; strict verified three-way overlap
+  25 s (114 s only as the conditional reading in which one 67 s gap is one long tool call).
+  Recomputed from the committed evidence at .agent/telemetry/v0.3-12-concurrency-rerun.json.
+  Ownership re-derived from Git: overlap NONE,
+  forbidden-path violations NONE, every touched path classifies C1. Same evidence file.
+
+Earlier CLOSED — CI-03, Change-Aware Tiered Quality Gate
   Final Acceptance: PASS · Status: CLOSED (external / independent reviewer) · CI-03-FIX-1 accepted
   at head 6edac0982c78a6e2cc1c17d63f4937269db552fd · PR #16 · merge 11d362e
   → `main` 11d362efeb78d369b0ab5a5dbb6f2350186cc0a9 (protected merge, merge commit, no bypass).
@@ -484,15 +525,34 @@ Architecture in force — native orchestration boundary:
                     Git evidence · stale-base protection · Quality Gate · protected integration ·
                     independent acceptance boundary
 
-Immediate next engineering task — AGENT-02, real native-harness pilot (1 Main Agent + 2 workers via /team)
-  Status: NOT STARTED · foundation integrated and CLOSED (above) · pilot DESIGNED only · `/team` NOT used
-  Read first when it starts: docs/ADR/0003-native-agent-harness-orchestration.md,
+Immediate next engineering task — none. AGENT-02's real native-harness pilot has been EXECUTED.
+  Status: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. The pilot's own
+  governance closure — the native execution mode, the three real handoffs and their
+  integration verdicts, and the concurrency evidence — is addressed by **V0.3-12-FIX-1** and
+  its independent-acceptance follow-up **V0.3-12-FIX-2** on the same branch. It ran
+  **1 Main Agent + 3 native Tianshu
+  workers** — the host's default worker concurrency, NOT the `1 + 2` this plan originally
+  designed, and the Harness concurrency configuration was not modified. The executed-run record
+  is `docs/engineering/AGENT_02_PILOT_PLAN.md` §15; the evidence is
+  `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`.
+  Dispatch used the harness's **native worker delegation**; the literal `/team` slash command was
+  not invoked from the pilot session. Recorded as it happened.
+  **Historical, not current:** the two `Earlier CLOSED` entries above that say
+  `REAL PILOT NOT STARTED` / `pilot DESIGNED only` / `/team NOT used` describe the state at
+  `AGENT-02-PREP-01` and `AGENT-02-NATIVE-HARNESS-PIVOT` close, before this pilot ran. They are
+  retained as history and must not be read as the present state.
+  Read first for any AGENT-02 follow-up: docs/ADR/0003-native-agent-harness-orchestration.md,
   docs/engineering/MULTI_AGENT_PROTOCOL.md, docs/ADR/0002-parallel-development-serial-integration.md,
   docs/engineering/INTEGRATION_POLICY.md, docs/engineering/AGENT_02_READINESS.md,
   docs/engineering/AGENT_02_PILOT_PLAN.md.
 
-NOT STARTED: AGENT-02 (real pilot) · V0.3-12 · CD-01.
-V0.3-12 is READY TO START but NOT STARTED — its development brief must arrive as its own explicit task.
+AWAITING INDEPENDENT ACCEPTANCE: V0.3-12 · V0.3-12-FIX-2 · AGENT-02 (real pilot).
+NOT STARTED: CD-01.
+Neither V0.3-12 nor the pilot is CLOSED, and no `Final Acceptance: PASS` is claimed for either —
+an independent reviewer decides both, on a protected merge with a green Quality Gate. The
+V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface cleanup)
+carries the same status: `IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE`, on
+`feature/v0.3-12-desktop-project-open-foundation`.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
 ```
 
@@ -513,6 +573,8 @@ docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md
 docs/project-state/README.md · docs/acceptance/README.md   archive + acceptance-report policy
 docs/acceptance/v0.3-10-…md · docs/acceptance/v0.3-11-…md   phase evidence — PASS · CLOSED
     (V0.3-11 keeps its initial NOT PASS, V0.3-11-FINAL and FINAL-2 unedited)
+docs/acceptance/v0.3-12-desktop-project-open-foundation.md   V0.3-12 + the first real AGENT-02
+    native pilot — IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
 docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md   RELIABILITY-01 record (§19)
 docs/CONTEXT_INDEX.md · docs/engineering/AGENT_CONTEXT_GOVERNANCE.md   context routing + layers
 .github/workflows/ci.yml · docs/engineering/INTEGRATION_POLICY.md   CI baseline §14 + policy §15
@@ -629,15 +691,18 @@ Level 4  Multi-Agent Orchestration             GOVERNANCE FOUNDATION CLOSED — 
                                                foundation (context protection · readiness · native
                                                harness pivot) is externally accepted and CLOSED
                                                (head cd44abc → main d652b4c); the real AGENT-02
-                                               pilot is NOT STARTED, so the level is not fully
-                                               validated
+                                               pilot is EXECUTED and SELF-VERIFIED but NOT yet
+                                               accepted, so the level is not fully validated
 Level 5  Controlled Delivery / Qualification   NOT STARTED
 ```
 
 Every row is an external verdict, not a conclusion this document reached on its own. The Level 4 row
 records that the AGENT-01 *foundation* and the AGENT-02 *governance foundation* are accepted, merged and
-closed; it does **not** claim the full level is validated — the real AGENT-02 pilot (native `/team`
-workers under CAN-X governance) has not started.
+closed; it does **not** claim the full level is validated — the real AGENT-02 pilot (native multi-worker
+dispatch under CAN-X governance) has been executed and self-verified but not independently
+accepted. It ran **1 Main Agent + 3 native workers** — the pilot design named in §18 of
+`AGENT_02_PILOT_PLAN.md` said 2 workers; the run used the host's native default of 3. See
+`docs/acceptance/v0.3-12-desktop-project-open-foundation.md`.
 
 ---
 
@@ -698,8 +763,9 @@ product capability.
 **Current status:** implementation complete · AGENT-01-FIX-1…FIX-4 complete · independently accepted
 on head `2eab62bfc53867f44996dafc08c32b84fabea7fd` (P0: 0, P1: 0, P2: 0) · merged to `main` as
 `951e20272211d2fd3934f4c67063985d64229d7a` through protected PR #7 · post-merge `main` CI run
-`35315019912` green · **Final Acceptance: PASS · Status: CLOSED**. Real AGENT-02 pilot: **NOT
-STARTED**.
+`35315019912` green · **Final Acceptance: PASS · Status: CLOSED**. Real AGENT-02 pilot:
+**EXECUTED** — 1 Main Agent + 3 native workers, self-verified and awaiting independent
+acceptance (`docs/acceptance/v0.3-12-desktop-project-open-foundation.md`).
 
 **What exists:** `.agent/` (task + handoff JSON schemas, examples, Main-Agent and Sub-Agent prompt
 templates, `handoffs/`, `config.json`), `tools/agent/` (standard-library-only enforcement tooling),

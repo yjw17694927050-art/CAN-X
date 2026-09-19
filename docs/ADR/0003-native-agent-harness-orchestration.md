@@ -256,3 +256,140 @@ deprecation deferred               duplicated-by-Harness pieces are named, not d
 Revisit this ADR when either (a) a real `/team` pilot has run and its evidence is
 reviewed, or (b) a Harness version exposes ownership/branch hooks that make part of the
 CAN-X governance adapter redundant.
+
+## Native execution mode — the pilot's first architectural finding (V0.3-12-FIX-1)
+
+### What the pilot measured
+
+The first real AGENT-02 pilot ran three native workers, and it **measured** the
+per-worker filesystem model rather than inferring it: a 2 s sampler over the
+whole dispatch window saw a **constant worktree set** — no new worktree, no new
+branch — and all three workers' artifacts landing in the same working tree, on
+the same branch, in the same `git status`. The host Harness runs its default
+execution mode: **one shared worktree**.
+
+`AGENT_02_PILOT_PLAN.md` §6 named this as the thing the pilot had to observe.
+The observation is now a recorded fact, and it invalidated an assumption the
+AGENT-01 execution model was built on.
+
+### The gap
+
+AGENT-01 modelled a Sub-Agent as *a branch plus a registered worktree*. The task
+contract froze both, and the final gate proved a delivery by resolving that
+worktree back through Git (`tools/agent/evidence.py:resolve_task_worktree`).
+Under native shared execution **neither coordinate exists** — so the contract
+was free to declare a branch the run never created, and the collector failed
+closed before it could look at the delivery at all:
+
+```text
+declared branch    agent/V0.3-12-A-desktop-runtime-project-client
+declared worktree  .worktrees/v0.3-12-a
+actual             everything on feature/v0.3-12-… in the main worktree
+result             agent.git_state_error
+                   fatal: Needed a single revision
+```
+
+This is a real architectural gap, not an operator mistake: the governance model
+had no way to *describe* the execution mode the host actually uses. Its
+consequence in the pilot was that all three tasks stayed `PLANNED` and no
+`validate-handoff` / `check-integration` was ever run.
+
+### Decision
+
+A task declares **how its worker executes**, and the governance gates read the
+delivery accordingly. Nothing about *ownership* changes.
+
+```text
+execution_mode: "isolated-worktree"   the AGENT-01 model, unchanged and still the default
+                                      branch + worktree are required and frozen; the
+                                      delivery is resolved through the task worktree
+
+execution_mode: "native-shared"       the host Harness's default
+                                      the contract declares NEITHER coordinate, because
+                                      declaring one would be a lie Git cannot resolve;
+                                      the delivery is the real commit range
+                                      base_sha..head_sha on the integration branch
+```
+
+Three consequences, each deliberate:
+
+* **`base_sha` means "the integration head this delivery was applied to".** In
+  isolated mode that is the head the branch was cut from. In native-shared mode
+  the integration head advances as each unit lands, so `base_sha` is the head
+  immediately *before* that unit — which makes the delivery range exactly the
+  task's own commits, and keeps `history_touched_paths(base, head)` the single
+  ownership authority.
+* **`check_base`'s "base == integration head" equality is the isolated
+  predicate, not a universal one.** A worker branch must be rebased onto the
+  head before it merges; a native-shared delivery is *already* on the branch, so
+  equality is impossible for every unit but the first. It is replaced by a
+  stronger, repository-proved relation: `base_sha` **and** `head_sha` must both
+  be ancestors of the caller's integration head. The refusal code stays
+  `agent.base_stale`, and the repository stage remains mandatory — without a
+  repository the verdict is `agent.integration_context_incomplete`, never
+  `ready`.
+* **`integration_paths` names the additional paths a reviewer permitted inside a
+  worker's delivery *range*.** In a shared worktree the Main Agent's cross-boundary
+  integration test lands in the same commit as the worker's module. The field exists
+  so that coexistence is declared rather than smuggled: each entry must be an exact
+  repository-relative file (never a glob), it is refused if it can reach a protected,
+  public-truth or safety path or the task's own `forbidden_paths`, and it participates
+  in conflict classification exactly like `allowed_paths`.
+
+  Two declarations are being kept apart here, and the distinction is the point.
+  `allowed_paths` is the **worker's declared permission surface** — what the worker
+  may edit. `integration_paths` is the **Main-Agent-reviewed addition** to the
+  delivery *range* — which further files a reviewer allowed to sit in the same commit
+  range. The Git gate proves the range's composition, and that no governed path was
+  reached; it does **not** prove per-file writer provenance, because a shared worktree
+  records *that* a file is present in a commit range, never *who* wrote it. FIX-2
+  corrected an earlier phrasing that claimed more than the mechanism can show.
+
+  **Preferred rule for future native-shared work.** Commit the worker's implementation
+  first and let the Main Agent add its integration changes in a **separate
+  Main-Agent commit**, so the worker's delivery range contains only worker paths and no
+  declaration is needed at all. `integration_paths` is retained for the compatibility
+  case it was introduced for — V0.3-12-C's historical commit, which carries the Main
+  Agent's integration test alongside the worker's module — and that history is kept as
+  history, not as a claim about who wrote what.
+
+### What is NOT relaxed
+
+The mode changes *where the delivery lives*. It does not change *who may touch
+what*, or *what counts as proof*:
+
+```text
+ownership                    allowed_paths + forbidden_paths, decided on Git history
+protected / public-truth /
+  safety classification      unchanged, and integration_paths cannot reach them
+Git history authority        history_touched_paths, never the net tree delta
+stale base                   still fails closed, now proved by ancestry rather than equality
+self-reported compliance     still not evidence - the flag is re-derived
+integration authority        still the Main Agent's; there is no `evidence=` parameter
+Harness scope                spawns and runs workers; it decides nothing about permission
+```
+
+A worker still cannot claim another task's paths, cannot reach a governed path
+(including through a transient edit that the net diff hides), and cannot obtain
+integration readiness by asserting it. Each of those is asserted by a test in
+`tests/unit/agent_tools/test_native_shared_execution.py` and
+`tests/integration/test_agent_native_shared_evidence.py`, on real throwaway
+repositories.
+
+### A commit that no task claims
+
+In native-shared mode the **Main Agent** commits; a worker cannot. A commit on
+the integration branch that no task's range covers is therefore Main-Agent work,
+governed by the Main Agent's own obligations (protected paths, public truth, the
+PR review) rather than by a worker contract. The gate's job is to prove *no
+worker reached outside its surface*, and it does that over each task's own
+range. This is stated so a later reader does not mistake it for an unenforced
+assumption: it is a property of who is allowed to commit, not a hole in the
+check.
+
+### Revisit when
+
+(a) the Harness exposes per-task worktree/branch creation with ownership hooks —
+then the isolated mode may become the native one; or (b) a Harness version
+changes its default isolation mode, which would make this section's measured
+fact stale and the pilot's recorded observation must be re-taken.

@@ -29,6 +29,7 @@ from tools.agent.contracts import (
     FROZEN_FIELDS,
     SHA_RE,
     TASK_ID_RE,
+    ExecutionMode,
     HandoffContract,
     TaskContract,
 )
@@ -53,6 +54,7 @@ from tools.agent.graph import TaskGraph
 from tools.agent.lifecycle import TaskStatus, requires_conflict_replan
 from tools.agent.orchestration import OrchestrationPlan, plan
 from tools.agent.paths import (
+    is_glob,
     is_within,
     matching_pattern,
     normalize_repo_path,
@@ -135,6 +137,68 @@ def _normalized_patterns(raw: tuple[str, ...], *, field: str) -> tuple[str, ...]
     return tuple(normalize_repo_pattern(item, field=field) for item in raw)
 
 
+def _validate_execution_coordinates(task: TaskContract, config: AgentConfig) -> None:
+    """The branch/worktree rules, which differ by execution mode (V0.3-12-FIX-1).
+
+    An isolated task must freeze *both* coordinates - that is what makes its
+    delivery resolvable through Git. A native-shared task must freeze *neither*:
+    the host Harness executes it inside the Main Agent's worktree, so a branch or
+    a worktree path the contract declared would be one Git can never resolve, and
+    every downstream gate would fail closed on a mode mismatch rather than on the
+    delivery (ADR-0003).
+    """
+    if task.execution_mode is ExecutionMode.NATIVE_SHARED:
+        for field_name, value in (("branch", task.branch), ("worktree", task.worktree)):
+            if value is not None:
+                raise TaskInvalidError(
+                    f"a native-shared task must not declare {field_name}",
+                    details={
+                        "field": field_name,
+                        "value": value,
+                        "execution_mode": str(task.execution_mode),
+                    },
+                )
+        return
+    if task.integration_paths:
+        raise TaskInvalidError(
+            "integration_paths exist only in native-shared execution mode",
+            details={
+                "field": "integration_paths",
+                "value": list(task.integration_paths),
+                "execution_mode": str(task.execution_mode),
+            },
+        )
+    if task.branch is None or task.worktree is None:
+        raise TaskInvalidError(
+            "an isolated-worktree task must declare both branch and worktree",
+            details={
+                "field": "branch" if task.branch is None else "worktree",
+                "execution_mode": str(task.execution_mode),
+            },
+        )
+    _validate_branch_name(task.branch, task_id=task.task_id, owner=task.owner, config=config)
+    worktree = normalize_repo_path(task.worktree, field="worktree")
+    if not is_within(worktree, config.worktrees_dir):
+        raise TaskInvalidError(
+            f"worktree must live under {config.worktrees_dir!r}",
+            details={"field": "worktree", "value": task.worktree},
+        )
+
+
+def ownership_surface(task: TaskContract) -> tuple[str, ...]:
+    """Every path this task's *delivery range* may contain (V0.3-12-FIX-1).
+
+    Delegates to :meth:`TaskContract.ownership_surface`. ``allowed_paths`` is the
+    worker's declared permission surface; for a native-shared task the surface also
+    admits the ``integration_paths`` the Main Agent reviewed and permitted to
+    coexist in the delivery range. ``validate_task`` constrains those to be exact
+    repository-relative files, disjoint from every governed path and from the task's
+    own forbidden set — so the surface stays a statement about which paths the range
+    may contain, never a claim about who wrote each of them (V0.3-12-FIX-2).
+    """
+    return task.ownership_surface()
+
+
 def validate_task(task: TaskContract, config: AgentConfig) -> None:
     """Validate a task contract in isolation (AGENT-01 §15, §19, §36)."""
     _validate_task_id(task.task_id)
@@ -145,15 +209,7 @@ def validate_task(task: TaskContract, config: AgentConfig) -> None:
         )
     _validate_owner(task.owner)
     _validate_sha(task.base_sha, field="base_sha")
-    _validate_branch_name(
-        task.branch, task_id=task.task_id, owner=task.owner, config=config
-    )
-    worktree = normalize_repo_path(task.worktree, field="worktree")
-    if not is_within(worktree, config.worktrees_dir):
-        raise TaskInvalidError(
-            f"worktree must live under {config.worktrees_dir!r}",
-            details={"field": "worktree", "value": task.worktree},
-        )
+    _validate_execution_coordinates(task, config)
     if task.revision < 1:
         raise TaskInvalidError(
             "task.revision must be >= 1",
@@ -166,6 +222,9 @@ def validate_task(task: TaskContract, config: AgentConfig) -> None:
         )
     allowed = _normalized_patterns(task.allowed_paths, field="allowed_paths")
     forbidden = _normalized_patterns(task.forbidden_paths, field="forbidden_paths")
+    integration_patterns = _normalized_patterns(
+        task.integration_paths, field="integration_paths"
+    )
     for pattern in allowed:
         for blocked in forbidden:
             if patterns_overlap(pattern, blocked):
@@ -188,6 +247,45 @@ def validate_task(task: TaskContract, config: AgentConfig) -> None:
                     "path": pattern,
                     "protected": guard,
                 },
+            )
+    for pattern in integration_patterns:
+        # `integration_paths` widens the *delivery range*, so it must not widen
+        # the worker's reach: a native worker may not reach a governed path by
+        # declaring it "integration-owned" (V0.3-12-FIX-1).
+        governed = (
+            config.protected_overlap(pattern)
+            or config.public_truth_overlap(pattern)
+            or config.safety_overlap(pattern)
+        )
+        if governed is not None:
+            raise ProtectedPathConflictError(
+                f"task {task.task_id} integration path {pattern!r} may not reach a governed path",
+                details={
+                    "task_id": task.task_id,
+                    "path": pattern,
+                    "governed": governed,
+                },
+            )
+        for blocked in forbidden:
+            if patterns_overlap(pattern, blocked):
+                raise TaskInvalidError(
+                    f"integration path {pattern!r} is inside the task's forbidden surface",
+                    details={
+                        "field": "integration_paths",
+                        "value": pattern,
+                        "forbidden": blocked,
+                    },
+                )
+        # Ordered after the governed-path check on purpose: a `**` is refused as a
+        # *governed-path conflict* (it can reach protected/public-truth/safety
+        # paths), which is the stronger and more specific refusal, while a glob
+        # that reaches nothing governed is still refused for being a glob. Either
+        # way the field names an exact repository-relative file, never a pattern
+        # that would widen the range past the files it named (V0.3-12-FIX-2).
+        if is_glob(pattern):
+            raise TaskInvalidError(
+                f"integration path {pattern!r} must be an exact file path, not a glob",
+                details={"field": "integration_paths", "value": pattern},
             )
     for ref in task.shared_contracts:
         normalize_repo_path(ref.path, field="shared_contracts[].path")
@@ -214,7 +312,7 @@ def validate_task(task: TaskContract, config: AgentConfig) -> None:
 
 def ownership_violations(task: TaskContract, changed_files: tuple[str, ...]) -> tuple[str, ...]:
     """Changed paths that fall outside the task's ownership surface."""
-    allowed = _normalized_patterns(task.allowed_paths, field="allowed_paths")
+    allowed = _normalized_patterns(ownership_surface(task), field="allowed_paths")
     forbidden = _normalized_patterns(task.forbidden_paths, field="forbidden_paths")
     offending: list[str] = []
     for raw in changed_files:
@@ -282,7 +380,7 @@ def validate_handoff(handoff: HandoffContract, task: TaskContract, config: Agent
             f"handoff.task_id {handoff.task_id!r} does not match task {task.task_id!r}",
             details={"field": "task_id", "value": handoff.task_id},
         )
-    if handoff.branch != task.branch:
+    if task.execution_mode is not ExecutionMode.NATIVE_SHARED and handoff.branch != task.branch:
         raise BranchMismatchError(
             f"handoff branch {handoff.branch!r} is not the task branch {task.branch!r}",
             details={"field": "branch", "value": handoff.branch, "expected": task.branch},
@@ -327,6 +425,18 @@ def check_base(
                 "task_base_sha": task.base_sha,
             },
         )
+    if task.execution_mode is ExecutionMode.NATIVE_SHARED:
+        # Equality with the integration head is the *isolated* predicate: a
+        # worker branch must be rebased onto the head before it merges. A
+        # native-shared delivery is already committed on the integration branch,
+        # and the head legitimately advances after each unit, so equality would
+        # be both wrong and impossible for every unit but the first. The stronger
+        # relation is proved one stage later, against the repository itself:
+        # `base_sha` and `head_sha` must both be ancestors of the current
+        # integration head (`verify_repository_evidence` -> `agent.base_stale`).
+        # That stage is mandatory - without a repository the verdict is
+        # `agent.integration_context_incomplete`, never `ready`.
+        return
     if handoff.base_sha != integration_head_sha:
         raise BaseStaleError(
             "handoff is based on a commit that is not the current integration head",
@@ -370,7 +480,48 @@ def verify_repository_evidence(
     Git and cannot be satisfied by anything the handoff says about itself.
     """
     blockers: list[AgentToolingError] = []
-    if evidence.branch != task.branch:
+    if task.execution_mode is ExecutionMode.NATIVE_SHARED:
+        # In native-shared mode the contract declares no branch, so there is
+        # nothing to compare against — the repository's own answer is the claim
+        # the handoff must match, and the delivery must actually be *on* the
+        # integration branch. A base or a head that is not an ancestor of the
+        # integration head is a stale or foreign delivery, and it fails closed
+        # with the same code the isolated path uses (V0.3-12-FIX-1).
+        if evidence.branch != handoff.branch:
+            blockers.append(
+                BranchMismatchError(
+                    "the delivery is not on the branch the handoff names",
+                    details={
+                        "task_id": task.task_id,
+                        "branch": evidence.branch,
+                        "reported": handoff.branch,
+                        "source": evidence.source,
+                    },
+                )
+            )
+        if not evidence.base_on_integration_head:
+            blockers.append(
+                BaseStaleError(
+                    "task.base_sha is not on the current integration branch",
+                    details={
+                        "task_id": task.task_id,
+                        "base_sha": evidence.base_sha,
+                        "integration_head": evidence.integration_head_sha,
+                    },
+                )
+            )
+        if not evidence.head_on_integration_head:
+            blockers.append(
+                BaseStaleError(
+                    "the delivered head is not on the current integration branch",
+                    details={
+                        "task_id": task.task_id,
+                        "head_sha": evidence.head_sha,
+                        "integration_head": evidence.integration_head_sha,
+                    },
+                )
+            )
+    elif evidence.branch != task.branch:
         blockers.append(
             BranchMismatchError(
                 "the task worktree/branch is not the branch the task declares",
@@ -731,7 +882,17 @@ def evaluate_integration(
             # (AGENT-01-FIX-3 §16-§20). A wrong owner, a lookalike name, an
             # unsupported host or a missing origin is `agent.git_state_error`.
             collected = collect_repository_evidence(
-                repository, task, expected_repository=config.repository
+                repository,
+                task,
+                expected_repository=config.repository,
+                # A native-shared delivery is a commit *range*, not the branch
+                # tip: the head the handoff claims is proved against Git in
+                # `verify_repository_evidence`, never trusted from the report.
+                # For an isolated task this argument is ignored.
+                delivery_head_sha=handoff.head_sha,
+                # ... and it is proved against *this* integration head, which is
+                # the caller's declaration, exactly as `check_base` uses it.
+                integration_head_sha=context.integration_head_sha,
             )
         except AgentToolingError as exc:
             _record(blockers, details, exc)

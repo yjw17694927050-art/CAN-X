@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-12-C",
+  "agent": "sub-c",
+  "branch": "feature/v0.3-12-desktop-project-open-foundation",
+  "base_sha": "7add1390ff8b716199cc461d921ec4ee8b72491b",
+  "head_sha": "259330988dad7aa8ac79a98e90c5a51534f0c38e",
+  "commits": [
+    "259330988dad7aa8ac79a98e90c5a51534f0c38e feat(desktop): add the project directory bridge and the project-open flow"
+  ],
+  "changed_files": [
+    "apps/desktop/src/desktop/project-directory-bridge.test.ts",
+    "apps/desktop/src/desktop/project-directory-bridge.ts",
+    "apps/desktop/src/orchestration/project-open.integration.test.ts",
+    "apps/desktop/src/orchestration/project-open.test.ts",
+    "apps/desktop/src/orchestration/project-open.ts"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "frontend-test",
+      "command": "pnpm test",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-typecheck",
+      "command": "pnpm typecheck",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-lint",
+      "command": "pnpm lint",
+      "result": "passed"
+    }
+  ],
+  "lint": "eslint . --max-warnings 0 — exit 0",
+  "typecheck": "tsc -b --pretty false — exit 0",
+  "ci": "PR #20, Quality Gate success on head a63667a (run 35418026596); this delivery is inside that head's history",
+  "dependencies": [],
+  "known_issues": [
+    "The delivery range is base_sha=7add139 -> head_sha=2593309, i.e. exactly this task's own commit.",
+    "apps/desktop/src/orchestration/project-open.integration.test.ts is the Main Agent's cross-boundary integration test, not this worker's work. It sits in the same commit and is declared in the contract's integration_paths. That field records that a Main-Agent-reviewed file was permitted to coexist inside this delivery *range*; it is not evidence of per-file writer provenance, which a shared worktree cannot record - a commit range says a file is present, never who wrote it (V0.3-12-FIX-2). The preferred rule for future native-shared work is a separate Main-Agent commit for integration changes; this commit is retained as compatibility history, not as a provenance claim.",
+    "The worker envelope for this task came back with status 'blocked' from the harness write gate (a scoped tsc that did not run to completion), not from a test failure. The Main Agent re-ran every required test itself; the results above are those runs."
+  ],
+  "deferred_items": [
+    "A live Tauri IPC round trip through a running shell (NOT VERIFIED; the bridge is exercised with a stubbed @tauri-apps/api invoke)"
+  ],
+  "ready_for_integration": true
+}
