@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-12-VERIFY-C",
+  "agent": "sub-c",
+  "branch": "feature/v0.3-12-desktop-project-open-foundation",
+  "base_sha": "c8816d2b4705214b0bb55e09a033b2a8f2537afe",
+  "head_sha": "40d9bd79a4e30c8c103fbbd75a4a1896886bc75e",
+  "commits": [
+    "40d9bd79a4e30c8c103fbbd75a4a1896886bc75e chore(agent): V0.3-12-VERIFY-C verification evidence"
+  ],
+  "changed_files": [
+    ".agent/telemetry/v0.3-12-verification-c.json"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "verification",
+      "command": "cd apps/desktop && ./node_modules/.bin/vitest run src/orchestration/project-open.test.ts src/orchestration/project-open.integration.test.ts",
+      "result": "passed"
+    }
+  ],
+  "lint": "not applicable - read-only verification, no source file modified",
+  "typecheck": "not applicable - read-only verification, no source file modified",
+  "ci": "not applicable to this verification task; the V0.3-12 product head carries the Quality Gate run",
+  "dependencies": [],
+  "known_issues": [
+    "changed_files is exactly the delivery range c8816d2..40d9bd7, which contains this evidence file and nothing else.",
+    "The reported test result was re-run by the Main Agent, not taken from the worker envelope: 25 passed / 0 failed.",
+    "Read-only: this task modified no product file, and its evidence JSON is its whole delivery."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}

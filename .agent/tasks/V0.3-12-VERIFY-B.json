@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-12-VERIFY-B",
+  "title": "Independent verification of the V0.3-12-B surface",
+  "objective": "Independently verify the delivered V0.3-12-B surface by reading apps/desktop/src-tauri/src/project_directory_bridge.rs and its test file, and report, with evidence, which acceptance claims you can confirm from the code and which you cannot. Nothing may be modified: this is a read-only verification whose only written artefact is the evidence JSON named in allowed_paths. The point of this task is to be a real, strictly limited engineering task that a worker executes while independent active-worker telemetry is recorded by the Main Agent.",
+  "scope": "Read-only verification of one V0.3-12 delivery surface, plus one evidence file.",
+  "non_goals": [
+    "Modifying any product file",
+    "Re-running or replacing the V0.3-12 acceptance evidence",
+    "Any change to tools/agent, .agent/schemas or the CI configuration"
+  ],
+  "base_sha": "015a9a76793580e42335b48d9667c0c34547effe",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-b",
+  "allowed_paths": [
+    ".agent/telemetry/v0.3-12-verification-b.json"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src-tauri/**",
+    "apps/desktop/src/desktop/**",
+    "apps/desktop/src/orchestration/**",
+    "apps/desktop/src/runtime/**",
+    "runtime/**",
+    "tools/**",
+    "docs/**",
+    ".agent/schemas/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [],
+  "acceptance_criteria": [
+    "The evidence file names the exact file paths read and the exact commands run",
+    "Each claimed finding cites the file and the line or symbol it came from",
+    "At least one claim is marked as not confirmable, or the absence of one is stated"
+  ],
+  "required_tests": [
+    "verification"
+  ],
+  "handoff_requirements": [
+    "Report the exact commands run and their exit codes",
+    "Report the evidence JSON as changed_files"
+  ],
+  "risk_class": "LOW",
+  "status": "HANDOFF_READY",
+  "revision": 2
+}
