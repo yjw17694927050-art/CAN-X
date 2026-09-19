@@ -5,8 +5,10 @@ responsibilities and delegates the rest:
 
 1. take a **metadata snapshot** of one session's committed segments;
 2. **validate and prune** the candidate files — resolve each stored path inside
-   the project root, confirm it exists, and confirm its footer is a CAN-X
-   segment of the expected session/stream/index — without materializing a row;
+   the project root, confirm it exists, and confirm the file agrees with every
+   claim its registered row makes (canonical path, session, stream, index, column
+   layout, row count, byte size) — without materializing a row. That agreement is
+   not re-defined here: it is the same gate the DataSession read path calls;
 3. ask the engine for a **bounded** result and return it as a typed model.
 
 It never exposes SQL, never materializes a whole session, and never lets a
@@ -24,8 +26,7 @@ from pathlib import Path
 from canx.data import repository
 from canx.data.errors import DataError, DataSessionError, DataStorageError, ParquetReadError
 from canx.data.model import DataSegment, DataSession
-from canx.data.parquet import validate_segment_header
-from canx.data.session import resolve_within_root
+from canx.data.session import require_registered_segment, resolve_within_root
 from canx.query import planning
 from canx.query.engine import QueryEngine
 from canx.query.errors import (
@@ -250,12 +251,18 @@ class QueryService:
             ) from error
 
     def _validate(self, session: DataSession, segment: DataSegment, path: Path) -> None:
-        """Confirm a candidate file exists and carries the expected CAN-X footer.
+        """Confirm a candidate file agrees with everything its row claims.
+
+        The agreement itself is not defined here: it is
+        :func:`canx.data.session.require_registered_segment`, the one gate the
+        :class:`~canx.data.session.DataSessionService` read path calls too. This
+        method only translates that single data-domain outcome into the query
+        domain's typed errors, keeping the data code visible as ``cause``.
 
         Raises:
             QueryDataUnavailableError: If the file does not exist.
             QueryIntegrityError: If the file cannot be read as Parquet, or is not
-                a CAN-X segment of the expected session/stream/index.
+                the registered CAN-X segment of this session.
         """
         if not path.is_file():
             raise QueryDataUnavailableError(
@@ -268,12 +275,7 @@ class QueryService:
                 },
             )
         try:
-            validate_segment_header(
-                path,
-                expected_session_id=session.session_id,
-                expected_stream_id=session.stream_id,
-                expected_segment_index=segment.segment_index,
-            )
+            require_registered_segment(path, session=session, segment=segment)
         except ParquetReadError as error:
             raise QueryIntegrityError(
                 "A registered segment file could not be read as a Parquet footer.",
