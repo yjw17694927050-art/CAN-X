@@ -3,7 +3,12 @@
 > **Document**: `docs/engineering/AGENT_02_PILOT_PLAN.md`
 > **Scope**: The first **real** Main Agent + worker pilot — workload, execution mode, ownership,
 > conflicts, isolation, tests, integration order, failure recovery, acceptance boundary.
-> **Status**: DESIGNED · **REAL PILOT NOT STARTED** · contracts are `PLANNED`, never dispatched.
+> **Status**: **EXECUTED — the first real pilot — · SELF-VERIFIED · AWAITING INDEPENDENT
+> ACCEPTANCE**. The design below is preserved as the plan it was. The run is recorded in **§15**,
+> and it used **1 Main Agent + 3 native Tianshu workers** — not the `1 + 2` this design assumed,
+> because the host's native default worker concurrency is 3 and the pilot's purpose was to
+> validate that default rather than a reconfigured harness.
+> **Evidence**: `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`
 > **Execution mode**: **Tianshu native `/team`** — *not* a CAN-X-built Sub-Agent runtime.
 > **Foundation**: `AGENT-02-NATIVE-HARNESS-PIVOT` **CLOSED** (head `cd44abc` → `main` `d652b4c`,
 > protected PR #18, post-merge main CI `35415938987` SUCCESS). This plan is not yet executed.
@@ -309,3 +314,91 @@ A green CI is not acceptance (`docs/PROJECT_STATE.md` §14). This plan does not 
 nothing in it may be cited as a pilot result: **REAL PILOT NOT STARTED**. A future genuinely
 long-running pilot may also test long-duration context endurance; that endurance is
 **NOT VERIFIED** and is not claimed by this plan.
+
+---
+
+## 15. Pilot execution record — the first real run
+
+> Status: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. Not `PASS`, not
+> `CLOSED` — those are the independent reviewer's words to write. Full evidence:
+> `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`.
+
+The pilot ran against **V0.3-12**, on `feature/v0.3-12-desktop-project-open-foundation` from
+`main` `451352f`, with three workers instead of the two this design assumed.
+
+### 15.1 Shape of the run
+
+```text
+1 Main Agent  +  3 native Tianshu workers        (the design said 1 + 2)
+effective maxWorkers                     3
+Harness concurrency configuration        NOT MODIFIED
+                                         (Tianshu source, desktop runtime, RIVET_MAX_WORKERS and
+                                          workers.maxWorkers all unchanged — no config editing
+                                          was required, because 3 is the native default)
+Worker A  V0.3-12-A  Desktop Runtime project read-model client        work order batch:0
+Worker B  V0.3-12-B  Native project directory bridge                  work order batch:1
+Worker C  V0.3-12-C  TS directory bridge + project-open orchestration work order batch:2
+```
+
+The three contracts were the ownership-disjoint, pairwise-**C0** pair this plan selected,
+extended to a third: `plan` reported `runnable = [A, B, C]`, `conflicts` `(A,B) (A,C) (B,C)` all
+`C0 auto_resolvable`, and no contract touching a protected, public-truth or safety path.
+
+### 15.2 What §6 asked the pilot to *measure*, and what it measured
+
+§6 left the per-worker filesystem model as a runtime observation, because the shipped code
+contains both a coordinator built with `sharedWorktree: true` and a default-on isolation mode.
+
+```text
+Filesystem mode:  SHARED WORKTREE
+```
+
+Measured with an independent 2-second sampler over the whole dispatch window (151 samples,
+389 s): `git worktree list` returned a **constant set of 5 worktrees** — the repository root on
+the feature branch plus four pre-existing ones — and **no new worktree or branch appeared**.
+All three workers' artifacts landed in the same working tree, on the same branch, in the same
+`git status --porcelain`. No sample classifies as isolated.
+
+This is the first real datum for the `workerIsolationMode()` / `sharedWorktree` ambiguity, and
+it is why the C0/disjoint contract selection — not the filesystem — is what has to carry
+ownership safety in native mode. It did: no two workers wrote the same file, so the shared-
+worktree STOP condition in §6 was never reached.
+
+### 15.3 Concurrency, context and ownership
+
+```text
+Three-worker concurrent overlap   YES — all three workers' artifacts present simultaneously
+                                  for 114 consecutive samples = 302 s
+Context isolation                 PARTIAL — each worker received only its own contract brief
+                                  and no Main-Agent history (by dispatch construction and by
+                                  observed behaviour); the assembled worker prompt itself was
+                                  not directly observable, so full isolation is not claimed
+Ownership from real Git           overlap NONE · forbidden-path violations NONE ·
+                                  protected/public-truth/safety touches NONE (all paths C1)
+Native worker envelopes           three, consumed as reports only and re-derived from the
+                                  repository before any of them was cited as fact
+```
+
+### 15.4 What the run changed in this plan
+
+- **§7 capacity.** Workers ran 3, not 2. `max_sub_agents` in `.agent/config.json` is still 4 and
+  was not touched; the native ceiling that actually bound the run was the Harness default of 3.
+  A 1 + 4 **scale** validation remains a separate, later task.
+- **§6/§11 isolation step.** Measured and recorded (§15.2) rather than assumed.
+- **§9 handoff.** The native envelopes were consumed as reports and re-derived against Git. One
+  worker envelope carried absolute Windows paths alongside its relative ones; the mismatch was
+  resolved by re-deriving `history_touched_paths` rather than by trusting either list.
+- **§12 failure recovery.** Not exercised — no worker FAILED. Two of the three envelopes came
+  back `blocked` from the Harness's own write gate (a scoped `tsc` that did not run to
+  completion), with their own focused suites green; the Main Agent re-ran the full gates
+  independently instead of treating either the block or the claim as evidence.
+
+### 15.5 What this run still does not prove
+
+```text
+scale beyond 1 + 3                            NOT VERIFIED
+long-duration context endurance               NOT VERIFIED
+the Harness enforcing CAN-X ownership         out of scope by design — CAN-X keeps that duty
+per-worker filesystem isolation               NOT PRESENT in this run (measured SHARED)
+independent acceptance                        PENDING — the reviewer's verdict, not the author's
+```
