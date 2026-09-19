@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-13-A",
+  "title": "Project Open production UI",
+  "objective": "Add the production caller for the project-open boundary that V0.3-12 built and tested. A new ProjectControls component renders an Open Project action and, on activation, calls the EXISTING openProjectFromNativeDialog(selectProjectDirectory, inspectProject) composition - it does not re-implement selection, inspection, path handling or the Tauri invoke. A successful open is written into the workspace session exactly once, via session.openProject({ projectPath, project }) taken from the composition's own { status: 'opened', projectPath, project } result, character for character. A dismissed picker is control flow, not an error: no session write, no error notice, no side effect. Every failure is classified and rendered as a human-readable message - ProjectDirectoryBridgeError, RuntimeProjectApiError, RuntimeProjectTransportError, RuntimeProjectContractError - reusing the component's own classification, and a structured Runtime failure may surface its stable Runtime code. The component never renders the raw response body, the Runtime URL, a request URL or an unnecessary filesystem diagnostic: the project path and the project id are NOT rendered. It renders the opened project's minimal facts the Runtime declared - displayName, projectId, schemaVersion, updatedAt - and a real no-project state when the session holds none. It reads and writes the session only through the frozen hooks in apps/desktop/src/workspace/, and it renders strings only from the frozen i18n keys under the 'project.' prefix.",
+  "scope": "The new project controls component and its vitest suite.",
+  "non_goals": [
+    "Re-implementing selectProjectDirectory, inspectProject or openProjectFromNativeDialog - all three stay the single implementations",
+    "Any direct fetch, any direct Tauri invoke, or any filesystem API in the component",
+    "A global current project, a module-level store, or a second session instance",
+    "Recent-projects, project create/rename/delete/repair/upgrade, or any runtime/Rust/IPC change"
+  ],
+  "base_sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-a",
+  "allowed_paths": [
+    "apps/desktop/src/components/project/ProjectControls.tsx",
+    "apps/desktop/src/components/project/ProjectControls.test.tsx"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src/App.tsx",
+    "apps/desktop/src/components/workspace/**",
+    "apps/desktop/src/components/dbc/DbcWorkspace.tsx",
+    "apps/desktop/src/workspace/**",
+    "apps/desktop/src/i18n/**",
+    "apps/desktop/src-tauri/**",
+    "runtime/**",
+    ".agent/**",
+    "apps/desktop/src/components/dbc/DbcImportControl.tsx",
+    "apps/desktop/src/components/dbc/DbcBindingControl.tsx"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "apps/desktop/src/workspace/session.ts",
+      "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+    },
+    {
+      "path": "apps/desktop/src/i18n/config.ts",
+      "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+    }
+  ],
+  "acceptance_criteria": [
+    "Activating Open Project calls openProjectFromNativeDialog exactly once and, on { status: 'opened' }, writes exactly that projectPath and that project object into the workspace session",
+    "A picker that resolves null produces { status: 'cancelled' }: the session is untouched and no failure is rendered",
+    "A ProjectDirectoryBridgeError, a RuntimeProjectApiError, a RuntimeProjectTransportError and a RuntimeProjectContractError are each classified and rendered as a distinct human-readable message, and a RuntimeProjectApiError's stable code is surfaced",
+    "No rendered output contains the selected project path, the project id, the Runtime URL, a request URL or a raw response body - including in the failure states",
+    "With no project open the component renders its no-project state and offers Open Project; with a project open it renders that project's displayName, projectId, schemaVersion and updatedAt",
+    "The component performs no fetch, no direct invoke and no filesystem call"
+  ],
+  "required_tests": [
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+    "Name every new test case and state the RED observation that preceded each new behaviour",
+    "State explicitly that no integration surface (App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx, workspace/**, i18n/**), no Rust file and no Runtime file was touched"
+  ],
+  "risk_class": "LOW",
+  "status": "PLANNED",
+  "revision": 1
+}

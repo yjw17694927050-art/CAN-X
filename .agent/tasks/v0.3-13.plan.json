@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "plan_id": "V0.3-13",
+  "description": "V0.3-13 Project & DBC Workspace Product Integration, executed as 1 Main Agent + 3 native Tianshu workers on a SHARED worktree (native-shared), pairwise C0. The Main Agent froze the workspace session contract (apps/desktop/src/workspace/session.ts + WorkspaceSessionProvider.tsx) and the i18n string surface before dispatch, so no two workers write one file. The Main Agent keeps App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx and the cross-boundary integration tests for its own integration commit; the workers own only their own component and test files.",
+  "tasks": [
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-13-A",
+      "title": "Project Open production UI",
+      "objective": "Add the production caller for the project-open boundary that V0.3-12 built and tested. A new ProjectControls component renders an Open Project action and, on activation, calls the EXISTING openProjectFromNativeDialog(selectProjectDirectory, inspectProject) composition - it does not re-implement selection, inspection, path handling or the Tauri invoke. A successful open is written into the workspace session exactly once, via session.openProject({ projectPath, project }) taken from the composition's own { status: 'opened', projectPath, project } result, character for character. A dismissed picker is control flow, not an error: no session write, no error notice, no side effect. Every failure is classified and rendered as a human-readable message - ProjectDirectoryBridgeError, RuntimeProjectApiError, RuntimeProjectTransportError, RuntimeProjectContractError - reusing the component's own classification, and a structured Runtime failure may surface its stable Runtime code. The component never renders the raw response body, the Runtime URL, a request URL or an unnecessary filesystem diagnostic: the project path and the project id are NOT rendered. It renders the opened project's minimal facts the Runtime declared - displayName, projectId, schemaVersion, updatedAt - and a real no-project state when the session holds none. It reads and writes the session only through the frozen hooks in apps/desktop/src/workspace/, and it renders strings only from the frozen i18n keys under the 'project.' prefix.",
+      "scope": "The new project controls component and its vitest suite.",
+      "non_goals": [
+        "Re-implementing selectProjectDirectory, inspectProject or openProjectFromNativeDialog - all three stay the single implementations",
+        "Any direct fetch, any direct Tauri invoke, or any filesystem API in the component",
+        "A global current project, a module-level store, or a second session instance",
+        "Recent-projects, project create/rename/delete/repair/upgrade, or any runtime/Rust/IPC change"
+      ],
+      "base_sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-a",
+      "allowed_paths": [
+        "apps/desktop/src/components/project/ProjectControls.tsx",
+        "apps/desktop/src/components/project/ProjectControls.test.tsx"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src/components/workspace/**",
+        "apps/desktop/src/components/dbc/DbcWorkspace.tsx",
+        "apps/desktop/src/workspace/**",
+        "apps/desktop/src/i18n/**",
+        "apps/desktop/src-tauri/**",
+        "runtime/**",
+        ".agent/**",
+        "apps/desktop/src/components/dbc/DbcImportControl.tsx",
+        "apps/desktop/src/components/dbc/DbcBindingControl.tsx"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        {
+          "path": "apps/desktop/src/workspace/session.ts",
+          "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+        },
+        {
+          "path": "apps/desktop/src/i18n/config.ts",
+          "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+        }
+      ],
+      "acceptance_criteria": [
+        "Activating Open Project calls openProjectFromNativeDialog exactly once and, on { status: 'opened' }, writes exactly that projectPath and that project object into the workspace session",
+        "A picker that resolves null produces { status: 'cancelled' }: the session is untouched and no failure is rendered",
+        "A ProjectDirectoryBridgeError, a RuntimeProjectApiError, a RuntimeProjectTransportError and a RuntimeProjectContractError are each classified and rendered as a distinct human-readable message, and a RuntimeProjectApiError's stable code is surfaced",
+        "No rendered output contains the selected project path, the project id, the Runtime URL, a request URL or a raw response body - including in the failure states",
+        "With no project open the component renders its no-project state and offers Open Project; with a project open it renders that project's displayName, projectId, schemaVersion and updatedAt",
+        "The component performs no fetch, no direct invoke and no filesystem call"
+      ],
+      "required_tests": [
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+        "Name every new test case and state the RED observation that preceded each new behaviour",
+        "State explicitly that no integration surface (App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx, workspace/**, i18n/**), no Rust file and no Runtime file was touched"
+      ],
+      "risk_class": "LOW",
+      "status": "PLANNED",
+      "revision": 1
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-13-B",
+      "title": "DBC Import production UI",
+      "objective": "Add the production caller for the DBC import boundary that already exists. A new DbcImportControl component renders an Import DBC action, enabled only when a project is open, and on activation calls the EXISTING importDbcFromNativeDialog(projectPath) orchestration - it does not re-implement the native file picker, Base64 handling, DBC parsing, the Runtime request or the Rust invoke. projectPath comes from the workspace session's opened project; the component never guesses one. On success it invalidates the TanStack Query asset collection for that EXACT projectPath so the list refetches - invalidateQueries with the same query key tuple the DBC workspace reads ({ queryKey: ['dbc', 'assets', projectPath] }) - and the newly imported asset then appears. A dismissed dialog is control flow, not an error: no invalidation, no error notice. Every failure is classified and rendered as a human-readable message - DbcFileBridgeError, RuntimeDbcApiError, RuntimeDbcTransportError, RuntimeDbcContractError - and a structured Runtime failure's stable code may be surfaced. The component never renders the raw response body, the Runtime URL or the selected file's path; only the asset's provenance basename may be shown. It renders strings only from the frozen i18n keys under the 'dbc.import.' prefix.",
+      "scope": "The new DBC import control component and its vitest suite.",
+      "non_goals": [
+        "Re-implementing selectDbcContent, toRuntimeImportFields or importDbcFromNativeDialog",
+        "Multi-file, drag-and-drop, or automatic selection of the imported asset",
+        "A second HTTP client, a second query cache, or any dbc-client change",
+        "Asset delete/rename/replace/dedup, the DBC editor, or any runtime/Rust/IPC change"
+      ],
+      "base_sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-b",
+      "allowed_paths": [
+        "apps/desktop/src/components/dbc/DbcImportControl.tsx",
+        "apps/desktop/src/components/dbc/DbcImportControl.test.tsx"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src/components/workspace/**",
+        "apps/desktop/src/components/dbc/DbcWorkspace.tsx",
+        "apps/desktop/src/workspace/**",
+        "apps/desktop/src/i18n/**",
+        "apps/desktop/src-tauri/**",
+        "runtime/**",
+        ".agent/**",
+        "apps/desktop/src/components/project/**",
+        "apps/desktop/src/components/dbc/DbcBindingControl.tsx",
+        "apps/desktop/src/runtime/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        {
+          "path": "apps/desktop/src/workspace/session.ts",
+          "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+        },
+        {
+          "path": "apps/desktop/src/i18n/config.ts",
+          "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+        }
+      ],
+      "acceptance_criteria": [
+        "With no project open the action is disabled and no import is attempted; with a project open it calls importDbcFromNativeDialog with exactly the session's projectPath",
+        "On { status: 'cancelled' } nothing is invalidated and no failure is rendered",
+        "On success the asset collection query for exactly that projectPath is invalidated, and an asset list rendered from that query key refetches and shows the new asset",
+        "A DbcFileBridgeError, a RuntimeDbcApiError, a RuntimeDbcTransportError and a RuntimeDbcContractError are each classified and rendered as a distinct human-readable message, and a RuntimeDbcApiError's stable code is surfaced",
+        "No rendered output contains the selected file's path, the Runtime URL or a raw response body - including in the failure states",
+        "The component performs no direct invoke, no Base64 work, no parsing and no fetch of its own"
+      ],
+      "required_tests": [
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+        "Name every new test case and state the RED observation that preceded each new behaviour, including the query-invalidation observation that proves the list refetches",
+        "State explicitly that no integration surface (App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx, workspace/**, i18n/**), no Rust file and no Runtime file was touched"
+      ],
+      "risk_class": "LOW",
+      "status": "PLANNED",
+      "revision": 1
+    },
+    {
+      "schema_version": 1,
+      "task_id": "V0.3-13-C",
+      "title": "DBC decode-binding UI",
+      "objective": "Add the explicit channel -> DBC asset decode-binding control. It reads the session's opened project and its current bindings, derives a MINIMAL READ-ONLY channel list from the channelIds already observable in the realtime frame stream (src/runtime/frame-schema.ts RuntimeFrame.channelId via src/runtime/realtime-stream.ts) - sorted, de-duplicated, and never a new CAN channel registry, device manager or configuration subsystem - and renders, per channel, the bound asset's sourceName or a not-bound state, plus explicit Bind and Unbind actions. Bind binds the channel to the asset the user is currently inspecting in the session; with no asset being inspected, Bind is unavailable. Browsing an asset must never change a binding: the component's only call that writes a binding is the explicit Bind action (session.bindChannel), and the only call that removes one is Unbind (session.unbindChannel). An assetId that is no longer present in the project's asset collection is displayed as unlisted rather than silently dropped. The realtime store must be injectable so tests observe channels without creating a Worker or a WebSocket, and the component must never create a second realtime pipeline - it subscribes to the one shared store. It renders strings only from the frozen i18n keys under the 'dbc.binding.' prefix.",
+      "scope": "The new decode-binding control, its observed-channel helper, and their vitest suites.",
+      "non_goals": [
+        "Decoding anything, or any frame/signal decode path - V0.3-14",
+        "Persisting bindings, SQLite migration, or any Runtime API",
+        "A CAN channel manager, device configuration, channel configuration or TX capability",
+        "A global active DBC, or binding driven implicitly by the browse selection"
+      ],
+      "base_sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
+      "owner": "sub-c",
+      "allowed_paths": [
+        "apps/desktop/src/components/dbc/DbcBindingControl.tsx",
+        "apps/desktop/src/components/dbc/DbcBindingControl.test.tsx",
+        "apps/desktop/src/components/dbc/observed-channels.ts",
+        "apps/desktop/src/components/dbc/observed-channels.test.ts"
+      ],
+      "forbidden_paths": [
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src/components/workspace/**",
+        "apps/desktop/src/components/dbc/DbcWorkspace.tsx",
+        "apps/desktop/src/workspace/**",
+        "apps/desktop/src/i18n/**",
+        "apps/desktop/src-tauri/**",
+        "runtime/**",
+        ".agent/**",
+        "apps/desktop/src/components/project/**",
+        "apps/desktop/src/components/dbc/DbcImportControl.tsx",
+        "apps/desktop/src/runtime/**"
+      ],
+      "dependencies": [],
+      "shared_contracts": [
+        {
+          "path": "apps/desktop/src/workspace/session.ts",
+          "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+        },
+        {
+          "path": "apps/desktop/src/i18n/config.ts",
+          "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+        }
+      ],
+      "acceptance_criteria": [
+        "The channel list is derived from observed RuntimeFrame.channelId values, de-duplicated and ordered, and is empty (with a real empty state) before any frame has been observed",
+        "Each channel row shows the bound asset's sourceName when bound and an explicit not-bound state when not",
+        "Bind calls session.bindChannel with the channel and the currently inspected asset, and the row then shows bound; Unbind calls session.unbindChannel and the row returns to not-bound",
+        "With no asset being inspected, Bind is unavailable and no binding can be created",
+        "Browsing an asset changes no binding: with no Bind activated, every channel remains not-bound while the inspected asset changes",
+        "The component creates no Worker and no WebSocket of its own - the realtime store is injected/subscribed, never constructed",
+        "A binding whose asset is absent from the supplied asset collection renders as unlisted rather than as a missing row"
+      ],
+      "required_tests": [
+        "frontend-test",
+        "frontend-typecheck",
+        "frontend-lint"
+      ],
+      "handoff_requirements": [
+        "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+        "Name every new test case and state the RED observation that preceded each new behaviour",
+        "State explicitly that no integration surface (App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx, workspace/**, i18n/**), no Rust file and no Runtime file was touched, and that no second realtime consumer is created"
+      ],
+      "risk_class": "LOW",
+      "status": "PLANNED",
+      "revision": 1
+    }
+  ]
+}

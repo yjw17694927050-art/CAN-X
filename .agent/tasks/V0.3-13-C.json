@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-13-C",
+  "title": "DBC decode-binding UI",
+  "objective": "Add the explicit channel -> DBC asset decode-binding control. It reads the session's opened project and its current bindings, derives a MINIMAL READ-ONLY channel list from the channelIds already observable in the realtime frame stream (src/runtime/frame-schema.ts RuntimeFrame.channelId via src/runtime/realtime-stream.ts) - sorted, de-duplicated, and never a new CAN channel registry, device manager or configuration subsystem - and renders, per channel, the bound asset's sourceName or a not-bound state, plus explicit Bind and Unbind actions. Bind binds the channel to the asset the user is currently inspecting in the session; with no asset being inspected, Bind is unavailable. Browsing an asset must never change a binding: the component's only call that writes a binding is the explicit Bind action (session.bindChannel), and the only call that removes one is Unbind (session.unbindChannel). An assetId that is no longer present in the project's asset collection is displayed as unlisted rather than silently dropped. The realtime store must be injectable so tests observe channels without creating a Worker or a WebSocket, and the component must never create a second realtime pipeline - it subscribes to the one shared store. It renders strings only from the frozen i18n keys under the 'dbc.binding.' prefix.",
+  "scope": "The new decode-binding control, its observed-channel helper, and their vitest suites.",
+  "non_goals": [
+    "Decoding anything, or any frame/signal decode path - V0.3-14",
+    "Persisting bindings, SQLite migration, or any Runtime API",
+    "A CAN channel manager, device configuration, channel configuration or TX capability",
+    "A global active DBC, or binding driven implicitly by the browse selection"
+  ],
+  "base_sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-c",
+  "allowed_paths": [
+    "apps/desktop/src/components/dbc/DbcBindingControl.tsx",
+    "apps/desktop/src/components/dbc/DbcBindingControl.test.tsx",
+    "apps/desktop/src/components/dbc/observed-channels.ts",
+    "apps/desktop/src/components/dbc/observed-channels.test.ts"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src/App.tsx",
+    "apps/desktop/src/components/workspace/**",
+    "apps/desktop/src/components/dbc/DbcWorkspace.tsx",
+    "apps/desktop/src/workspace/**",
+    "apps/desktop/src/i18n/**",
+    "apps/desktop/src-tauri/**",
+    "runtime/**",
+    ".agent/**",
+    "apps/desktop/src/components/project/**",
+    "apps/desktop/src/components/dbc/DbcImportControl.tsx",
+    "apps/desktop/src/runtime/**"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "apps/desktop/src/workspace/session.ts",
+      "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+    },
+    {
+      "path": "apps/desktop/src/i18n/config.ts",
+      "sha": "5ad5a15a52f20e34b8a2c70a5655c7919007e348"
+    }
+  ],
+  "acceptance_criteria": [
+    "The channel list is derived from observed RuntimeFrame.channelId values, de-duplicated and ordered, and is empty (with a real empty state) before any frame has been observed",
+    "Each channel row shows the bound asset's sourceName when bound and an explicit not-bound state when not",
+    "Bind calls session.bindChannel with the channel and the currently inspected asset, and the row then shows bound; Unbind calls session.unbindChannel and the row returns to not-bound",
+    "With no asset being inspected, Bind is unavailable and no binding can be created",
+    "Browsing an asset changes no binding: with no Bind activated, every channel remains not-bound while the inspected asset changes",
+    "The component creates no Worker and no WebSocket of its own - the realtime store is injected/subscribed, never constructed",
+    "A binding whose asset is absent from the supplied asset collection renders as unlisted rather than as a missing row"
+  ],
+  "required_tests": [
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for the focused vitest run, pnpm test, pnpm typecheck and pnpm lint",
+    "Name every new test case and state the RED observation that preceded each new behaviour",
+    "State explicitly that no integration surface (App.tsx, DockWorkspace.tsx, DbcWorkspace.tsx, workspace/**, i18n/**), no Rust file and no Runtime file was touched, and that no second realtime consumer is created"
+  ],
+  "risk_class": "LOW",
+  "status": "PLANNED",
+  "revision": 1
+}
