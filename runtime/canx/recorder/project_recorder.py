@@ -144,6 +144,17 @@ class ProjectRecorder:
         return None if writer is None else writer.session_id
 
     @property
+    def session_id(self) -> str | None:
+        """Return the data session this recorder created, even once it is closed.
+
+        Unlike :attr:`data_session_id`, which exists only while a writer is live,
+        this identity is retained after finalization. That is what lets an observer
+        name the recording whose durable state it is reading — and it is still
+        absent for a recorder that never opened a project session.
+        """
+        return self._session_id
+
+    @property
     def completed(self) -> bool:
         """Return whether this recorder durably completed its data session."""
         return self._completed
@@ -180,6 +191,24 @@ class ProjectRecorder:
         deadline means the abandoned thread has not exited yet.
         """
         return self._finalization_settled.wait(timeout)
+
+    def read_durable_state(self) -> DataSessionState | None:
+        """Read this recorder's session row back, or ``None`` when it is unknown.
+
+        Observability only. The state is asked of the data-session domain — the
+        same authority that wrote the row — and is never inferred from committed
+        files; an unreadable row is reported as unknown rather than as a verdict
+        this call cannot back. Blocking by design (it opens SQLite), so an owner
+        calls it off the event loop.
+        """
+        root = self._project_root
+        session_id = self._session_id
+        if root is None or session_id is None:
+            return None
+        try:
+            return DataSessionService(root).get_session(session_id).state
+        except DataError:
+            return None
 
     def arm_stop_deadline(self, seconds: float) -> None:
         """Tell the recorder how long its owner will wait for :meth:`stop`.

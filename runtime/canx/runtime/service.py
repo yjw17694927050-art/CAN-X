@@ -12,6 +12,7 @@ from uuid import uuid4
 from canx.capture.pipeline import CapturePipeline
 from canx.capture.subscriber import FrameSubscriber, SubscriberDisabledError, SubscriberFailure
 from canx.data.errors import DataError
+from canx.data.model import DataSessionState
 from canx.data.session import DEFAULT_MAX_FRAMES_PER_SEGMENT
 from canx.devices.virtual import VirtualAdapter, VirtualAdapterConfig
 from canx.domain.batch import FrameBatch
@@ -20,6 +21,7 @@ from canx.metrics.collector import MetricsCollector
 from canx.metrics.models import MetricsSnapshot
 from canx.project.errors import ProjectError
 from canx.project.service import ProjectService
+from canx.recorder.control import FinalizationState, RecorderStatus
 from canx.recorder.msgpack_recorder import MsgpackRecorder, RecorderFailure, RecorderState
 from canx.recorder.project_recorder import FinalizationOutcome, ProjectRecorder
 from canx.runtime.errors import CaptureConfigurationError
@@ -226,6 +228,54 @@ class RuntimeService:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+    async def recorder_status(self) -> RecorderStatus:
+        """Return a typed, durable snapshot of the recorder control plane.
+
+        Read-only observability: it reports what the runtime and the recorder
+        already hold and never starts, stops or steers a capture — the Capture
+        Runtime stays the only owner of recording ingress. The single blocking
+        step, reading the project's data-session row, runs on a worker thread so a
+        status read can never stall the realtime loop serving the frame WebSocket.
+
+        The durable session state is the recorder's own row, read through the data
+        domain. It is absent for a capture that never opened a project session, and
+        left ``None`` when the row cannot be read rather than guessed at.
+        """
+        recorder = self._recorder
+        durable_state: DataSessionState | None = None
+        data_session_id: str | None = None
+        if isinstance(recorder, ProjectRecorder):
+            durable_state = await asyncio.to_thread(recorder.read_durable_state)
+            data_session_id = recorder.session_id
+        return RecorderStatus(
+            active=self.capture_active,
+            stream_id=self._stream_id or None,
+            data_session_id=data_session_id,
+            lifecycle_state=recorder.state,
+            recorded_frame_count=recorder.recorded_frames,
+            failure=self._failure if self._failure is not None else recorder.failure,
+            finalization_state=self._finalization_state(),
+            durable_session_state=durable_state,
+        )
+
+    def _finalization_state(self) -> FinalizationState:
+        """Return whether the current recorder's terminal write has settled.
+
+        ``PENDING`` is reported only while a finalization is genuinely
+        outstanding — a worker still running, or the owned settlement task that
+        waits for it. A recorder the runtime has never finalized is ``IDLE``, and a
+        settled one reports that its terminal decision was taken, never a verdict
+        it has not durably written.
+        """
+        recorder = self._recorder
+        if not isinstance(recorder, ProjectRecorder):
+            return FinalizationState.IDLE
+        if self._finalization_outstanding:
+            return FinalizationState.PENDING
+        if recorder.finalization_outcome is FinalizationOutcome.PENDING:
+            return FinalizationState.IDLE
+        return FinalizationState.SETTLED
 
     @property
     def _consumer_tasks(self) -> tuple[asyncio.Task[None], ...]:
