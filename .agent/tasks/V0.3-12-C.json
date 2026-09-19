@@ -10,9 +10,13 @@
     "Any project picker UI, recent-projects list, project mutation or global current-project state",
     "Duplicating the Runtime project read-model schema as a second authority"
   ],
-  "base_sha": "451352faad16e44c36a9bebae3ab1ab355746aa5",
-  "branch": "agent/V0.3-12-C-desktop-project-open-flow",
-  "worktree": ".worktrees/v0.3-12-c",
+  "base_sha": "7add1390ff8b716199cc461d921ec4ee8b72491b",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [
+    "apps/desktop/src/orchestration/project-open.integration.test.ts"
+  ],
   "owner": "sub-c",
   "allowed_paths": [
     "apps/desktop/src/desktop/project-directory-bridge.ts",
@@ -47,6 +51,6 @@
     "State explicitly that no Rust file, no Runtime file and no Runtime-client file was touched, and that no project read-model schema was duplicated"
   ],
   "risk_class": "LOW",
-  "status": "PLANNED",
-  "revision": 1
+  "status": "HANDOFF_READY",
+  "revision": 2
 }

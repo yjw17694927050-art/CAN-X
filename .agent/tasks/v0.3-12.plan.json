@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "V0.3-12",
-  "description": "V0.3-12 Desktop Project Open Foundation, executed as the first real AGENT-02 native pilot: 1 Main Agent + 3 native Tianshu workers, disjoint ownership, pairwise C0. base_sha is the current origin/main head at dispatch time.",
+  "description": "V0.3-12 Desktop Project Open Foundation, executed as the first real AGENT-02 native pilot: 1 Main Agent + 3 native Tianshu workers on a SHARED worktree, pairwise C0. Re-issued at revision 2 with execution_mode=native-shared and the delivery coordinates each task actually had; the originals are preserved in git history at 8522c0f.",
   "tasks": [
     {
       "schema_version": 1,
@@ -15,9 +15,11 @@
         "Any UI, project picker, recent-projects list or global current-project state",
         "Any Rust, Tauri IPC or orchestration change"
       ],
-      "base_sha": "451352faad16e44c36a9bebae3ab1ab355746aa5",
-      "branch": "agent/V0.3-12-A-desktop-runtime-project-client",
-      "worktree": ".worktrees/v0.3-12-a",
+      "base_sha": "8522c0f2d33391a2d2092e648c446f5813187e98",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
       "owner": "sub-a",
       "allowed_paths": [
         "apps/desktop/src/runtime/project-client.ts",
@@ -54,8 +56,8 @@
         "State explicitly that no Rust file, no Runtime file and no orchestration file was touched"
       ],
       "risk_class": "LOW",
-      "status": "PLANNED",
-      "revision": 1
+      "status": "HANDOFF_READY",
+      "revision": 2
     },
     {
       "schema_version": 1,
@@ -69,9 +71,11 @@
         "Any new crate dependency, any Cargo.toml / Cargo.lock change",
         "Any renderer capability change, any TypeScript change and any Runtime change"
       ],
-      "base_sha": "451352faad16e44c36a9bebae3ab1ab355746aa5",
-      "branch": "agent/V0.3-12-B-native-project-directory-bridge",
-      "worktree": ".worktrees/v0.3-12-b",
+      "base_sha": "cd284ed9b042bb47e200b035ed5bc00a7e92b8c9",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [],
       "owner": "sub-b",
       "allowed_paths": [
         "apps/desktop/src-tauri/src/project_directory_bridge.rs",
@@ -106,8 +110,8 @@
         "State explicitly that Cargo.toml, Cargo.lock and capabilities/default.json were not modified, and that no project-validation logic was added to Rust"
       ],
       "risk_class": "LOW",
-      "status": "PLANNED",
-      "revision": 1
+      "status": "HANDOFF_READY",
+      "revision": 2
     },
     {
       "schema_version": 1,
@@ -121,9 +125,13 @@
         "Any project picker UI, recent-projects list, project mutation or global current-project state",
         "Duplicating the Runtime project read-model schema as a second authority"
       ],
-      "base_sha": "451352faad16e44c36a9bebae3ab1ab355746aa5",
-      "branch": "agent/V0.3-12-C-desktop-project-open-flow",
-      "worktree": ".worktrees/v0.3-12-c",
+      "base_sha": "7add1390ff8b716199cc461d921ec4ee8b72491b",
+      "execution_mode": "native-shared",
+      "branch": null,
+      "worktree": null,
+      "integration_paths": [
+        "apps/desktop/src/orchestration/project-open.integration.test.ts"
+      ],
       "owner": "sub-c",
       "allowed_paths": [
         "apps/desktop/src/desktop/project-directory-bridge.ts",
@@ -158,8 +166,8 @@
         "State explicitly that no Rust file, no Runtime file and no Runtime-client file was touched, and that no project read-model schema was duplicated"
       ],
       "risk_class": "LOW",
-      "status": "PLANNED",
-      "revision": 1
+      "status": "HANDOFF_READY",
+      "revision": 2
     }
   ]
 }

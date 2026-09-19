@@ -10,9 +10,11 @@
     "Any new crate dependency, any Cargo.toml / Cargo.lock change",
     "Any renderer capability change, any TypeScript change and any Runtime change"
   ],
-  "base_sha": "451352faad16e44c36a9bebae3ab1ab355746aa5",
-  "branch": "agent/V0.3-12-B-native-project-directory-bridge",
-  "worktree": ".worktrees/v0.3-12-b",
+  "base_sha": "cd284ed9b042bb47e200b035ed5bc00a7e92b8c9",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
   "owner": "sub-b",
   "allowed_paths": [
     "apps/desktop/src-tauri/src/project_directory_bridge.rs",
@@ -47,6 +49,6 @@
     "State explicitly that Cargo.toml, Cargo.lock and capabilities/default.json were not modified, and that no project-validation logic was added to Rust"
   ],
   "risk_class": "LOW",
-  "status": "PLANNED",
-  "revision": 1
+  "status": "HANDOFF_READY",
+  "revision": 2
 }

@@ -10,9 +10,11 @@
     "Any UI, project picker, recent-projects list or global current-project state",
     "Any Rust, Tauri IPC or orchestration change"
   ],
-  "base_sha": "451352faad16e44c36a9bebae3ab1ab355746aa5",
-  "branch": "agent/V0.3-12-A-desktop-runtime-project-client",
-  "worktree": ".worktrees/v0.3-12-a",
+  "base_sha": "8522c0f2d33391a2d2092e648c446f5813187e98",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
   "owner": "sub-a",
   "allowed_paths": [
     "apps/desktop/src/runtime/project-client.ts",
@@ -49,6 +51,6 @@
     "State explicitly that no Rust file, no Runtime file and no orchestration file was touched"
   ],
   "risk_class": "LOW",
-  "status": "PLANNED",
-  "revision": 1
+  "status": "HANDOFF_READY",
+  "revision": 2
 }

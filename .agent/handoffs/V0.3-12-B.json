@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-12-B",
+  "agent": "sub-b",
+  "branch": "feature/v0.3-12-desktop-project-open-foundation",
+  "base_sha": "cd284ed9b042bb47e200b035ed5bc00a7e92b8c9",
+  "head_sha": "7add1390ff8b716199cc461d921ec4ee8b72491b",
+  "commits": [
+    "7add1390ff8b716199cc461d921ec4ee8b72491b feat(desktop): add the native project directory bridge"
+  ],
+  "changed_files": [
+    "apps/desktop/src-tauri/src/dbc_file_bridge/tests.rs",
+    "apps/desktop/src-tauri/src/lib.rs",
+    "apps/desktop/src-tauri/src/project_directory_bridge.rs",
+    "apps/desktop/src-tauri/src/project_directory_bridge/tests.rs"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "rust-fmt",
+      "command": "cargo fmt --check",
+      "result": "passed"
+    },
+    {
+      "name": "rust-clippy",
+      "command": "cargo clippy --all-targets --all-features --locked -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "name": "rust-test",
+      "command": "cargo test --locked",
+      "result": "passed"
+    }
+  ],
+  "lint": "cargo clippy --all-targets --all-features --locked -- -D warnings — exit 0",
+  "typecheck": "cargo fmt --check — exit 0",
+  "ci": "PR #20, Quality Gate success on head a63667a (run 35418026596); this delivery is inside that head's history",
+  "dependencies": [],
+  "known_issues": [
+    "The delivery range is base_sha=cd284ed -> head_sha=7add139, i.e. exactly this task's own commit. In native-shared mode base_sha is the integration head the delivery was applied to, not the dispatch base (451352f).",
+    "apps/desktop/src-tauri/src/dbc_file_bridge/tests.rs is inside this task's surface because it asserts the crate's exact registered-command surface and the new registration turns it RED. It was EXTENDED (new command named, crate_source() taught the new module, the no-caller-path scan widened to project_directory_bridge.rs with its inspected-command count raised 3 -> 4), never weakened.",
+    "cargo test --locked reports 42 lib tests + 3 runtime_sidecar tests; the 14 new project_directory_bridge tests are among the 42."
+  ],
+  "deferred_items": [
+    "A real OS directory dialog driven end to end (NOT VERIFIED; the native selection edge is proved by the module's focused tests, never by automating the dialog)"
+  ],
+  "ready_for_integration": true
+}
