@@ -1,4 +1,5 @@
 pub mod dbc_file_bridge;
+pub mod project_directory_bridge;
 pub mod runtime_sidecar;
 
 use std::env;
@@ -164,7 +165,11 @@ pub fn run() {
             // module that owns the filesystem decision, and naming it here is what
             // keeps `lib.rs` an assembly point rather than a place where file access
             // is declared.
-            dbc_file_bridge::select_dbc_file
+            dbc_file_bridge::select_dbc_file,
+            // The project-directory bridge follows the same rule: the module that owns
+            // the user's filesystem selection is named here, and it is the only place
+            // that selection can come from.
+            project_directory_bridge::select_project_directory
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the CAN-X desktop shell");
