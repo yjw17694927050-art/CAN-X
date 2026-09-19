@@ -1099,6 +1099,52 @@ async def test_packaged_runtime_answers_the_full_decode_batch_envelope(
             assert refused["source"] == "api"
             assert refused["recoverable"] is False
 
+            # The same non-contiguous shape on the decode-specific surface: accepted. A
+            # decode work set is ordered and needs no consecutive sequences, which is what
+            # lets an alternating-channel viewport cost one request per asset. Two
+            # observations, one payload: the strict surface still refuses it, and the
+            # work-set surface answers it — from the frozen executable, over real HTTP.
+            work_set = await client.post(
+                f"/dbc/assets/{engine_id}/decode-frames",
+                json={
+                    "project_path": str(project_root),
+                    "stream_id": "v030final-live",
+                    "frames": [
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=1),
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=3),
+                        _dbc_frame(_DBC_ENGINE_DATA, sequence=7, arbitration_id=0x7FF),
+                    ],
+                },
+            )
+            assert work_set.status_code == 200, work_set.text
+            work_envelope = work_set.json()
+            assert set(work_envelope) == {
+                "schema_version",
+                "stream_id",
+                "frame_count",
+                "sequences",
+                "outcomes",
+            }
+            assert work_envelope["schema_version"] == 1
+            assert work_envelope["stream_id"] == "v030final-live"
+            assert work_envelope["frame_count"] == 3
+            # The submitted sequences come back verbatim, gaps included: that is what lets
+            # a caller align an outcome to a frame without trusting position alone.
+            assert work_envelope["sequences"] == [1, 3, 7]
+            assert [
+                outcome["frame"]["sequence"] for outcome in work_envelope["outcomes"]
+            ] == [1, 3, 7]
+            assert [
+                outcome["decoded"] is not None for outcome in work_envelope["outcomes"]
+            ] == [True, True, False]
+            assert work_envelope["outcomes"][2]["failure"]["code"] == "dbc.message_not_found"
+            work_speed = next(
+                signal
+                for signal in work_envelope["outcomes"][0]["decoded"]["signals"]
+                if signal["name"] == "EngineSpeed"
+            )
+            assert work_speed["physical_value"] == 750.0
+
             shutdown = await client.post(
                 "/runtime/shutdown", headers={"X-CANX-Session-Token": token}
             )
