@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-08-FIX-1",
+  "title": "Replay Project Authority Closure",
+  "objective": "ReplaySession.open() must stop bypassing the CAN-X project authority. Today the production entry point is ReplaySession.open() -> _resolve_data_session() -> Path.is_dir() -> DataSessionService.get_session(), which is NOT full CAN-X project validation. The authority is ProjectService().open(), which validates the path, project.json presence, the manifest, project.db presence, the database schema, manifest/database identity agreement and the supported project version. Change the production entry so it FIRST calls ProjectService().open(Path(project_root)); only after full project validation succeeds may it build DataSessionService / QueryService / SessionReplaySource from handle.root. The ProjectHandle must be closed correctly. Do NOT copy ProjectService validation into the replay package, do NOT read project.json directly, do NOT compare project_id by hand, do NOT validate the SQLite schema by hand. Project-domain failures must be translated into the typed ReplayProjectError with a stable cause code (e.g. replay.project_unavailable with details.cause = project.manifest_missing / project.database_missing / project.identity_mismatch / ...), never leaking raw SQLite exceptions, tracebacks, secrets or absolute host-specific internals.",
+  "scope": "The replay package's project-entry path and its tests, plus the V0.4-08 acceptance document.",
+  "non_goals": [
+    "Any change to runtime/canx/project/** (read-only authority)",
+    "Any change to runtime/canx/query/**, runtime/canx/data/**, runtime/canx/dbc/** (read-only)",
+    "Any real CAN TX, python-can TX, CanAdapter.send, Safety authorization or ARM state",
+    "Any change to runtime/canx/api/**, apps/desktop/**",
+    "Reimplementing project validation inside the replay package"
+  ],
+  "base_sha": "481be34c7c671bdac32c2bc8535b8f4eb67c2cb3",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "sub-c",
+  "allowed_paths": [
+    "runtime/canx/replay/**",
+    "tests/unit/replay/**",
+    "tests/integration/test_offline_replay.py",
+    "tests/performance/test_replay_bounded_memory.py",
+    "docs/acceptance/v0.4-08-offline-replay-core.md"
+  ],
+  "forbidden_paths": [
+    "runtime/canx/project/**",
+    "runtime/canx/query/**",
+    "runtime/canx/recorder/**",
+    "runtime/canx/api/**",
+    "runtime/canx/data/**",
+    "runtime/canx/dbc/**",
+    "runtime/canx/devices/**",
+    "runtime/canx/safety/**",
+    "runtime/canx/domain/**",
+    "apps/**",
+    ".agent/**",
+    ".github/**",
+    "SPEC.md",
+    "AGENTS.md",
+    "PRD.md",
+    "pyproject.toml",
+    "package.json"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "runtime/canx/project/service.py"
+    },
+    {
+      "path": "runtime/canx/data/session.py"
+    },
+    {
+      "path": "runtime/canx/query/service.py"
+    }
+  ],
+  "acceptance_criteria": [
+    "ReplaySession.open() calls ProjectService().open(Path(project_root)) on the production entry before any DataSession/Query construction",
+    "A missing project.json is REFUSED (RED first: the current implementation wrongly accepts it)",
+    "A project_id mismatch between manifest and database yields ReplayProjectError with the corresponding Project cause",
+    "A corrupted project.json fails closed",
+    "An unsupported project version keeps the same authority as the Project domain",
+    "Project-domain failures are translated to the typed ReplayProjectError with a stable cause code and no raw SQLite exception / traceback / secret / absolute host path leak",
+    "The ProjectHandle is closed correctly",
+    "No project validation is re-implemented inside the replay package",
+    "All V0.4-08 replay regression stays green (deterministic timing, fake clock, ordering, pagination boundedness, frame fidelity, CAN FD/BRS/ESI, cancellation, sink/query failures, offline-only no-TX)"
+  ],
+  "required_tests": [
+    "replay-project-authority-red",
+    "replay-targeted",
+    "replay-performance",
+    "runtime-pytest",
+    "runtime-ruff",
+    "runtime-mypy"
+  ],
+  "handoff_requirements": [
+    "RED evidence first: the R1/R2/R3 tests failing against the pre-fix implementation, with real output",
+    "Exact commands and results for pytest tests/unit/replay, tests/integration/test_offline_replay.py, tests/performance/test_replay_bounded_memory.py, ruff on the replay surface, and mypy runtime",
+    "State explicitly that runtime/canx/project/**, runtime/canx/query/**, runtime/canx/data/**, runtime/canx/safety/** and runtime/canx/devices/** are untouched",
+    "The negative no-TX assertion still holds"
+  ],
+  "risk_class": "HIGH",
+  "status": "READY",
+  "revision": 1
+}
