@@ -1,0 +1,62 @@
+{
+  "task_id": "V0.3-12-VERIFY-A",
+  "surface": "apps/desktop/src/runtime/project-client.ts (renderer-side Runtime project inspect client) and its focused suite apps/desktop/src/runtime/project-client.test.ts; runtime/canx/api/project.py read only for wiring cross-check",
+  "files_read": [
+    "apps/desktop/src/runtime/project-client.ts",
+    "apps/desktop/src/runtime/project-client.test.ts",
+    "apps/desktop/package.json",
+    "apps/desktop/vite.config.ts",
+    "runtime/canx/api/project.py",
+    "runtime/canx/api/errors.py",
+    "runtime/canx/project/errors.py",
+    "runtime/canx/project/storage.py",
+    "runtime/canx/project/manifest.py",
+    "tests/unit/api/test_project_api.py",
+    "docs/acceptance/v0.3-12-desktop-project-open-foundation.md"
+  ],
+  "commands": [
+    {
+      "command": "cd apps/desktop && npx vitest run src/runtime/project-client.test.ts; echo \"EXIT=$?\"",
+      "exit_code": 0
+    }
+  ],
+  "observed_results": [
+    {
+      "what": "focused vitest suite for the verified surface",
+      "runner": "vitest 5.0.0",
+      "cwd": "apps/desktop",
+      "test_files_passed": 1,
+      "test_files_failed": 0,
+      "tests_passed": 26,
+      "tests_failed": 0,
+      "tests_skipped": 0,
+      "duration_seconds": 25.8
+    }
+  ],
+  "claims": [
+    {
+      "claim": "1. inspectProject(projectPath) requests GET /project/inspect with the path encoded as a single project_path query value, and performs no normalisation/resolve/lower of the path.",
+      "verdict": "confirmed",
+      "evidence": "inspectProject (:194-195) does `readResponse(await get(inspectUrl(projectPath)))`. inspectUrl (:223-226) builds `${RUNTIME_URL}${PROJECT_INSPECT_PATH}?${new URLSearchParams({ project_path: projectPath }).toString()}`, with RUNTIME_URL at :54 and PROJECT_INSPECT_PATH = \"/project/inspect\" at :57. get (:207-213) issues `fetch(url, { method: \"GET\" })` (the call is at :209) with no body and no headers. A search of the whole file for normalis|normaliz|toLowerCase|toUpperCase|resolve|trim(|replace(|decodeURI|encodeURI|path.|fs. returned only doc-comment lines (:28, :179) — no transforming call exists in the code path. Single value: the query string is produced by URLSearchParams, so a literal '&', '#', '?' or '%' inside the path is percent-encoded (tests :179-188, :190-205). Tests: :149-157 (one GET to the exact endpoint), :159-166 (two calls, two distinct project_path values, no module-level current project), :168-176 (no body, no caller header), :215-221 (\"C:/Mixed/Case/../Dir/\" survives as written), :223-229 (rooted POSIX path with a space survives). Runtime side agrees: runtime/canx/api/project.py:127-129 declares GET /project/inspect with a required, non-empty `project_path: Annotated[str, Query(min_length=1)]`, and the handler docstring below it (through :155) states that this adapter is explicitly not a normalizer (no resolve, no expanduser, no lower)."
+    },
+    {
+      "claim": "2. The success payload is validated field by field and rebuilt (no cast, no spread of the raw payload).",
+      "verdict": "confirmed",
+      "evidence": "readProject (:320-329) returns a fresh object literal (:322-328) holding exactly projectId/displayName/schemaVersion/createdAt/updatedAt, each produced by readString (:346-349) or readInteger (:358-362, `Number.isSafeInteger`), reached through readObject (:338-344, which refuses null, non-object and Array). The success path contains no spread operator and no `as` applied to a field value; the payload is never returned or spread wholesale. Tests: :106-110 (resolves to exactly the five camelCase fields), :112-135 (an extra project_path/manifest_path in the payload is not promoted; `JSON.stringify(model)` contains neither \"secret-program\" nor \"manifest_path\"), :233-281 (missing field, wrong type, 1.5 schema version, non-object body and an array-everywhere-an-object-was-declared are all refused with RuntimeProjectContractError, and :273-281 asserts no read model escapes). Disclosure on the literal wording: the phrase \"no cast\" is inexact — one container-narrowing cast exists at :342 (`return value as Record<string, unknown>`) plus :290 in the failure path (and :309 for details). Each of those only enables indexing; every value that reaches the caller passes a typeof / Number.isSafeInteger check first, so no unvalidated payload value escapes."
+    },
+    {
+      "claim": "3. Three distinguishable error classes exist, and the Runtime five-field envelope (code/message/details/recoverable/source) survives intact.",
+      "verdict": "confirmed",
+      "evidence": "Three separate exported classes with separate `name` assignments: RuntimeProjectApiError (:95, name at :116), RuntimeProjectTransportError (:134, name at :137), RuntimeProjectContractError (:148, name at :151). readResponse (:238-256) keeps them distinguishable by construction: non-2xx + valid envelope -> ApiError; non-2xx + no envelope -> TransportError (:242-244); 2xx + payload the contract does not describe -> ContractError, raised inside readProject/readObject. Envelope: interface RuntimeErrorEnvelope (:271-277) names the five fields; readErrorEnvelope (:288-310) type-checks code:string, message:string, recoverable:boolean, source:string, details:non-null non-array object, and returns null otherwise (:290-308) so a framework `{\"detail\": ...}` body is never decorated with a code it did not claim; the throw at :245-252 carries status plus all five fields. Tests: :285-310 (status 404, code project.not_found, details {reason: manifest_missing}, recoverable false, source \"project\"), :311-330 (recoverable true preserved), :332-355 (api.request_validation_failed / source \"api\" / 422 stays distinguishable from a project failure), :273-281 (a contract failure is not an ApiError), :377-386 (missing envelope -> TransportError, not ApiError). Disclosures: the ApiError message is re-rendered as `${code}: ${message}` (:115), so the Runtime's raw message text is prefixed with its code rather than carried byte-identical (asserted deliberately at :305); and `details` is copied shallowly (:309), so nested values remain shared references."
+    },
+    {
+      "claim": "4. No diagnostic message can contain projectPath or a response body.",
+      "verdict": "not confirmed",
+      "evidence": "Confirmed half: every message this module authors is a static constant — TRANSPORT_MESSAGE (:156), UNREADABLE_FAILURE_MESSAGE (:159-160), UNREADABLE_PROJECT_MESSAGE (:163-164) — and neither get (:207-213), readResponse, readJson, readErrorEnvelope, readProject nor readObject interpolates projectPath or a body into a message. The Runtime's own messages are likewise path-free sentences (runtime/canx/project/storage.py:246, :285). Tests :389-399, :401-410 and :412-420 assert that the path and the URL do not appear in the contract/transport diagnostics. Falsified half: RuntimeProjectApiError's diagnostic message is built from the response body — `super(`${code}: ${message}`)` (:115), thrown at :245-252 with the envelope's own code and message — so a diagnostic message does contain two fields of the response body (deliberately asserted at :305). A stronger statement in the module itself is also false: the header claims \"Neither error type has a field into which a path or a payload could leak\" (:47-50), but `.details` is forwarded verbatim (:245-252, copied at :309) and the Runtime populates `details` with `str(path)` on path failures — runtime/canx/project/storage.py:248, :287 and runtime/canx/project/manifest.py:36, :55, :62, :68, :79, :87, :103, :111, :117 — so a project path does reach the ApiError surface through `.details`. That placement originates in the Runtime and is forwarded by design; this client never authors it. No test covers this: the diagnostics describe (:388-420) exercises only the ContractError and TransportError paths."
+    }
+  ],
+  "not_confirmable": [
+    "Cross-language encoding round-trip of a space in the path (claim 1's \"byte for byte\"): this client serialises with URLSearchParams, i.e. application/x-www-form-urlencoded rules in which a space becomes '+', while the Runtime decodes query values with Starlette's urllib.parse.parse_qsl, in which '+' decodes back to a space. Both halves are reasoned from library semantics only; the desktop suite cannot prove the Python side because its round-trip helper `askedFor` (test :101-102) uses a WHATWG `new URL(...).searchParams` decoder, a different codec from the Runtime's. Not exercised in this run — the single permitted command was the focused vitest file.",
+    "Whether the Runtime's JSON error envelope keeps its five keys through the real ASGI/HTTP boundary (proxy, status mapping, response model): not exercised here. Read-only reasoning only — runtime/canx/api/errors.py:60-67 declares ErrorResponse with exactly those five fields and :143-151 renders them from the domain error; the desktop half of the handshake is what this verification covers."
+  ]
+}
