@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-14-A",
+  "agent": "sub-a",
+  "execution_mode": "native-shared",
+  "branch": "feature/v0.3-14-live-dbc-decode-trace-plot-integration",
+  "base_sha": "2428b19aa96f54b11ab016acb065a487f65208cf",
+  "head_sha": "32d5e17744820632c3f2f3f356ee6e82a2ede3dc",
+  "commits": [
+    "32d5e17744820632c3f2f3f356ee6e82a2ede3dc feat(desktop): add the typed decode-batch client (V0.3-14 §15-§27)"
+  ],
+  "changed_files": [
+    "apps/desktop/src/runtime/dbc-decode-client.test.ts",
+    "apps/desktop/src/runtime/dbc-decode-client.ts"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "frontend-focused-test",
+      "command": "cd apps/desktop && ./node_modules/.bin/vitest run runtime/dbc-decode-client.test.ts -> 1 file / 36 tests passed",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-test",
+      "command": "cd apps/desktop && pnpm test -> 31 files / 461 tests passed (re-run by the Main Agent on the final tree, which includes every later commit)",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-typecheck",
+      "command": "cd apps/desktop && pnpm typecheck",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-lint",
+      "command": "cd apps/desktop && pnpm lint",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-build",
+      "command": "cd apps/desktop && pnpm build",
+      "result": "passed"
+    }
+  ],
+  "lint": "eslint . --max-warnings 0 - exit 0 (re-run by the Main Agent on the final tree)",
+  "typecheck": "tsc -b --pretty false - exit 0 (re-run by the Main Agent on the final tree)",
+  "ci": "recorded on the pull request for feature/v0.3-14-live-dbc-decode-trace-plot-integration; the Main Agent's local gates above are the verification this handoff rests on",
+  "dependencies": [],
+  "known_issues": [
+    "The echoed frame is compared field for field across all sixteen FrameWire fields. This is fail-closed and correct against the current Runtime, whose Frame is a frozen dataclass with no normalization on the wire round trip; if the Runtime ever normalizes a field on the echo path (a rescaled timestamp, a re-encoded payload), this client would refuse a legitimate response. Recorded as a contract coupling to revisit if that changes.",
+    "The 1000-frame bound is mirrored from the Runtime's MAX_BATCH_FRAMES and asserted through a stubbed fetch; it has not been exercised against a live Runtime process."
+  ],
+  "deferred_items": [
+    "A decode-batch integration run against a real Runtime process (including the 1000-frame boundary and a real per-frame failure code) belongs to V0.3-FINAL or a later task; it is NOT VERIFIED here."
+  ],
+  "ready_for_integration": true
+}

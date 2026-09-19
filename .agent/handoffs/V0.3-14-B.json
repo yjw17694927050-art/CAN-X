@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-14-B",
+  "agent": "sub-b",
+  "execution_mode": "native-shared",
+  "branch": "feature/v0.3-14-live-dbc-decode-trace-plot-integration",
+  "base_sha": "32d5e17744820632c3f2f3f356ee6e82a2ede3dc",
+  "head_sha": "546e6af3c84e73217a93b148f9f6cee1d3b58cdf",
+  "commits": [
+    "546e6af3c84e73217a93b148f9f6cee1d3b58cdf feat(desktop): project decoded values into Trace rows (V0.3-14 §28-§35)"
+  ],
+  "changed_files": [
+    "apps/desktop/src/components/trace/LiveTracePanel.test.tsx",
+    "apps/desktop/src/components/trace/LiveTracePanel.tsx",
+    "apps/desktop/src/components/trace/TracePanel.test.tsx",
+    "apps/desktop/src/components/trace/TracePanel.tsx"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "frontend-focused-test",
+      "command": "cd apps/desktop && ./node_modules/.bin/vitest run components/trace -> 2 files / 15 tests passed",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-test",
+      "command": "cd apps/desktop && pnpm test -> 31 files / 461 tests passed (re-run by the Main Agent on the final tree, which includes every later commit)",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-typecheck",
+      "command": "cd apps/desktop && pnpm typecheck",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-lint",
+      "command": "cd apps/desktop && pnpm lint",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-build",
+      "command": "cd apps/desktop && pnpm build",
+      "result": "passed"
+    }
+  ],
+  "lint": "eslint . --max-warnings 0 - exit 0 (re-run by the Main Agent on the final tree)",
+  "typecheck": "tsc -b --pretty false - exit 0 (re-run by the Main Agent on the final tree)",
+  "ci": "recorded on the pull request for feature/v0.3-14-live-dbc-decode-trace-plot-integration; the Main Agent's local gates above are the verification this handoff rests on",
+  "dependencies": [],
+  "known_issues": [
+    "trace.value.none carries two meanings at once: 'no decode response has answered this frame yet' and 'the Runtime answered and the message declared no signals'. They are not distinguishable in the UI today; separating them would need a new i18n key, which the frozen string surface for this phase does not have.",
+    "The eight column tracks are declared inline in TracePanel.tsx (gridTemplateColumns), which overrides the six-track .trace-row rule in styles.css. The inline declaration is the effective one; the stylesheet rule is now a stale lower-priority default rather than a second source of truth. Recorded for the Main Agent's review rather than changed, because styles.css is outside this task's ownership."
+  ],
+  "deferred_items": [
+    "Lifting the column tracks into styles.css so one file owns the row shape is a cosmetic follow-up, not a behavioural one; the rendered width is correct today."
+  ],
+  "ready_for_integration": true
+}

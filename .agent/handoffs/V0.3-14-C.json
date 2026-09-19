@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.3-14-C",
+  "agent": "sub-c",
+  "execution_mode": "native-shared",
+  "branch": "feature/v0.3-14-live-dbc-decode-trace-plot-integration",
+  "base_sha": "546e6af3c84e73217a93b148f9f6cee1d3b58cdf",
+  "head_sha": "0519e184bd1c7c1c7eb7ad15bbc804c11c0718f9",
+  "commits": [
+    "0519e184bd1c7c1c7eb7ad15bbc804c11c0718f9 feat(desktop): plot a channel-bound selected signal (V0.3-14 §36-§47)"
+  ],
+  "changed_files": [
+    "apps/desktop/src/components/dbc/SignalSelectionControl.test.tsx",
+    "apps/desktop/src/components/dbc/SignalSelectionControl.tsx",
+    "apps/desktop/src/components/plot/LivePlotPanel.test.tsx",
+    "apps/desktop/src/components/plot/LivePlotPanel.tsx",
+    "apps/desktop/src/components/plot/series.test.ts",
+    "apps/desktop/src/components/plot/series.ts"
+  ],
+  "ownership_compliance": true,
+  "tests": [
+    {
+      "name": "frontend-focused-test",
+      "command": "cd apps/desktop && ./node_modules/.bin/vitest run components/plot components/dbc/SignalSelectionControl -> 3 files / 24 tests passed",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-test",
+      "command": "cd apps/desktop && pnpm test -> 31 files / 461 tests passed (re-run by the Main Agent on the final tree, which includes every later commit)",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-typecheck",
+      "command": "cd apps/desktop && pnpm typecheck",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-lint",
+      "command": "cd apps/desktop && pnpm lint",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-build",
+      "command": "cd apps/desktop && pnpm build",
+      "result": "passed"
+    }
+  ],
+  "lint": "eslint . --max-warnings 0 - exit 0 (re-run by the Main Agent on the final tree)",
+  "typecheck": "tsc -b --pretty false - exit 0 (re-run by the Main Agent on the final tree)",
+  "ci": "recorded on the pull request for feature/v0.3-14-live-dbc-decode-trace-plot-integration; the Main Agent's local gates above are the verification this handoff rests on",
+  "dependencies": [],
+  "known_issues": [
+    "buildByteSeries and its three byte-series tests were removed rather than left unwired, because a pure function with no production caller is dead code. The series reduction it introduced (even stride, first and last kept) is carried over verbatim into buildSignalSeries, and the count is reconciled in the phase report.",
+    "LivePlotPanel still subscribes to the shared realtime store for the stream identity it uses as the chart key, even though every plotted value now comes from the decoded store. That subscription is deliberate - it keeps the panel a subscriber of the one pipeline rather than a second one, and it is what makes a stream epoch rebuild the chart instead of carrying a curve across two numberings."
+  ],
+  "deferred_items": [],
+  "ready_for_integration": true
+}
