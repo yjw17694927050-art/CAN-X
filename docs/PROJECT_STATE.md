@@ -32,12 +32,23 @@
 > PR #26, accepted head aa37b1d, merge `28e49bccaaa3105816c4f81f3fc486afb58b6158` (merge commit, no
 > bypass, ruleset unmodified), post-merge main CI 35437083325 SUCCESS; version-level FULL CI
 > 35434770352 (workflow_dispatch @ ac9742f) with all four domains green. **V0.3 — Professional Trace
-> & DBC Foundation — Version Acceptance: PASS · Status: CLOSED**. Next: **V0.3-CODE-AUDIT — V0.1–V0.3
-> Full Repository Code Audit — READY TO START**; V0.4 NOT STARTED. Evidence:
-> `docs/acceptance/v0.3-final.md` §16.)
-> **Current Phase**: none open — **V0.3 — Professional Trace & DBC Foundation** is CLOSED.
-> Next gate: **V0.3-CODE-AUDIT** (maintenance / qualification, not a product milestone) ·
-> **V0.4**: NOT STARTED
+> & DBC Foundation — Version Acceptance: PASS · Status: CLOSED**. **V0.3-CODE-AUDIT — V0.1–V0.3 Full
+> Repository Code Audit — Final Acceptance: PASS · Status: CLOSED** (P0 0 · P1 0) after protected
+> integration: accepted head da3cf87, PR #28, merge
+> `fd27987d5e6db3e74176c46673ca3d58cb2ab704` (merge commit, no bypass, ruleset unmodified),
+> accepted head verified as an ancestor of the post-merge main and its merge commit's second parent;
+> post-merge main CI 35445612326 SUCCESS (Change Classification · Runtime / Python ·
+> Frontend / TypeScript · Quality Gate; Desktop System / Rust **authorised skip** — recorded as a
+> skip, never as an executed PASS). The audit was EXECUTED, returned REMEDIATION REQUIRED, the five
+> fix groups plus the round-2 P1 were remediated, and the verdict on the accepted head is the
+> independent reviewer's — recorded here, not granted here. Evidence:
+> `docs/acceptance/v0.3-code-audit-final.md`. Next: **V0.4 — READY TO START**, first step
+> **V0.4-00 — Development Environment Preflight**; the V0.4 wave plan is recorded, not implemented.
+> V0.3's own record: `docs/acceptance/v0.3-final.md` §16.)
+> **Current Phase**: none open — **V0.3 — Professional Trace & DBC Foundation** is CLOSED and
+> **V0.3-CODE-AUDIT** is CLOSED.
+> Next gate: **V0.4-00 — Development Environment Preflight** ·
+> **V0.4**: READY TO START
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
 This answers **"where is CAN-X now?"**, not "what happened at every step". The full narrative —
@@ -189,17 +200,15 @@ Previous CLOSED numbered step:  V0.3-14 — Live DBC Decode, Trace & Plot Integr
 Previous CLOSED numbered step:  V0.3-13 — Project & DBC Workspace Product Integration PASS · CLOSED
 Previous CLOSED numbered step:  V0.3-12 — Desktop Project Open Foundation             PASS · CLOSED
 Current numbered step:          none — no product increment is open
-                                NEXT: **V0.3-CODE-AUDIT — V0.1–V0.3 Full Repository Code Audit**
-                                READY TO START. A maintenance / qualification audit, not a product
-                                milestone: source quality, architecture consistency, lifecycle and
-                                boundedness, dead code, duplicated contracts, safety boundaries,
-                                test blind spots and repository hygiene across V0.1–V0.3, before
-                                V0.4 begins. It does not reopen V0.3 unless it finds a P0/P1 defect.
-                                Its baseline is the version-closed main SHA this closeout produced
-                                (V0_3_CLOSED_MAIN_SHA) — the merge commit of the
-                                docs/v0.3-final-closeout change in the Git history
-                                V0.4 — NOT STARTED, blocked only by that planned audit (a process
-                                choice, not a V0.3 failure)
+Latest CLOSED gate:             V0.3-CODE-AUDIT — V0.1–V0.3 Full Repository Code Audit
+                                PASS · CLOSED
+                                (EXECUTED → REMEDIATION REQUIRED → five fix groups plus the round-2
+                                P1 → independent PASS · P0 0 · P1 0; accepted head da3cf87 ·
+                                PR #28 · protected merge fd27987 · post-merge main CI 35445612326
+                                SUCCESS · evidence docs/acceptance/v0.3-code-audit-final.md)
+                                V0.4 — READY TO START, the audit gate is discharged by that
+                                external verdict; first step V0.4-00 Development Environment
+                                Preflight
                                 V0.3-FINAL integration: evidence PR #26 · accepted head aa37b1d ·
                                 protected merge 28e49bc · post-merge main CI 35437083325 SUCCESS ·
                                 version FULL CI 35434770352 · evidence
@@ -319,10 +328,14 @@ V0.3    Professional Trace & DBC Foundation ... Version Acceptance: PASS · Stat
                                                (the whole version, closed by V0.3-FINAL — see §5)
 
 V0.3-CODE-AUDIT V0.1–V0.3 Full Repository
-        Code Audit ........................... NOT STARTED — READY TO START (maintenance /
-                                               qualification gate, not a product milestone)
-V0.4    Plot / Recorder / Replay ............  NOT STARTED — blocked only by the planned
-                                               version-level code audit
+        Code Audit ........................... PASS · CLOSED (independent; EXECUTED →
+                                               REMEDIATION REQUIRED → five fix groups plus the
+                                               round-2 P1 → PASS · P0 0 · P1 0) — PR #28 ·
+                                               merge fd27987 · post-merge main CI 35445612326
+                                               SUCCESS · evidence
+                                               docs/acceptance/v0.3-code-audit-final.md
+V0.4    Plot / Recorder / Replay ............  READY TO START — the audit gate is discharged;
+                                               first step V0.4-00 Development Environment Preflight
 ```
 
 What each phase added is in §7 (capability matrix) and §8 (architecture). V0.3-07 preceded
@@ -753,11 +766,13 @@ Just CLOSED — V0.3-FINAL, and with it V0.3 as a version
   Full record: docs/acceptance/v0.3-final.md §16.
 
 V0.3-CODE-AUDIT — V0.1–V0.3 Full Repository Code Audit
-  EXECUTED · independent verdict: **REMEDIATION REQUIRED** (P0: 0 · 5 fix groups). A maintenance /
-  qualification gate, not a product milestone and **not** a PRD roadmap entry — V0.4 in the PRD
-  remains Plot / Recorder / Replay.
+  EXECUTED · independent verdict round 1: REMEDIATION REQUIRED (P0: 0 · 5 fix groups) → remediated
+  (five fix groups + the round-2 P1) → **independent verdict: PASS · P0 0 · P1 0 · Status: CLOSED**
+  after protected integration (PR #28 · merge fd27987 · post-merge main CI 35445612326 SUCCESS).
+  A maintenance / qualification gate, not a product milestone and **not** a PRD roadmap entry —
+  V0.4 in the PRD remains Plot / Recorder / Replay.
 
-V0.3-CODE-AUDIT REMEDIATION SPRINT — IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
+V0.3-CODE-AUDIT REMEDIATION SPRINT — ACCEPTED · INTEGRATED · CLOSED
   Closes all five fix groups on `fix/v0.3-code-audit-remediation`: one Main Agent + three Sub-Agents,
   each on its own branch and worktree with a validated TaskContract (`.agent/tasks/AUDIT-FIX-*.json`),
   serial integration, round-2 cross-review, then the full gate set. Per-finding detail, the
@@ -799,11 +814,31 @@ V0.3-CODE-AUDIT REMEDIATION SPRINT — IMPLEMENTED · SELF-VERIFIED · AWAITING 
   **7 passed** against a sidecar rebuilt from the round-2 tree. Round-2 commits `5b536bc` (runtime
   work set) · `4186fc4` (desktop partition and decode client) · `35c8d21` (measurement and packaged
   round trip); per-finding detail in `docs/acceptance/v0.3-code-audit-remediation.md` §9.
-  No Final Acceptance is claimed here — that verdict is external.
+  The Final Acceptance verdict recorded below is external — given by the independent reviewer on the
+  accepted head. This repository records it; it does not grant it, and no CI run can produce it.
+  ── Independent acceptance and protected integration ────────────────────────────────────────
+    V0.3-CODE-AUDIT = **PASS** · P0 0 · P1 0. Provenance: independent reviewer; the repository holds
+    no GitHub Review artifact for it.
+    Accepted head `da3cf87` · PR **#28** · merge method **merge commit** · protected merge
+    `fd27987d5e6db3e74176c46673ca3d58cb2ab704` (parents `42e8250` + `da3cf87`) · no bypass · no
+    break-glass · ruleset `main-protected-integration` (23600372) unmodified and still active. The
+    accepted head is an ancestor of the post-merge `main` and is the merge commit's second parent.
+    PR-head CI `35444987994` SUCCESS — Change Classification · Runtime / Python ·
+    Frontend / TypeScript · Quality Gate; Desktop System / Rust **authorised skip** (recorded as a
+    skip, never as an executed PASS).
+    Post-merge main CI `35445612326` SUCCESS on `fd27987` — classifier `runtime+frontend`,
+    `full_required: false`, `rust_required: false` (which is what makes the Rust skip authorised),
+    `unmatched: []`.
+    Full closeout record: `docs/acceptance/v0.3-code-audit-final.md`.
 
-V0.4 — NOT STARTED. The V0.3-CODE-AUDIT returned REMEDIATION REQUIRED, not PASS; whether these five
-fixes discharge it is an independent verdict, and V0.4 does not open on an author's own conclusion.
-NOT STARTED: CD-01.
+V0.4 — READY TO START. The V0.3-CODE-AUDIT returned REMEDIATION REQUIRED, not PASS; the remediation
+was then independently accepted (`PASS · P0 0 · P1 0`) and integrated by protected merge `fd27987`,
+so the gate that held V0.4 back is discharged by an external verdict rather than by an author's own
+conclusion. First step: **V0.4-00 — Development Environment Preflight**. Execution model from V0.4:
+one Main Agent + three Sub-Agents, parallel development, serial integration, across Track A
+(Recorder), Track B (Plot) and Track C (Offline Replay); the wave plan is recorded in
+`docs/acceptance/v0.3-code-audit-final.md` §10 and is **not** implemented by this closeout.
+NOT STARTED: CD-01. No V0.4 product code exists on this tree.
 The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
 cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
@@ -846,8 +881,13 @@ docs/acceptance/v0.3-final.md   V0.3-FINAL — the version-level regression evid
 docs/acceptance/v0.3-code-audit-remediation.md   V0.3-CODE-AUDIT REMEDIATION — the five fix groups the
     independent audit required, each with its before/after, its real test evidence, the DBC hot-path
     benchmark tables, the serial-integration and cross-review record (including the review's own
-    findings about itself), and the residual / NOT VERIFIED list.
-    IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
+    findings about itself), and the residual / NOT VERIFIED list. §9 is round 2 (the last P1).
+    ACCEPTED · INTEGRATED · CLOSED — see the final record below
+docs/acceptance/v0.3-code-audit-final.md   V0.3-CODE-AUDIT — FINAL CLOSEOUT. The accepted PR (#28),
+    the accepted head, the PR-head CI, the truth-surface correction, the protected merge and its
+    ancestor verification, the post-merge main CI with the classifier's own output, the five
+    findings, the residual P2 carried to V0.4-00, the evidence separation and the V0.4 execution
+    model with its wave plan. PASS · CLOSED (independent verdict, recorded not granted)
 docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md   RELIABILITY-01 record (§19)
 docs/CONTEXT_INDEX.md · docs/engineering/AGENT_CONTEXT_GOVERNANCE.md   context routing + layers
 .github/workflows/ci.yml · docs/engineering/INTEGRATION_POLICY.md   CI baseline §14 + policy §15
