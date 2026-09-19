@@ -77,11 +77,28 @@ interface ImportState {
 
 const IDLE: ImportNotice = { kind: "idle" };
 
-export function DbcImportControl() {
+export interface DbcImportControlProps {
+  /**
+   * The project to import into.
+   *
+   * Given, it wins; omitted, the workspace session's opened project supplies it. The
+   * override exists so the control embedded in a panel can be told the panel's project
+   * explicitly rather than reading a second, possibly different one — the DBC workspace
+   * may itself be rendered with an explicit `projectPath` and no session above it, and a
+   * control that insisted on the session would then disable itself beside a populated
+   * asset list.
+   */
+  readonly projectPath?: string | null;
+}
+
+export function DbcImportControl({ projectPath: explicitPath }: DbcImportControlProps = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const session = useWorkspaceSession();
-  const projectPath = session.openedProject?.projectPath ?? null;
+  const projectPath =
+    explicitPath !== undefined
+      ? explicitPath
+      : (session.openedProject?.projectPath ?? null);
 
   const [state, setState] = useState<ImportState>({ projectPath, notice: IDLE });
   const [pending, setPending] = useState(false);

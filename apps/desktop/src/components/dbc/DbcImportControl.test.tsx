@@ -81,8 +81,16 @@ function renderControl(
   const view = render(
     <QueryClientProvider client={client}>
       <WorkspaceSessionProvider store={session}>
-        <DbcImportControl />
-        {options.withList === true ? <DbcWorkspace projectPath={projectPath} /> : null}
+        {/* Integrated composition (V0.3-13): the DBC workspace renders the import
+            control itself, so the two are rendered together only by rendering the
+            workspace — rendering both would put two Import actions on the page and
+            prove nothing about either. The bare control is still rendered alone for
+            the cases that are about the control's own contract. */}
+        {options.withList === true ? (
+          <DbcWorkspace projectPath={projectPath} />
+        ) : (
+          <DbcImportControl />
+        )}
       </WorkspaceSessionProvider>
     </QueryClientProvider>,
   );
