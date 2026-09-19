@@ -6,9 +6,12 @@
 > Status: CLOSED after protected integration: accepted head 6edac09, PR #16, merge 11d362e,
 > post-merge FULL main CI 35370751537 SUCCESS. DOC-GOV-01 — Documentation & Agent Context
 > Governance — Final Acceptance: PASS · Status: CLOSED. **V0.3-12 — Desktop Project Open
-> Foundation — IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**, delivered
-> together with the **first real AGENT-02 native pilot**: 1 Main Agent + 3 native Tianshu
-> workers EXECUTED and self-verified on the same branch.)
+> Foundation — Final Acceptance: PASS · Status: CLOSED** after protected integration: accepted
+> head 37e8d76, PR #20, merge 19575a47, bypass_actors none, post-merge main CI 35425046157
+> SUCCESS on attempt 2 — attempt 1 failed on a pre-existing intermittent recorder-cleanup test,
+> recorded not smoothed over; see §12. Delivered together with the **first real AGENT-02 native
+> pilot** — 1 Main Agent + 3 native Tianshu workers — also **PASS · CLOSED**. The verdict is the
+> project owner's; its provenance is stated in `docs/acceptance/v0.3-12-…md` §12.1.)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -150,12 +153,14 @@ Do not swap these without a SPEC change.
 
 ```text
 Current Phase:  V0.3 — Professional Trace & DBC Foundation
-Latest CLOSED numbered step:    V0.3-11 — Project Runtime Read Model API Foundation   PASS · CLOSED
-Previous CLOSED numbered step:  V0.3-10 — Read-Only DBC Workspace UI Foundation      PASS · CLOSED
-Current numbered step:          V0.3-12 — Desktop Project Open Foundation
-                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
-                                branch feature/v0.3-12-desktop-project-open-foundation, from
-                                main 451352f · evidence docs/acceptance/v0.3-12-…md
+Latest CLOSED numbered step:    V0.3-12 — Desktop Project Open Foundation             PASS · CLOSED
+Previous CLOSED numbered step:  V0.3-11 — Project Runtime Read Model API Foundation   PASS · CLOSED
+Current numbered step:          V0.3-13 — Project & DBC Workspace Product Integration
+                                READY TO START · NOT STARTED — a phase begins only on its
+                                own explicit brief; closing V0.3-12 does not start it
+                                V0.3-12 integration: accepted head 37e8d76 · PR #20 ·
+                                protected merge 19575a47 · evidence docs/acceptance/v0.3-12-…md
+                                (§12: verdict, provenance, post-merge CI attempts)
 
 Closed engineering infrastructure (not numbered product phases) — independently accepted, CLOSED:
   Maintenance CI-01   Continuous Integration Baseline Foundation .............. §14
@@ -171,9 +176,9 @@ Closed engineering infrastructure (not numbered product phases) — independentl
                       PASS · CLOSED (external acceptance, head cd44abc → main d652b4c)
   AGENT-02-NATIVE-HARNESS-PIVOT  Native Tianshu Harness Orchestration ....... §12
                       PASS · CLOSED (external acceptance, head cd44abc → main d652b4c)
-                      Real AGENT-02 pilot: **EXECUTED**, self-verified, awaiting independent
-                      acceptance · V0.3-12: **IMPLEMENTED**, awaiting independent acceptance
-                      (both: docs/acceptance/v0.3-12-…md, §20)
+                      Real AGENT-02 pilot: **PASS · CLOSED** (1 Main + 3 native workers)
+                      · V0.3-12: **PASS · CLOSED** — verdict by the project owner; provenance
+                      and integration evidence in docs/acceptance/v0.3-12-…md §12.1–§12.2
 ```
 
 Closed-phase ledger — accepted heads, merges and post-merge CI, kept for traceability (full
@@ -183,6 +188,10 @@ narrative in the archive, §13):
 Phase           Verdict                        Accepted head / merge / post-merge CI
 V0.3-10         PASS · CLOSED (independent)    evidence docs/acceptance/v0.3-10-…md
 V0.3-11         PASS · CLOSED (independent)    post-fix regression on a18a4f3; evidence v0.3-11-…md
+V0.3-12         PASS · CLOSED (project owner)  head 37e8d76; PR #20 → main 19575a47 (merge commit,
+                                               bypass_actors none); post-merge main CI 35425046157
+                                               attempt 2 green — attempt 1 red on a pre-existing
+                                               intermittent recorder-cleanup test, still open
 CI-01           PASS · CLOSED (independent)    run IDs in §14
 CI-02           PASS · CLOSED (independent)    ruleset main-protected-integration (23600372), active
 SAFETY-01       PASS · CLOSED (independent)    main c05debf9; post-merge main CI 35295673078 green
@@ -441,19 +450,26 @@ this document it must attribute it, and must not present its own conclusion as t
 ## 12. Immediate Next Action
 
 ```text
-Just DELIVERED — V0.3-12, Desktop Project Open Foundation
-  Developer status: IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE · NOT MERGED
-  Branch feature/v0.3-12-desktop-project-open-foundation (from main 451352f). No `Final
-  Acceptance: PASS` is claimed. Evidence: docs/acceptance/v0.3-12-desktop-project-open-foundation.md
+Just CLOSED — V0.3-12, Desktop Project Open Foundation
+  Final Acceptance: PASS · Status: CLOSED — the project owner's verdict; its provenance is stated
+  rather than implied: docs/acceptance/v0.3-12-desktop-project-open-foundation.md §12.1.
+  Accepted head 37e8d769b774381a18d611f1593900cb97e260be · PR #20 · protected merge commit
+  19575a47606b86ebbc0bbdecee77918c17aaa3f2 (merge method merge commit; no bypass; ruleset
+  unmodified; the ruleset declares bypass_actors none, so no actor could have bypassed).
+  PR-head CI 35423447650 SUCCESS. Post-merge main CI 35425046157: attempt 1 FAILED on
+  tests/integration/test_recorder_cleanup_timeout.py — a pre-existing, unfixed intermittent
+  class, not a V0.3-12 regression — attempt 2 SUCCESS (2790 passed, 6 skipped; five jobs green).
+  Both attempts are on the record; the derivation is in §12.2 of the evidence file.
 
-Also DELIVERED — AGENT-02, the first real native multi-agent pilot
-  Developer status: EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
+Also CLOSED — AGENT-02, the first real native multi-agent pilot
+  Final Acceptance: PASS · Status: CLOSED — the same project-owner provenance (§12.1)
   1 Main Agent + 3 native Tianshu workers (native default maxWorkers = 3, NOT reconfigured).
   Filesystem model MEASURED, not assumed: SHARED worktree — no per-worker worktree appeared.
   FIRST-RUN active-execution overlap: NOT VERIFIED — the "302 s of verified three-worker
   concurrency" figure counted working-tree presence, not workers executing, and is WITHDRAWN.
-  Instrumented rerun: max simultaneously active workers = 3; strict verified three-way overlap
-  25 s (114 s only as the conditional reading in which one 67 s gap is one long tool call).
+  Instrumented rerun: max simultaneously active workers = 3; longest strict three-way overlap
+  25 s, over two strict intervals of 22 s and 25 s (47 s in total; 114 s only as the conditional
+  reading in which one 67 s gap is one long tool call).
   Recomputed from the committed evidence at .agent/telemetry/v0.3-12-concurrency-rerun.json.
   Ownership re-derived from Git: overlap NONE,
   forbidden-path violations NONE, every touched path classifies C1. Same evidence file.
@@ -525,11 +541,14 @@ Architecture in force — native orchestration boundary:
                     Git evidence · stale-base protection · Quality Gate · protected integration ·
                     independent acceptance boundary
 
-Immediate next engineering task — none. AGENT-02's real native-harness pilot has been EXECUTED.
-  Status: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. The pilot's own
-  governance closure — the native execution mode, the three real handoffs and their
+Immediate next engineering task — V0.3-13, Project & DBC Workspace Product Integration.
+  Status: **READY TO START · NOT STARTED** — closing V0.3-12 does not begin it; a phase starts
+  only on its own explicit brief, and none was issued in this round.
+  AGENT-02's real native-harness pilot has been INTEGRATED and CLOSED.
+  Final Acceptance: PASS · Status: CLOSED (project-owner verdict; provenance §12.1). The pilot's
+  own governance closure — the native execution mode, the three real handoffs and their
   integration verdicts, and the concurrency evidence — is addressed by **V0.3-12-FIX-1** and
-  its independent-acceptance follow-up **V0.3-12-FIX-2** on the same branch. It ran
+  its follow-up **V0.3-12-FIX-2**, both on the same branch, both integrated by PR #20. It ran
   **1 Main Agent + 3 native Tianshu
   workers** — the host's default worker concurrency, NOT the `1 + 2` this plan originally
   designed, and the Harness concurrency configuration was not modified. The executed-run record
@@ -546,13 +565,12 @@ Immediate next engineering task — none. AGENT-02's real native-harness pilot h
   docs/engineering/INTEGRATION_POLICY.md, docs/engineering/AGENT_02_READINESS.md,
   docs/engineering/AGENT_02_PILOT_PLAN.md.
 
-AWAITING INDEPENDENT ACCEPTANCE: V0.3-12 · V0.3-12-FIX-2 · AGENT-02 (real pilot).
-NOT STARTED: CD-01.
-Neither V0.3-12 nor the pilot is CLOSED, and no `Final Acceptance: PASS` is claimed for either —
-an independent reviewer decides both, on a protected merge with a green Quality Gate. The
-V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface cleanup)
-carries the same status: `IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE`, on
-`feature/v0.3-12-desktop-project-open-foundation`.
+CLOSED: V0.3-12 · V0.3-12-FIX-2 · AGENT-02 (real pilot) — all three by project-owner verdict on
+the protected integration recorded above; `docs/acceptance/v0.3-12-…md` §12.1 states the
+provenance explicitly, because the repository holds no independent-review artifact for it.
+NOT STARTED: V0.3-13 (READY TO START — brief not issued) · CD-01.
+The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
+cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.
 Closing a phase does not begin the next one; the next phase must arrive as its own explicit brief.
 ```
 
@@ -574,7 +592,8 @@ docs/project-state/README.md · docs/acceptance/README.md   archive + acceptance
 docs/acceptance/v0.3-10-…md · docs/acceptance/v0.3-11-…md   phase evidence — PASS · CLOSED
     (V0.3-11 keeps its initial NOT PASS, V0.3-11-FINAL and FINAL-2 unedited)
 docs/acceptance/v0.3-12-desktop-project-open-foundation.md   V0.3-12 + the first real AGENT-02
-    native pilot — IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
+    native pilot — PASS · CLOSED (verdict, provenance and protected-integration record in §12;
+    §1–§11 preserved as the rounds as they stood)
 docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md   RELIABILITY-01 record (§19)
 docs/CONTEXT_INDEX.md · docs/engineering/AGENT_CONTEXT_GOVERNANCE.md   context routing + layers
 .github/workflows/ci.yml · docs/engineering/INTEGRATION_POLICY.md   CI baseline §14 + policy §15
@@ -764,8 +783,9 @@ product capability.
 on head `2eab62bfc53867f44996dafc08c32b84fabea7fd` (P0: 0, P1: 0, P2: 0) · merged to `main` as
 `951e20272211d2fd3934f4c67063985d64229d7a` through protected PR #7 · post-merge `main` CI run
 `35315019912` green · **Final Acceptance: PASS · Status: CLOSED**. Real AGENT-02 pilot:
-**EXECUTED** — 1 Main Agent + 3 native workers, self-verified and awaiting independent
-acceptance (`docs/acceptance/v0.3-12-desktop-project-open-foundation.md`).
+**PASS · CLOSED** — 1 Main Agent + 3 native workers, integrated by PR #20 (protected merge
+`19575a47`); verdict provenance in
+`docs/acceptance/v0.3-12-desktop-project-open-foundation.md` §12.
 
 **What exists:** `.agent/` (task + handoff JSON schemas, examples, Main-Agent and Sub-Agent prompt
 templates, `handoffs/`, `config.json`), `tools/agent/` (standard-library-only enforcement tooling),

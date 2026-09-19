@@ -3,8 +3,11 @@
 > **Document**: `docs/engineering/AGENT_02_PILOT_PLAN.md`
 > **Scope**: The first **real** Main Agent + worker pilot — workload, execution mode, ownership,
 > conflicts, isolation, tests, integration order, failure recovery, acceptance boundary.
-> **Status**: **EXECUTED — the first real pilot — · SELF-VERIFIED · AWAITING INDEPENDENT
-> ACCEPTANCE**. The design below is preserved as the plan it was. The run is recorded in **§15**,
+> **Status**: **PASS · CLOSED** — the first real pilot ran, was integrated by PR #20 (protected
+> merge `19575a47`) and accepted by the project owner; the verdict's provenance is recorded in
+> `docs/acceptance/v0.3-12-desktop-project-open-foundation.md` §12.1. Before that verdict the
+> status read `EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE`. The design below is
+> preserved as the plan it was. The run is recorded in **§15**,
 > and it used **1 Main Agent + 3 native Tianshu workers** — not the `1 + 2` this design assumed,
 > because the host's native default worker concurrency is 3 and the pilot's purpose was to
 > validate that default rather than a reconfigured harness.
@@ -323,9 +326,10 @@ long-running pilot may also test long-duration context endurance; that endurance
 
 ## 15. Pilot execution record — the first real run
 
-> Status: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. Not `PASS`, not
-> `CLOSED` — those are the independent reviewer's words to write. Full evidence:
-> `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`.
+> Status at the time: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. Since
+> superseded: the pilot is **`PASS · CLOSED`** (protected merge `19575a47`, PR #20), with the
+> verdict's provenance in `docs/acceptance/v0.3-12-desktop-project-open-foundation.md` §12.1.
+> Full evidence: `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`.
 
 The pilot ran against **V0.3-12**, on `feature/v0.3-12-desktop-project-open-foundation` from
 `main` `451352f`, with three workers instead of the two this design assumed.
