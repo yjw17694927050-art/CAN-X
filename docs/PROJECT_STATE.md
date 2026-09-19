@@ -26,7 +26,10 @@
 > (P0 0 · P1 3 · P2 0); round 2, after V0.3-14-FIX-1, returned **PASS · P0 0 · P1 0 · P2 0**.
 > Verdict source: project owner / independent reviewer (external acceptance conversation) — the
 > repository holds **no** GitHub Review artifact for it. Full record:
-> `docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md` §9.)
+> `docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md` §9. **V0.3-FINAL — Full
+> Regression / Integration / Independent Acceptance / Version Closure — IMPLEMENTED ·
+> SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**; **V0.3 is NOT YET CLOSED**. Evidence:
+> `docs/acceptance/v0.3-final.md`.)
 > **Current Phase**: V0.3 — Professional Trace & DBC Foundation
 > **Owner**: CAN-X sole author · **Model**: Document-Driven Development
 
@@ -176,14 +179,17 @@ Previous CLOSED numbered step:  V0.3-13 — Project & DBC Workspace Product Inte
 Previous CLOSED numbered step:  V0.3-12 — Desktop Project Open Foundation             PASS · CLOSED
 Current numbered step:          V0.3-FINAL — Full Regression / Integration / Independent
                                 Acceptance / Version Closure
-                                READY TO START · NOT STARTED — V0.3's last quality gate. It asks
-                                whether the whole V0.3 product on main can be closed as one
-                                complete, internally consistent, runnable version; it adds no
-                                product capability and closes nothing by itself
-                                starts from origin/main 14fd38d (the V0.3-14 closeout)
+                                IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE —
+                                V0.3's last quality gate. It asks whether the whole V0.3 product on
+                                main can be closed as one complete, internally consistent, runnable
+                                version; it added no product capability and closes nothing by itself
+                                V0.3-FINAL base V0_3_FINAL_BASE_SHA = ac9742f (the V0.3-14 closeout)
+                                branch docs/v0.3-final-full-regression · evidence
+                                docs/acceptance/v0.3-final.md · V0.3 NOT YET CLOSED
                                 V0.3-14 integration: accepted head a10d760 · PR #24 · protected
                                 merge 14fd38d · post-merge main CI 35434232483 SUCCESS ·
-                                evidence docs/acceptance/v0.3-14-…md §9
+                                closeout PR #25 → merge ac9742f · post-closeout main CI 35434708031
+                                SUCCESS · evidence docs/acceptance/v0.3-14-…md §9
 
 Closed engineering infrastructure (not numbered product phases) — independently accepted, CLOSED:
   Maintenance CI-01   Continuous Integration Baseline Foundation .............. §14
@@ -244,8 +250,8 @@ remediation is preserved verbatim in the archive (§13).
 ## 6. Completed Phase Summary
 
 All numbered phases V0.1 → V0.3-14 are CLOSED. V0.3-FINAL — Full Regression / Integration /
-Independent Acceptance / Version Closure — is READY TO START · NOT STARTED, so **V0.3 itself is not
-yet closed**. Full detail: V0.1 →
+Independent Acceptance / Version Closure — is IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT
+ACCEPTANCE, so **V0.3 itself is not yet closed**. Full detail: V0.1 →
 V0.3-09 in
 `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_V0.3-09.md`; V0.3-10 onward in `docs/acceptance/`;
 maintenance-phase narrative in `docs/project-state/PROJECT_STATE_ARCHIVE_THROUGH_RELIABILITY-01.md`.
@@ -277,8 +283,10 @@ V0.3-14 Live DBC Decode, Trace & Plot
                                                P1 3 · P2 0) — see §5
 V0.3-FINAL Full Regression / Integration /
         Independent Acceptance / Version
-        Closure .............................. READY TO START · NOT STARTED — the last quality gate
-                                               before V0.3 can be closed as a version
+        Closure .............................. IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT
+                                               ACCEPTANCE — the last quality gate before V0.3 can be
+                                               closed as a version; evidence
+                                               docs/acceptance/v0.3-final.md
 ```
 
 What each phase added is in §7 (capability matrix) and §8 (architecture). V0.3-07 preceded
@@ -420,7 +428,13 @@ Still in force — do not silently drop these when reading only history.
 ```text
 real CAN hardware (Vector/PCAN/Kvaser/ZLG)     NOT VERIFIED
 macOS real-machine validation                  NOT VERIFIED
-windowed desktop launch                        NOT VERIFIED (from V0.1.1)
+windowed desktop launch                        OBSERVED (V0.3-FINAL) — the app process, its WebView2
+                                               (user-data-dir engineering.canx.desktop) and the
+                                               Runtime it spawned were all observed running and
+                                               connected. The webview's **own pixels** are not
+                                               captured (no screen capture here), so pixel-level
+                                               rendering stays NOT VERIFIED; and the documented
+                                               `pnpm tauri dev` still cannot start it (P2, §12)
 realtime/UI latency                            PARTIAL (worker decode measured; UI latency NOT VERIFIED)
 10–50 GB engineering dataset                   NOT VERIFIED
 real CAN TX safety (SAFETY-01)                 NOT VERIFIED — no TX path exists
@@ -686,10 +700,16 @@ Just CLOSED — V0.3-14, Live DBC Decode, Trace & Plot Integration (the last pro
   V0.3-14-FIX-1, §9 round 2 and the protected integration).
 
 Next — V0.3-FINAL, Full Regression / Integration / Independent Acceptance / Version Closure
-  READY TO START · NOT STARTED. It starts from origin/main 14fd38d and is V0.3's last quality gate:
-  it asks whether the whole V0.3 product on main can be closed as one complete, internally
-  consistent, runnable version. It adds no product capability, and a product defect found there
-  stops the phase and is reported rather than quietly fixed.
+  IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE. It starts from
+  origin/main ac9742f (V0_3_FINAL_BASE_SHA) and is V0.3's last quality gate: it asks whether the
+  whole V0.3 product on main can be closed as one complete, internally consistent, runnable
+  version. It added no product capability. All self-verification gates passed — Runtime 2795 passed
+  / 1 skipped · ruff · mypy 98 files · Frontend 31 files / 482 tests · lint / typecheck / build ·
+  Rust 42 + 3 with the real sidecar · workflow_dispatch FULL CI 35434770352 (all three domain jobs
+  green) · a live packaged-runtime decode-batch round trip · a real desktop run with the Runtime it
+  spawned. One P2 finding is recorded and deliberately **not** repaired: `pnpm tauri dev` cannot
+  start the desktop because vite.config.ts never binds the port tauri.conf.json declares (port
+  1420). Evidence, findings and the NOT VERIFIED list: docs/acceptance/v0.3-final.md.
 NOT STARTED: CD-01.
 The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
 cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.
@@ -723,6 +743,12 @@ docs/acceptance/v0.3-14-live-dbc-decode-trace-plot-integration.md   V0.3-14 — 
     (round 2, P0 0 · P1 0 · P2 0 over the protected merge 14fd38d); round 1's NOT PASS, all three
     P1 findings and V0.3-14-FIX-1 preserved unedited; §9 carries the round-2 verdict provenance, the
     protected-integration record and the post-merge main CI result
+docs/acceptance/v0.3-final.md   V0.3-FINAL — the version-level regression evidence: the exact
+    baseline SHA, the V0.3-14 integration record, Runtime / Frontend / Rust full gates, the
+    workflow_dispatch FULL CI, the live packaged-runtime decode-batch round trip with its mutation
+    proof, the real desktop run and virtual-CAN observation, per-domain regression coverage, the
+    current-truth audit, the V0.3 scope audit, the P2 finding and the NOT VERIFIED list.
+    IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE — the verdict is not in this file
 docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md   RELIABILITY-01 record (§19)
 docs/CONTEXT_INDEX.md · docs/engineering/AGENT_CONTEXT_GOVERNANCE.md   context routing + layers
 .github/workflows/ci.yml · docs/engineering/INTEGRATION_POLICY.md   CI baseline §14 + policy §15
@@ -783,9 +809,10 @@ Rules and evidence: `docs/engineering/CI_TIERED_QUALITY_GATE.md`. The ~90 % redu
 the **docs-only** case only: Runtime-only, Frontend-only and Rust-only routings have no real GitHub
 Actions benchmark, and no speed-up is claimed for them.
 
-**What CI does not establish** — see §9. `tests/integration/test_packaged_runtime_smoke.py` (6 tests)
+**What CI does not establish** — see §9. `tests/integration/test_packaged_runtime_smoke.py` (7 tests)
 skips on CI (no packaged `canx-runtime.exe` staged) and runs locally after
-`scripts\package-windows.cmd`.
+`scripts\package-windows.cmd`. V0.3-FINAL added the seventh — a live assertion of the whole
+decode-batch envelope against the packaged executable.
 
 ---
 
