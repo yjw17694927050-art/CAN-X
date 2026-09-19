@@ -345,11 +345,15 @@ audit durability across restart / tamper
 external execution atomic with the decision    NOT IMPLEMENTED — the kernel's lock covers only
                                                its own state
 multi-agent behaviour at real scale            PARTIAL — the first real AGENT-02 pilot ran
-                                               (1 Main + 3 native workers); the V0.3-12-FIX-1
-                                               section of
-                                               docs/acceptance/v0.3-12-desktop-project-open-foundation.md
-                                               carries the measured concurrency evidence;
-                                               scale beyond 1 + 3 and long-duration context
+                                               (1 Main + 3 native workers). Per-worker
+                                               active-execution overlap of the FIRST run is
+                                               NOT VERIFIED (the "302 s" working-tree-presence
+                                               figure is withdrawn); the instrumented rerun
+                                               measured max simultaneously active workers = 3
+                                               and a strict three-way overlap of 25 s, and is
+                                               recomputable from committed evidence at
+                                               .agent/telemetry/v0.3-12-concurrency-rerun.json.
+                                               Scale beyond 1 + 3 and long-duration context
                                                endurance stay NOT VERIFIED
 ruleset strict_required_status_checks_policy   false — recorded gap (ADR-0002 alt. A)
 ```
@@ -446,7 +450,12 @@ Also DELIVERED — AGENT-02, the first real native multi-agent pilot
   Developer status: EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
   1 Main Agent + 3 native Tianshu workers (native default maxWorkers = 3, NOT reconfigured).
   Filesystem model MEASURED, not assumed: SHARED worktree — no per-worker worktree appeared.
-  302 s of verified three-worker concurrency. Ownership re-derived from Git: overlap NONE,
+  FIRST-RUN active-execution overlap: NOT VERIFIED — the "302 s of verified three-worker
+  concurrency" figure counted working-tree presence, not workers executing, and is WITHDRAWN.
+  Instrumented rerun: max simultaneously active workers = 3; strict verified three-way overlap
+  25 s (114 s only as the conditional reading in which one 67 s gap is one long tool call).
+  Recomputed from the committed evidence at .agent/telemetry/v0.3-12-concurrency-rerun.json.
+  Ownership re-derived from Git: overlap NONE,
   forbidden-path violations NONE, every touched path classifies C1. Same evidence file.
 
 Earlier CLOSED — CI-03, Change-Aware Tiered Quality Gate
@@ -519,8 +528,9 @@ Architecture in force — native orchestration boundary:
 Immediate next engineering task — none. AGENT-02's real native-harness pilot has been EXECUTED.
   Status: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. The pilot's own
   governance closure — the native execution mode, the three real handoffs and their
-  integration verdicts, and the concurrency evidence — is addressed by **V0.3-12-FIX-1** on
-  the same branch. It ran **1 Main Agent + 3 native Tianshu
+  integration verdicts, and the concurrency evidence — is addressed by **V0.3-12-FIX-1** and
+  its independent-acceptance follow-up **V0.3-12-FIX-2** on the same branch. It ran
+  **1 Main Agent + 3 native Tianshu
   workers** — the host's default worker concurrency, NOT the `1 + 2` this plan originally
   designed, and the Harness concurrency configuration was not modified. The executed-run record
   is `docs/engineering/AGENT_02_PILOT_PLAN.md` §15; the evidence is
