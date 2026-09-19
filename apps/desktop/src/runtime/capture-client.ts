@@ -1,38 +1,74 @@
-const RUNTIME_URL = "http://127.0.0.1:8765";
+/**
+ * The capture control plane — the two calls that turn the virtual source on and off.
+ *
+ * ```text
+ *   startVirtualCapture()  POST /capture/start  → true   we started it; somebody must stop it
+ *                                              → false  the Runtime answered
+ *                                                       `capture.already_running`: a capture
+ *                                                       exists that we did not begin
+ *   stopCapture()          POST /capture/stop   → void
+ * ```
+ *
+ * Both calls go through the shared Runtime transport floor (`./runtime-http`), which owns
+ * the base URL, `fetch`, the five-field error envelope and the transport-versus-contract
+ * split. What stays here is only what is this endpoint's own: the URL paths, the request
+ * body, and the one piece of capture-specific meaning — that
+ * `capture.already_running` means "attach, do not own" rather than "failed".
+ */
 
-interface RuntimeErrorPayload {
-  readonly code?: unknown;
-  readonly message?: unknown;
-}
+import {
+  RUNTIME_URL,
+  RuntimeDbcApiError,
+  readResponse,
+  runtimeFetch,
+} from "./runtime-http";
 
-async function requireSuccess(response: Response): Promise<void> {
-  if (response.ok) return;
-  let payload: RuntimeErrorPayload = {};
-  try {
-    payload = (await response.json()) as RuntimeErrorPayload;
-  } catch {
-    // The HTTP status remains diagnostic when a non-JSON proxy response is returned.
-  }
-  const code = typeof payload.code === "string" ? payload.code : `http.${response.status}`;
-  const message = typeof payload.message === "string" ? payload.message : response.statusText;
-  throw new Error(`${code}: ${message}`);
-}
+const CAPTURE_START_PATH = "/capture/start";
+const CAPTURE_STOP_PATH = "/capture/stop";
 
+/**
+ * The Runtime's own code for "a capture is already running".
+ *
+ * Branched on instead of the 409 status it happens to arrive with: the status is how the
+ * contract is delivered, the code is what it means, and a client keyed on the status
+ * would read every future 409 as "already running" too.
+ */
+const CAPTURE_ALREADY_RUNNING = "capture.already_running";
+
+/**
+ * Start the deterministic V0.1 source.
+ *
+ * Returns `true` when this caller started the capture and therefore owns stopping it, and
+ * `false` when the Runtime reported one already running. Every other outcome — an
+ * unreachable Runtime, a non-2xx answer, an unreadable failure — is raised as the shared
+ * boundary's own failure type rather than reduced to a boolean, because "I could not ask"
+ * and "somebody is already capturing" are not the same answer.
+ */
 export async function startVirtualCapture(): Promise<boolean> {
-  const response = await fetch(`${RUNTIME_URL}/capture/start`, {
-    body: JSON.stringify({ batch_size: 250, channel_count: 1, is_fd: false, rate_hz: 1_000, seed: 1 }),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  });
-  if (response.status === 409) {
-    const payload = (await response.json()) as RuntimeErrorPayload;
-    if (payload.code === "capture.already_running") return false;
+  try {
+    await readResponse(
+      await runtimeFetch(`${RUNTIME_URL}${CAPTURE_START_PATH}`, {
+        body: JSON.stringify({
+          batch_size: 250,
+          channel_count: 1,
+          is_fd: false,
+          rate_hz: 1_000,
+          seed: 1,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      }),
+    );
+    return true;
+  } catch (cause: unknown) {
+    if (cause instanceof RuntimeDbcApiError && cause.code === CAPTURE_ALREADY_RUNNING) {
+      return false;
+    }
+    throw cause;
   }
-  await requireSuccess(response);
-  return true;
 }
 
+/** Stop the capture. Idempotent on the Runtime side; a failure is raised, never swallowed. */
 export async function stopCapture(): Promise<void> {
-  const response = await fetch(`${RUNTIME_URL}/capture/stop`, { method: "POST" });
-  await requireSuccess(response);
+  await readResponse(await runtimeFetch(`${RUNTIME_URL}${CAPTURE_STOP_PATH}`, { method: "POST" }));
 }
