@@ -102,6 +102,29 @@ class RepositoryEvidence:
         }
 
 
+def declared_coordinates(task: TaskContract) -> tuple[str, str]:
+    """The ``(branch, worktree)`` an **isolated** task declares (V0.3-12-FIX-1).
+
+    Only an ``isolated-worktree`` task has them: the parser refuses a
+    native-shared task that declares either, and a native-shared delivery is
+    collected by :func:`_collect_native_shared` before any of this runs. Raising
+    rather than defaulting is deliberate — a missing coordinate must never be
+    able to look like a valid one, and the type checker narrowing falls out of
+    the same guard instead of a cast.
+    """
+    if task.branch is None or task.worktree is None:
+        raise WorktreeConflictError(
+            "an isolated task must declare both a branch and a worktree",
+            details={
+                "task_id": task.task_id,
+                "execution_mode": str(task.execution_mode),
+                "branch": task.branch,
+                "worktree": task.worktree,
+            },
+        )
+    return task.branch, task.worktree
+
+
 def resolve_task_worktree(
     root: Path, task: TaskContract
 ) -> tuple[Path, WorktreeRecord | None]:
@@ -128,22 +151,23 @@ def resolve_task_worktree(
     worktree would make ``task.worktree`` non-authoritative, and falling back to
     the branch ref would ignore a live worktree that may hold dirty work.
     """
+    declared_branch, declared_worktree = declared_coordinates(task)
     primary_root = primary_worktree(root)
-    declared = (primary_root / task.worktree).resolve()
+    declared = (primary_root / declared_worktree).resolve()
     records = list_worktrees(primary_root)
     path_matches = [record for record in records if record.path.resolve() == declared]
-    branch_matches = [record for record in records if (record.branch or "") == task.branch]
-    exact = [
-        record for record in path_matches if (record.branch or "") == task.branch
+    branch_matches = [
+        record for record in records if (record.branch or "") == declared_branch
     ]
+    exact = [record for record in path_matches if (record.branch or "") == declared_branch]
 
     def conflict(reason: str, actual: WorktreeRecord | None) -> WorktreeConflictError:
         return WorktreeConflictError(
             reason,
             details={
                 "task_id": task.task_id,
-                "expected_branch": task.branch,
-                "expected_worktree": task.worktree,
+                "expected_branch": declared_branch,
+                "expected_worktree": declared_worktree,
                 "actual_worktree": str(actual.path) if actual is not None else None,
                 "actual_branch": actual.branch if actual is not None else None,
                 "declared_path": str(declared),
@@ -216,15 +240,15 @@ def collect_repository_evidence(
     else:
         source = SOURCE_BRANCH_REF
         worktree_path = None
-        branch = task.branch
-        head_sha = resolve_revision(task.branch, cwd=primary_root)
+        branch, declared_worktree = declared_coordinates(task)
+        head_sha = resolve_revision(branch, cwd=primary_root)
         # No task worktree is registered. ``clean`` then means "nothing is left
         # at the declared path that could hold uncommitted work": a leftover,
         # de-registered directory is treated as dirty rather than assumed clean,
         # so removing a worktree's registration cannot launder its dirty state
         # (FIX-2 §20). The declared path is never the primary root here - if it
         # were, the main worktree would have matched above.
-        declared = (primary_root / task.worktree).resolve()
+        declared = (primary_root / declared_worktree).resolve()
         clean = declared == primary_root.resolve() or not declared.exists()
         probe = primary_root
     base_sha = task.base_sha

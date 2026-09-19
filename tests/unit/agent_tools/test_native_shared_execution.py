@@ -26,11 +26,23 @@ Every refusal below is asserted on the **error code**, so a test cannot pass on
 
 from __future__ import annotations
 
-import pytest
-from agent_tools_support import config, make_handoff, make_task
+import json
 
-from tools.agent.contracts import ExecutionMode, TaskContract
+import pytest
+from agent_tools_support import (
+    BASE_SHA,
+    EXAMPLE_DIR,
+    HEAD_SHA,
+    REPO_ROOT,
+    config,
+    make_handoff,
+    make_task,
+)
+
+from tools.agent.conflicts import classify_pair
+from tools.agent.contracts import ExecutionMode, TaskContract, load_task
 from tools.agent.errors import (
+    OwnershipViolationError,
     PathInvalidError,
     ProtectedPathConflictError,
     TaskInvalidError,
@@ -210,8 +222,6 @@ def test_a_native_shared_handoff_is_not_compared_to_a_task_branch() -> None:
     """The branch relation is proved against the repository, not against a claim."""
 
     task = native_shared(required_tests=("unit",))
-    from agent_tools_support import BASE_SHA, HEAD_SHA
-
     handoff = make_handoff(
         task_id="V0.3-12-A",
         agent="sub-a",
@@ -225,10 +235,6 @@ def test_a_native_shared_handoff_is_not_compared_to_a_task_branch() -> None:
 
 
 def test_a_native_shared_handoff_still_obeys_the_ownership_surface() -> None:
-    from agent_tools_support import BASE_SHA, HEAD_SHA
-
-    from tools.agent.errors import OwnershipViolationError
-
     task = native_shared(required_tests=("unit",))
     handoff = make_handoff(
         task_id="V0.3-12-A",
@@ -246,8 +252,6 @@ def test_a_native_shared_handoff_still_obeys_the_ownership_surface() -> None:
 
 
 def test_a_native_shared_handoff_is_accepted_for_a_main_agent_integration_path() -> None:
-    from agent_tools_support import BASE_SHA, HEAD_SHA
-
     task = native_shared(
         required_tests=("unit",),
         integration_paths=("apps/desktop/src/orchestration/p.test.ts",),
@@ -290,8 +294,6 @@ def test_an_integration_path_overlapping_another_task_is_no_longer_c0() -> None:
         integration_paths=("apps/desktop/src/orchestration/p.test.ts",),
     )
 
-    from tools.agent.conflicts import classify_pair
-
     assert classify_pair(left, right, config()).level.name == "C0"
     conflict = classify_pair(overlapping, right, config())
     assert conflict.level.name != "C0", "the overlap must not be invisible"
@@ -299,13 +301,8 @@ def test_an_integration_path_overlapping_another_task_is_no_longer_c0() -> None:
 
 
 def test_the_shipped_task_schema_declares_the_execution_mode() -> None:
-    import json
-    from pathlib import Path
-
     schema = json.loads(
-        (Path(__file__).resolve().parents[3] / ".agent/schemas/task.schema.json").read_text(
-            encoding="utf-8"
-        )
+        (REPO_ROOT / ".agent/schemas/task.schema.json").read_text(encoding="utf-8")
     )
 
     assert "execution_mode" in schema["properties"]
@@ -319,9 +316,6 @@ def test_the_shipped_task_schema_declares_the_execution_mode() -> None:
 
 
 def test_every_shipped_example_still_parses_under_the_new_contract() -> None:
-    from agent_tools_support import EXAMPLE_DIR
-    from tools.agent.contracts import load_task
-
     example = load_task(EXAMPLE_DIR / "task.example.json")
 
     assert example.execution_mode is ExecutionMode.ISOLATED_WORKTREE

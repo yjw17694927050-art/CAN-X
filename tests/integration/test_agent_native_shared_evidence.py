@@ -146,7 +146,7 @@ def verdict(repo: SandboxRepository, task: TaskContract, handoff: HandoffContrac
 
 
 def test_a_native_shared_delivery_is_ready_on_a_real_commit_range(tmp_path) -> None:
-    repo, base, head, task, handoff = integration_case(tmp_path)
+    repo, _base, head, task, handoff = integration_case(tmp_path)
 
     result = verdict(repo, task, handoff, head)
 
@@ -160,7 +160,7 @@ def test_a_native_shared_delivery_is_ready_on_a_real_commit_range(tmp_path) -> N
 def test_the_delivery_evidence_is_the_commit_range_not_the_branch_tip(tmp_path) -> None:
     """A later commit on the same branch must not be attributed to this task."""
 
-    repo, base, head, task, handoff = integration_case(tmp_path)
+    repo, _base, head, task, _handoff = integration_case(tmp_path)
     repo.write(OTHER_PATH, "b = 2\n")
     repo.commit("feat: another task's work")
 
@@ -324,7 +324,7 @@ def test_no_caller_may_supply_evidence_to_the_integration_verdict() -> None:
 
 
 def test_readiness_without_a_repository_fails_closed(tmp_path) -> None:
-    repo, base, head, task, handoff = integration_case(tmp_path)
+    _repo, _base, head, task, handoff = integration_case(tmp_path)
     context = IntegrationContext.build((task,), config(), head)
 
     result = evaluate_integration(handoff, task, config(), context, repository=None)
@@ -334,7 +334,7 @@ def test_readiness_without_a_repository_fails_closed(tmp_path) -> None:
 
 
 def test_readiness_without_a_plan_fails_closed(tmp_path) -> None:
-    repo, base, head, task, handoff = integration_case(tmp_path)
+    repo, _base, head, task, handoff = integration_case(tmp_path)
     context = IntegrationContext.build((task,), config(), head, include_plan=False)
 
     result = evaluate_integration(handoff, task, config(), context, repository=repo.root)
@@ -344,7 +344,7 @@ def test_readiness_without_a_plan_fails_closed(tmp_path) -> None:
 
 
 def test_the_evidence_collector_refuses_a_repository_that_is_not_canx(tmp_path) -> None:
-    repo, base, single, task, _ = integration_case(tmp_path)
+    repo, _base, single, task, _ = integration_case(tmp_path)
     repo.write("AGENTS.md", "different rules\n")
     repo.commit("chore: make the sandbox look like another repository")
     git(repo.root, ["remote", "set-url", "origin", "https://github.com/other/other.git"])

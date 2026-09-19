@@ -332,18 +332,20 @@ class TaskContract:
         # a branch or worktree it declared would be one Git can never resolve —
         # which is exactly the defect this mode removes (V0.3-12-FIX-1).
         if execution_mode is ExecutionMode.ISOLATED_WORKTREE:
+            mode = str(execution_mode)
             for field_name, value in (("branch", branch), ("worktree", worktree)):
                 if value is None:
                     raise error(
                         f"task.{field_name} is required in isolated-worktree execution mode",
-                        details={"field": f"task.{field_name}", "execution_mode": str(execution_mode)},
+                        details={"field": f"task.{field_name}", "execution_mode": mode},
                     )
         else:
+            mode = str(execution_mode)
             for field_name, value in (("branch", branch), ("worktree", worktree)):
                 if value is not None:
                     raise error(
                         f"task.{field_name} must be absent in native-shared execution mode",
-                        details={"field": f"task.{field_name}", "execution_mode": str(execution_mode)},
+                        details={"field": f"task.{field_name}", "execution_mode": mode},
                     )
         return cls(
             schema_version=_expect_schema_version(payload, where="task", error=error),
