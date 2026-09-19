@@ -1,0 +1,1638 @@
+{
+  "schema_version": 1,
+  "artifact": "v0.3-12-concurrency-rerun",
+  "description": "Canonical, committed evidence for the AGENT-02 instrumented concurrency rerun. The raw heartbeat files and the sampler log lived under the gitignored .rivet/, so no reviewer could recompute the rerun's numbers from the pull request. This file transcribes them verbatim and records the derivation; tests/unit/pilot/test_concurrency_telemetry.py recomputes every derived value from the raw sequences below. It contains no filesystem path, no user directory, no environment variable and no credential.",
+  "run": {
+    "kind": "read-only verification rerun of the three V0.3-12 surfaces",
+    "main_agents": 1,
+    "workers": 3,
+    "worker_tasks": {
+      "A": "V0.3-12-VERIFY-A",
+      "B": "V0.3-12-VERIFY-B",
+      "C": "V0.3-12-VERIFY-C"
+    },
+    "execution_mode": "native-shared",
+    "filesystem_model": "SHARED worktree",
+    "harness_max_workers": 3,
+    "concurrency_configuration_modified": false,
+    "instrument": "each worker appended a heartbeat timestamp to its own file before and after every tool call; an independent sampler read the three heartbeat files and the OS process table every ~2.3 s for the whole dispatch window"
+  },
+  "source_evidence": {
+    "heartbeat_sequences": ".rivet/scratch/rerun-heartbeat/{A,B,C}.hb (gitignored)",
+    "sampler_log": ".rivet/scratch/rerun-telemetry.log (gitignored)",
+    "transcription": "verbatim; the derived block below is recomputed by the test"
+  },
+  "time_units": "unix seconds (UTC)",
+  "dispatch_window": {
+    "first_sample": 1789790396,
+    "last_sample": 1789790637,
+    "first_sample_utc": "03:59:56",
+    "last_sample_utc": "04:03:57",
+    "duration_seconds": 241,
+    "sample_count": 105
+  },
+  "activity_gap_threshold_seconds": 60,
+  "workers": {
+    "A": {
+      "heartbeats": [
+        1789790410,
+        1789790425,
+        1789790431,
+        1789790440,
+        1789790446,
+        1789790449,
+        1789790451,
+        1789790487,
+        1789790493,
+        1789790495,
+        1789790519,
+        1789790543,
+        1789790552,
+        1789790569
+      ],
+      "heartbeat_count": 14,
+      "first_heartbeat": 1789790410,
+      "last_heartbeat": 1789790569,
+      "first_heartbeat_utc": "04:00:10",
+      "last_heartbeat_utc": "04:02:49",
+      "span_seconds": 159,
+      "max_gap_seconds": 36,
+      "active_intervals": [
+        [
+          1789790410,
+          1789790569
+        ]
+      ]
+    },
+    "B": {
+      "heartbeats": [
+        1789790410,
+        1789790412,
+        1789790418,
+        1789790421,
+        1789790425,
+        1789790432,
+        1789790499,
+        1789790512,
+        1789790520,
+        1789790521,
+        1789790529,
+        1789790530,
+        1789790533,
+        1789790562
+      ],
+      "heartbeat_count": 14,
+      "first_heartbeat": 1789790410,
+      "last_heartbeat": 1789790562,
+      "first_heartbeat_utc": "04:00:10",
+      "last_heartbeat_utc": "04:02:42",
+      "span_seconds": 152,
+      "max_gap_seconds": 67,
+      "active_intervals": [
+        [
+          1789790410,
+          1789790432
+        ],
+        [
+          1789790499,
+          1789790562
+        ]
+      ]
+    },
+    "C": {
+      "heartbeats": [
+        1789790410,
+        1789790411,
+        1789790415,
+        1789790419,
+        1789790421,
+        1789790429,
+        1789790433,
+        1789790436,
+        1789790438,
+        1789790442,
+        1789790452,
+        1789790485,
+        1789790491,
+        1789790497,
+        1789790506,
+        1789790524
+      ],
+      "heartbeat_count": 16,
+      "first_heartbeat": 1789790410,
+      "last_heartbeat": 1789790524,
+      "first_heartbeat_utc": "04:00:10",
+      "last_heartbeat_utc": "04:02:04",
+      "span_seconds": 114,
+      "max_gap_seconds": 33,
+      "active_intervals": [
+        [
+          1789790410,
+          1789790524
+        ]
+      ]
+    }
+  },
+  "sampler_samples": [
+    {
+      "timestamp": 1789790396,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 0,
+        "B": 0,
+        "C": 0
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790399,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 0,
+        "B": 0,
+        "C": 0
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790401,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 0,
+        "B": 0,
+        "C": 0
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790403,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 0,
+        "B": 0,
+        "C": 0
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790405,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 0,
+        "B": 0,
+        "C": 0
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790407,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 0,
+        "B": 0,
+        "C": 0
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790409,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 0,
+        "B": 0,
+        "C": 0
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790412,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 1,
+        "B": 1,
+        "C": 2
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790414,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 1,
+        "B": 2,
+        "C": 2
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790416,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 1,
+        "B": 2,
+        "C": 3
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790419,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 1,
+        "B": 3,
+        "C": 3
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790421,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 1,
+        "B": 3,
+        "C": 5
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790423,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 1,
+        "B": 4,
+        "C": 5
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790425,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 2,
+        "B": 5,
+        "C": 5
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790428,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 2,
+        "B": 5,
+        "C": 5
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790430,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 2,
+        "B": 5,
+        "C": 6
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790433,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 3,
+        "B": 6,
+        "C": 6
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790435,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 3,
+        "B": 6,
+        "C": 7
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790437,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 3,
+        "B": 6,
+        "C": 8
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790440,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 4,
+        "B": 6,
+        "C": 9
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790442,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 4,
+        "B": 6,
+        "C": 10
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790444,
+      "node_processes": 6,
+      "worker_heartbeat_counts": {
+        "A": 4,
+        "B": 6,
+        "C": 10
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790447,
+      "node_processes": 6,
+      "worker_heartbeat_counts": {
+        "A": 5,
+        "B": 6,
+        "C": 10
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790449,
+      "node_processes": 7,
+      "worker_heartbeat_counts": {
+        "A": 6,
+        "B": 6,
+        "C": 10
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790452,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 10
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790454,
+      "node_processes": 8,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790456,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790459,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790461,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790464,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790466,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790468,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790471,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790473,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790475,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790478,
+      "node_processes": 12,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790480,
+      "node_processes": 7,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790483,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 11
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790485,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 7,
+        "B": 6,
+        "C": 12
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790487,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 8,
+        "B": 6,
+        "C": 12
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790490,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 8,
+        "B": 6,
+        "C": 12
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790492,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 8,
+        "B": 6,
+        "C": 13
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790494,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 9,
+        "B": 6,
+        "C": 13
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790497,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 6,
+        "C": 13
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790499,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 6,
+        "C": 14
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790501,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 7,
+        "C": 14
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790504,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 7,
+        "C": 14
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790506,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 7,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790508,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 7,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790511,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 7,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790513,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 8,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790515,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 8,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790518,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 10,
+        "B": 8,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790520,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 9,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790522,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 10,
+        "C": 15
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790524,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 10,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": true
+      }
+    },
+    {
+      "timestamp": 1789790527,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 10,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790529,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 11,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790531,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 12,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790534,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790536,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790538,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790541,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 11,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790543,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 12,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790545,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 12,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790548,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 12,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790550,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 12,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790552,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790555,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790557,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790559,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790561,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 13,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": true,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790564,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790566,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790568,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 13,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": true,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790571,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790573,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790575,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790577,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790580,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790582,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790584,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790587,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790589,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790591,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790593,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790596,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790598,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790600,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790603,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790605,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790607,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790609,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790612,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790614,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790616,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790618,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790621,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790623,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790625,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790628,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790630,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790632,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790635,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    },
+    {
+      "timestamp": 1789790637,
+      "node_processes": 5,
+      "worker_heartbeat_counts": {
+        "A": 14,
+        "B": 14,
+        "C": 16
+      },
+      "worker_active": {
+        "A": false,
+        "B": false,
+        "C": false
+      }
+    }
+  ],
+  "process_observation": {
+    "node_processes_baseline": 5,
+    "node_processes_peak": 12,
+    "peak_window": [
+      1789790456,
+      1789790478
+    ],
+    "peak_window_utc": [
+      "04:00:56",
+      "04:01:18"
+    ]
+  },
+  "derived": {
+    "max_simultaneously_active_workers": 3,
+    "strict_three_way_overlap_seconds": 25,
+    "strict_three_way_overlap_intervals": [
+      [
+        1789790410,
+        1789790432
+      ],
+      [
+        1789790499,
+        1789790524
+      ]
+    ],
+    "strict_three_way_overlap_total_seconds": 47,
+    "conditional_three_way_overlap_seconds": 114,
+    "conditional_three_way_overlap_note": "counts the single 67 s gap in worker B as continued execution (one long tool call); the strict figure is the reported one",
+    "strict_three_way_overlap_definition": "the longest continuous interval during which all three workers are inside an activity window, where a window closes when the gap between consecutive heartbeats exceeds 60 s"
+  }
+}
