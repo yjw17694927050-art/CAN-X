@@ -752,16 +752,42 @@ Just CLOSED — V0.3-FINAL, and with it V0.3 as a version
   step that audit decides on.
   Full record: docs/acceptance/v0.3-final.md §16.
 
-NEXT: V0.3-CODE-AUDIT — V0.1–V0.3 Full Repository Code Audit
-  READY TO START. Baseline: V0_3_CLOSED_MAIN_SHA, the main SHA this closeout produced (the merge
-  commit of `docs/v0.3-final-closeout`). A maintenance / qualification audit, not a product
-  milestone: it audits V0.1–V0.3 source quality, architecture consistency, lifecycle and
-  boundedness, dead code, duplicated contracts, safety boundaries, test blind spots and repository
-  hygiene before V0.4 begins. It does not reopen V0.3 unless it finds a P0/P1 defect.
-  It is **not** a PRD roadmap entry — V0.4 in the PRD remains Plot / Recorder / Replay.
+V0.3-CODE-AUDIT — V0.1–V0.3 Full Repository Code Audit
+  EXECUTED · independent verdict: **REMEDIATION REQUIRED** (P0: 0 · 5 fix groups). A maintenance /
+  qualification gate, not a product milestone and **not** a PRD roadmap entry — V0.4 in the PRD
+  remains Plot / Recorder / Replay.
 
-V0.4 — NOT STARTED. Blocked only by the planned version-level code audit; that is a process choice,
-not a V0.3 acceptance failure.
+V0.3-CODE-AUDIT REMEDIATION SPRINT — IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
+  Closes all five fix groups on `fix/v0.3-code-audit-remediation`: one Main Agent + three Sub-Agents,
+  each on its own branch and worktree with a validated TaskContract (`.agent/tasks/AUDIT-FIX-*.json`),
+  serial integration, round-2 cross-review, then the full gate set. Per-finding detail, the
+  benchmark tables, the review record and the residual list:
+  `docs/acceptance/v0.3-code-audit-remediation.md`.
+    AUDIT-FIX-01  sequence continuity in the DataSession writer        Implemented · Verified
+                  (was: a positive sequence gap was silently persisted; the only +1 guard lived in the
+                   recorder, which a direct DataSessionService caller bypasses)
+    AUDIT-FIX-02  timestamp monotonicity, equality still legal         Implemented · Verified
+                  (was: only a batch's two ends were compared, so 1.0, 3.0, 2.0, 4.0 passed)
+    AUDIT-FIX-03  live DBC decode hot path — bounded decoder cache     Implemented · Verified
+                  (was: project open, registry read, file read, size+sha256, text decode, cantools
+                   parse, canonical conversion and decoder compile ran on EVERY request)
+    AUDIT-FIX-04  realtime reconnect lifecycle                         Implemented · Verified
+                  (was: close/error never released the worker or socket, so no reconnect was possible)
+    AUDIT-FIX-05  capture ownership · transport floor · Dockview ·     Implemented · Verified
+                  Plot resize
+  Baseline `42e8250` · worker commits `d4ba695` (A) · `217cbaf`+`0bfea5e` (B) · `09ef970` (C) ·
+  integration `5fe1308` · `352e8c8` · `a14fceb` · `90733ac` · no merge conflicts.
+  Integrated gates: pytest **2859 passed / 1 skipped** · ruff clean · mypy 99 files clean ·
+  frontend **33 files passed** with lint / typecheck / build clean · packaged smoke **7 passed**
+  against a sidecar **rebuilt from the integrated tree** (the previously staged one predated the
+  change and would have proved nothing).
+  New P0: 0 · New P1: 0 · New P2: 0. The V0.3-FINAL P2 (`pnpm tauri dev` port mismatch) is still
+  outstanding and was deliberately NOT fixed in this sprint. Residual and `NOT VERIFIED` items are
+  listed in the remediation report §6.
+  No Final Acceptance is claimed here — that verdict is external.
+
+V0.4 — NOT STARTED. The V0.3-CODE-AUDIT returned REMEDIATION REQUIRED, not PASS; whether these five
+fixes discharge it is an independent verdict, and V0.4 does not open on an author's own conclusion.
 NOT STARTED: CD-01.
 The V0.3-12-FIX-2 round (contract consistency, committed concurrency evidence, truth-surface
 cleanup) is integrated together with the rest of the branch; nothing in it is left `AWAITING`.
@@ -802,6 +828,11 @@ docs/acceptance/v0.3-final.md   V0.3-FINAL — the version-level regression evid
     current-truth audit, the V0.3 scope audit, the P2 finding and the NOT VERIFIED list.
     PASS · CLOSED — §16 carries the independent verdict, its provenance, the accepted-head protected
     integration of the evidence (PR #26 → 28e49bc) and the version-level FULL CI
+docs/acceptance/v0.3-code-audit-remediation.md   V0.3-CODE-AUDIT REMEDIATION — the five fix groups the
+    independent audit required, each with its before/after, its real test evidence, the DBC hot-path
+    benchmark tables, the serial-integration and cross-review record (including the review's own
+    findings about itself), and the residual / NOT VERIFIED list.
+    IMPLEMENTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE
 docs/engineering/RELIABILITY_CAPTURE_FINALIZATION.md   RELIABILITY-01 record (§19)
 docs/CONTEXT_INDEX.md · docs/engineering/AGENT_CONTEXT_GOVERNANCE.md   context routing + layers
 .github/workflows/ci.yml · docs/engineering/INTEGRATION_POLICY.md   CI baseline §14 + policy §15
