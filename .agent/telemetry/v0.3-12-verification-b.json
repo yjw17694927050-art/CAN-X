@@ -1,0 +1,54 @@
+{
+  "task_id": "V0.3-12-VERIFY-B",
+  "surface": "apps/desktop/src-tauri/src/project_directory_bridge.rs (delivery commit 7add139) + its tests.rs, plus lib.rs command registration and Cargo.toml immutability",
+  "files_read": [
+    "apps/desktop/src-tauri/src/project_directory_bridge.rs",
+    "apps/desktop/src-tauri/src/project_directory_bridge/tests.rs",
+    "apps/desktop/src-tauri/src/lib.rs",
+    "apps/desktop/src-tauri/Cargo.toml"
+  ],
+  "commands": [
+    {"command": "cargo test --lib project_directory_bridge", "exit_code": 0},
+    {"command": "grep -n \"project\\.json|project\\.db|schema|ProjectService|serde_json|read_to_string|read_dir|is_project\" apps/desktop/src-tauri/src/project_directory_bridge.rs", "exit_code": 1},
+    {"command": "grep -n \"pub mod project_directory_bridge|project_directory_bridge::select_project_directory\" apps/desktop/src-tauri/src/lib.rs", "exit_code": 0},
+    {"command": "git log --oneline -- apps/desktop/src-tauri/Cargo.toml", "exit_code": 0},
+    {"command": "git show --stat --oneline 7add139", "exit_code": 0},
+    {"command": "git log --oneline -- apps/desktop/src-tauri/src/project_directory_bridge.rs apps/desktop/src-tauri/src/project_directory_bridge/tests.rs", "exit_code": 0}
+  ],
+  "claims": [
+    {
+      "claim": "the registered command select_project_directory takes no caller-supplied filesystem argument (the only parameter is the Tauri-injected AppHandle)",
+      "verdict": "confirmed",
+      "evidence": "apps/desktop/src-tauri/src/project_directory_bridge.rs:155-157 declares `#[tauri::command] pub(crate) async fn select_project_directory<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, ProjectDirectoryBridgeError>` — the sole parameter binds the Tauri-injected AppHandle and the return type carries a path out, never in; there is no path/directory/project_path parameter. The module registers exactly one command (test this_module_registers_exactly_one_command passed). The delivered architecture test the_selection_command_declares_a_single_injected_argument (tests.rs) asserts the parsed parameter list equals [\"app: AppHandle<R>\"] and passed."
+    },
+    {
+      "claim": "cancel resolves to Ok(None) and a selection to Ok(Some(path))",
+      "verdict": "confirmed",
+      "evidence": "project_directory_bridge.rs:182-196 `resolve_selected_directory` returns `Ok(None)` on the None arm (line 186) and `directory_text(&path).map(Some)` on the Some arm (line 195). Tests a_dismissed_dialog_resolves_to_none and a_chosen_directory_resolves_to_the_path_the_dialog_returned both passed under `cargo test --lib project_directory_bridge` (14 passed; 0 failed)."
+    },
+    {
+      "claim": "the module contains no CAN-X project validation (no project.json / project.db / schema / ProjectService logic)",
+      "verdict": "confirmed",
+      "evidence": "Independent grep for project.json|project.db|schema|ProjectService|serde_json|read_to_string|read_dir|is_project over project_directory_bridge.rs returned no matches (exit 1). The module's only filesystem-touching operation is Path::to_str in `directory_text` (line 203); the dialog result is transported, never inspected. The delivered test the_module_carries_no_project_validation_logic asserts the same forbidden tokens and passed."
+    },
+    {
+      "claim": "every failure is a declared typed code with static message text, and no error serialization can carry the selected directory path",
+      "verdict": "confirmed",
+      "evidence": "ProjectDirectoryBridgeError (project_directory_bridge.rs:66-72) has exactly three fields — code/message/recoverable — and derives Serialize/Deserialize; the only constructors are dialog_failed/unavailable/not_representable (all pass string literals) plus the private `of(code, message, recoverable)` (line 77, not pub) whose every call site passes literals; no constructor accepts a path. Test every_failure_is_a_declared_typed_code_with_static_text passed; test a_refusal_never_quotes_the_directory_it_refused passed and asserts the serialized error JSON object's keys are exactly [code, message, recoverable] (no hidden fourth field) and that the `secret-program` marker never appears in the serialized error or message."
+    },
+    {
+      "claim": "apps/desktop/src-tauri/src/lib.rs registers the command",
+      "verdict": "confirmed",
+      "evidence": "lib.rs:2 declares `pub mod project_directory_bridge;` and lib.rs:172 lists `project_directory_bridge::select_project_directory` inside `tauri::generate_handler![...]` (opened at lib.rs:161). Delivered test the_selection_command_is_registered_in_the_shell asserts both facts and passed."
+    },
+    {
+      "claim": "apps/desktop/src-tauri/Cargo.toml is unmodified by the delivery",
+      "verdict": "confirmed",
+      "evidence": "`git log --oneline -- apps/desktop/src-tauri/Cargo.toml` shows only 88c7b8c (DBC bridge) and 1bbfe5d (V0.1 bootstrap). `git show --stat 7add139` (the V0.3-12-B delivery) touches only dbc_file_bridge/tests.rs, lib.rs, project_directory_bridge.rs and project_directory_bridge/tests.rs — Cargo.toml is absent. The worktree has no modifications to these files (only 4 untracked .agent task files)."
+    }
+  ],
+  "not_confirmable": [
+    "The end-to-end native dialog path is not exercised by any automated test: no fixture opens the real OS directory picker, so the runtime wiring `spawn_blocking(|| handle.dialog().file().blocking_pick_folder()).await` -> `resolve_selected_directory(picked)` (project_directory_bridge.rs:158-166) is verified only by reading the code, not by a driving test. Claims 1-4 are confirmed at the module/contract level; the live OS-dialog interaction remains unconfirmable read-only.",
+    "Whether a renderer can ever reach this command is not verifiable inside this module: non-reachability depends on Tauri's command exposure (only the injected AppHandle argument means no caller-supplied IPC payload is accepted), which was reasoned from the signature, not from an end-to-end IPC invocation."
+  ]
+}
