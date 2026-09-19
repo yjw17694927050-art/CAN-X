@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-04",
+  "title": "Historical Signal Query + Downsampling Foundation",
+  "objective": "Build the bounded signal-series query and deterministic downsampling foundation a historical Plot will consume, on top of the existing persisted CAN DataSession + Query + DBC decode, WITHOUT creating a second historical data engine and WITHOUT building the Plot UI. Signal identity is never just a signal name: it carries channel_id, asset_id, message identity and signal identity, semantically consistent with the V0.3 realtime Plot SignalSelection, and two same-named signals on different channels are never merged into one series. The source of truth is Project -> registered DataSession -> verified Parquet segments -> QueryService / QueryEngine -> canonical Frame -> verified project-owned DBC -> DbcDecoder -> signal series; no frontend cache as authority, no loading a whole project into pandas, no loading a whole DataSession, no bypassing segment integrity, no globbing project files and assuming trust. Historical reads are paged/chunked/bounded/deterministic, so memory does not grow linearly with the dataset. Add a Runtime-side deterministic downsampling that maps a large dataset to a bounded PlotSample series preserving first point, last point and significant extrema better than a blind stride, with stable deterministic output, a strict maximum result bound and ordered timestamps. Streaming must use bounded page -> decode -> online/bucket aggregation -> discard, so working memory tracks page size + sample budget, not dataset size. Downsampling lives in the Runtime, not only the frontend; the realtime series.ts stride is not simply copied as the large-data answer.",
+  "scope": "runtime/canx/query/** and the new runtime/canx/plot/** domain package, their tests, and the V0.4-04 acceptance document.",
+  "non_goals": [
+    "Any full Plot UI (V0.4-05), zoom/pan/cursor (V0.4-06) or marker/overlay (V0.4-07)",
+    "Any HTTP/public API surface (the domain/service contract is frozen first; a Desktop consumer is deferred)",
+    "Any complex WebGL renderer or React dependency",
+    "Modifying runtime/canx/api/**, runtime/canx/recorder/**, runtime/canx/replay/**, runtime/canx/safety/** or apps/desktop/**",
+    "Writing runtime/canx/dbc/** (read-only dependency): a DBC change is BLOCK-and-replan, not an in-place edit"
+  ],
+  "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+  "branch": "agent/V0.4-04-historical-plot-query",
+  "worktree": ".worktrees/v0.4-04-plot-query",
+  "execution_mode": "isolated-worktree",
+  "owner": "sub-b",
+  "allowed_paths": [
+    "runtime/canx/query/**",
+    "runtime/canx/plot/**",
+    "tests/unit/query/**",
+    "tests/unit/plot/**",
+    "tests/integration/test_plot_query.py",
+    "tests/performance/test_plot_downsampling.py",
+    "docs/acceptance/v0.4-04-historical-plot-query.md"
+  ],
+  "forbidden_paths": [
+    "runtime/canx/api/**",
+    "runtime/canx/recorder/**",
+    "runtime/canx/replay/**",
+    "runtime/canx/dbc/**",
+    "runtime/canx/safety/**",
+    "runtime/canx/domain/**",
+    "apps/**",
+    ".agent/**",
+    ".github/**",
+    "SPEC.md",
+    "AGENTS.md",
+    "PRD.md",
+    "pyproject.toml",
+    "package.json"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "runtime/canx/query/service.py"
+    },
+    {
+      "path": "runtime/canx/query/model.py"
+    },
+    {
+      "path": "runtime/canx/data/model.py"
+    },
+    {
+      "path": "runtime/canx/dbc/decode.py"
+    }
+  ],
+  "acceptance_criteria": [
+    "Historical signal identity carries channel_id, asset_id, message identity and signal identity; same-named signals on different channels stay separate series",
+    "Historical reads are paged/chunked/bounded and deterministic; a very large session does not grow memory linearly with dataset size",
+    "Downsampling preserves first point, last point and a significant spike better than a blind stride, is deterministic across repeats and strictly bounds output_count <= requested sample budget",
+    "Output timestamps are ordered; channel/asset/message/signal isolation is preserved",
+    "An invalid or tampered DBC asset fails closed; an invalid project/session and a window with no matching signal are handled explicitly",
+    "CAN FD frames are handled",
+    "No HTTP/public API surface is added and no full Plot UI is built"
+  ],
+  "required_tests": [
+    "runtime-pytest",
+    "runtime-ruff",
+    "runtime-mypy",
+    "plot-query-focused"
+  ],
+  "handoff_requirements": [
+    "RED evidence first for each new behaviour",
+    "Exact commands and results for the targeted query/plot tests, pytest -q, ruff and mypy",
+    "The large-data test proving output_count <= requested sample budget and that the working set is not the whole input dataset; benchmark numbers where they are stable, without brittle wall-clock CI thresholds",
+    "State explicitly that no file outside allowed_paths was touched and that runtime/canx/dbc/** and runtime/canx/api/** are byte-identical to base_sha"
+  ],
+  "risk_class": "HIGH",
+  "status": "READY",
+  "revision": 1
+}

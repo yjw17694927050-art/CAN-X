@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-01",
+  "title": "Recorder Control Plane & Session API",
+  "objective": "Upgrade the existing, mature recorder persistence/lifecycle (ProjectRecorder, DataSessionWriter, DataSessionService, the RuntimeService capture lifecycle, /capture/start, /capture/stop, /runtime/status) into an observable, queryable, session-based Recorder control plane, WITHOUT rewriting the recorder and WITHOUT creating a second recorder start/stop authority: the Capture Runtime still owns recording ingress lifecycle. Add a typed Recorder control/service model that can report active/inactive, stream identity, data_session_id, recorder lifecycle state, recorded frame count, failure, finalization pending/settled and durable session state; and a persisted session query surface that lists sessions in a validated CAN-X project, reads one session's durable metadata/state, distinguishes ACTIVE / COMPLETED / FAILED, rejects a nonexistent session, rejects an invalid project and returns bounded deterministic results. Only expose data that has durable authority; never scan all Parquet data to guess a value SQLite does not hold. Expose a typed, bounded, headless, UI-independent HTTP surface in a new runtime/canx/api/recorder.py, mounting it (and its typed error surface) into the existing runtime/canx/api/app.py without refactoring app.py. All SQLite/filesystem blocking work runs via asyncio.to_thread. Reuse DataSessionService / DataSessionWriter / ProjectService / SQLite metadata; do not copy SQLite query logic, Parquet integrity logic or session-state logic into the recorder module.",
+  "scope": "runtime/canx/recorder/**, the new runtime/canx/api/recorder.py, the recorder-mount seam in runtime/canx/api/app.py, an observability-only seam in runtime/canx/runtime/service.py if required, and their tests, plus the V0.4-01 acceptance document.",
+  "non_goals": [
+    "Rewriting the recorder or building a second recorder start/stop authority alongside /capture/start",
+    "Changing capture ordering, the broker, cleanup or existing stop semantics",
+    "Copying SQLite query logic, Parquet integrity logic or session-state logic into the recorder module",
+    "Reading or writing runtime/canx/data/**, runtime/canx/query/**, runtime/canx/dbc/**, runtime/canx/safety/** or apps/desktop/**",
+    "Refactoring app.py beyond mounting the recorder router and wiring a typed error surface",
+    "Any V0.4-02 (Recorder Desktop Workspace) or V0.4-03 (long-run reliability) work"
+  ],
+  "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+  "branch": "agent/V0.4-01-recorder-control-plane",
+  "worktree": ".worktrees/v0.4-01-recorder",
+  "execution_mode": "isolated-worktree",
+  "owner": "sub-a",
+  "allowed_paths": [
+    "runtime/canx/recorder/**",
+    "runtime/canx/api/recorder.py",
+    "runtime/canx/api/app.py",
+    "runtime/canx/runtime/service.py",
+    "tests/unit/recorder/**",
+    "tests/unit/api/test_recorder_api.py",
+    "tests/integration/test_recorder_control_plane.py",
+    "docs/acceptance/v0.4-01-recorder-control-plane.md"
+  ],
+  "forbidden_paths": [
+    "runtime/canx/data/**",
+    "runtime/canx/query/**",
+    "runtime/canx/plot/**",
+    "runtime/canx/replay/**",
+    "runtime/canx/dbc/**",
+    "runtime/canx/safety/**",
+    "runtime/canx/domain/**",
+    "runtime/canx/api/dbc.py",
+    "runtime/canx/api/frame.py",
+    "runtime/canx/api/project.py",
+    "runtime/canx/api/trace.py",
+    "runtime/canx/api/errors.py",
+    "apps/**",
+    ".agent/**",
+    ".github/**",
+    "SPEC.md",
+    "AGENTS.md",
+    "PRD.md",
+    "pyproject.toml",
+    "package.json"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "runtime/canx/data/session.py"
+    },
+    {
+      "path": "runtime/canx/data/model.py"
+    },
+    {
+      "path": "runtime/canx/project/service.py"
+    },
+    {
+      "path": "runtime/canx/runtime/service.py"
+    }
+  ],
+  "acceptance_criteria": [
+    "A typed Recorder observability model reports active/inactive, stream identity, data_session_id, recorder lifecycle state, recorded frame count, failure, finalization pending/settled and durable session state",
+    "A persisted session query surface lists sessions in a validated project, reads one session's durable metadata/state, distinguishes ACTIVE / COMPLETED / FAILED, rejects a nonexistent session and rejects an invalid project with bounded deterministic results",
+    "The recorder API query path does not change recorder state and does not own CAN capture",
+    "A FAILED session is never described as COMPLETED; a PENDING finalization is never guessed as FAILED or COMPLETED",
+    "Every SQLite/filesystem operation runs off the event loop via asyncio.to_thread",
+    "runtime/canx/api/app.py changes are limited to mounting the recorder router and its typed error surface",
+    "runtime/canx/runtime/service.py changes, if any, only ADD an observability seam and do not alter capture ordering, the broker, cleanup or existing stop semantics",
+    "No storage logic is duplicated: DataSessionService / DataSessionWriter / ProjectService remain the authority"
+  ],
+  "required_tests": [
+    "runtime-pytest",
+    "runtime-ruff",
+    "runtime-mypy",
+    "recorder-control-plane-focused"
+  ],
+  "handoff_requirements": [
+    "RED evidence first: the failing test and its real output before each new behaviour",
+    "Exact commands and results for the targeted recorder/API tests, pytest -q, ruff and mypy",
+    "State explicitly that runtime/canx/data/**, runtime/canx/query/**, runtime/canx/dbc/** and runtime/canx/safety/** are byte-identical to base_sha, and that no file outside allowed_paths was touched",
+    "State whether the packaged runtime smoke was run (recorder endpoint exposed in the packaged sidecar), or that it was not"
+  ],
+  "risk_class": "HIGH",
+  "status": "READY",
+  "revision": 1
+}

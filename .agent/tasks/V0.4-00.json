@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-00",
+  "title": "Desktop Development Preflight & Dev-Port Closure",
+  "objective": "Close the V0.3 P2 accepted non-blocking defect where apps/desktop/src-tauri/tauri.conf.json declares devUrl http://localhost:1420 but apps/desktop/vite.config.ts does not pin the Vite dev server port, so pnpm tauri dev cannot reliably connect to the declared port. The fix is minimal and fail-closed: vite.config.ts must set server.port = 1420 and server.strictPort = true, so if 1420 is occupied Vite refuses to start rather than silently moving to 1421 while Tauri waits on 1420. No product architecture, Runtime API, recorder, Plot, Replay, dependency or proxy change is permitted. A regression guard (a machine-checkable contract test that reads the REAL configs, not a string grep) locks Tauri devUrl port == 1420 == Vite server.port and Vite strictPort == true going forward. A real pnpm tauri dev native smoke proves Vite listens on 1420, the Tauri dev shell and the CAN-X window start, the Runtime sidecar starts from the Desktop, /health and /runtime/status are reachable, the WebView loads the frontend, and closing the Desktop shuts the Runtime down without leaving an orphan canx-runtime or a stray Vite/Tauri process.",
+  "scope": "apps/desktop/vite.config.ts and the Desktop preflight smoke/test surface, plus the V0.4-00 acceptance document.",
+  "non_goals": [
+    "Any product architecture, Runtime API, recorder, Plot or Replay change",
+    "Any dependency, lockfile or package manifest change",
+    "Introducing a new dev server, a proxy workaround or an alternate port",
+    "Touching the Rust/Tauri source unless the real smoke proves it is required (and then only with a recorded reason)"
+  ],
+  "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+  "execution_mode": "native-shared",
+  "branch": null,
+  "worktree": null,
+  "integration_paths": [],
+  "owner": "main",
+  "allowed_paths": [
+    "apps/desktop/vite.config.ts",
+    "apps/desktop/src/smoke/**",
+    "apps/desktop/src/test/**",
+    "docs/acceptance/v0.4-00-development-preflight.md"
+  ],
+  "forbidden_paths": [
+    "apps/desktop/src-tauri/**",
+    "apps/desktop/src/components/**",
+    "apps/desktop/src/runtime/**",
+    "apps/desktop/src/workspace/**",
+    "apps/desktop/package.json",
+    "runtime/**",
+    ".github/**",
+    ".agent/**",
+    "SPEC.md",
+    "PRD.md",
+    "AGENTS.md",
+    "docs/PROJECT_STATE.md",
+    "docs/CONTEXT_INDEX.md",
+    "pyproject.toml",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "apps/desktop/src-tauri/tauri.conf.json"
+    },
+    {
+      "path": "apps/desktop/vite.config.ts"
+    }
+  ],
+  "acceptance_criteria": [
+    "apps/desktop/vite.config.ts sets server.port = 1420 and server.strictPort = true",
+    "A machine-checkable test reads the real tauri.conf.json and vite.config.ts and asserts 1420 == 1420 and strictPort === true, so the two can never drift again",
+    "Tauri devUrl port and Vite server.port are proven equal by reading the configs, not by a substring grep",
+    "pnpm tauri dev starts Vite on 1420 and the Tauri window connects (recorded as a real native smoke, or explicitly NOT VERIFIED with the environment reason)",
+    "No file outside the allowed surface is modified"
+  ],
+  "required_tests": [
+    "frontend-focused-test",
+    "frontend-test",
+    "frontend-typecheck",
+    "frontend-lint",
+    "frontend-build"
+  ],
+  "handoff_requirements": [
+    "Report the exact command and result for the focused preflight test, pnpm test, pnpm typecheck, pnpm lint and pnpm build",
+    "Report the real pnpm tauri dev smoke evidence, or state explicitly that it could not run in this environment and why",
+    "State that no file outside allowed_paths was touched"
+  ],
+  "risk_class": "LOW",
+  "status": "READY",
+  "revision": 1
+}

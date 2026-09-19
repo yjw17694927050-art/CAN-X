@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "task_id": "V0.4-08",
+  "title": "Offline Replay Domain + Deterministic Scheduler",
+  "objective": "Build CAN-X's first Replay domain, strictly OFFLINE. The source is a persisted DataSession; the output is an offline replay event/sink, never adapter.send(). This task must not add CanAdapter.send, python-can TX, hardware TX, a Safety Kernel authorization implementation, ARM state or a real bus replay; offline replay does not require TX authorization and real CAN replay (with a TX Safety Gate) is a later phase. Replay uses canonical recorded timing based on Frame.normalized_timestamp: relative_offset(frame_n) = normalized_timestamp(frame_n) - normalized_timestamp(first_frame), with speed defaulting to 1.0 (speed multiplier / pause / resume / step / loop / range belong to V0.4-09). A deterministic scheduler is built on an injectable clock abstraction (ReplayClock with monotonic() and sleep_until()/sleep()), with the production path using the real monotonic clock and tests using a fake clock, so deterministic tests never depend on asyncio.sleep(1.0) or wall-clock jitter. The same DataSession + replay configuration + clock behaviour must produce the same frame order, relative schedule, replay event order and terminal state. The canonical Frame is preserved in full (sequence, channel_id, arbitration_id, is_extended, is_fd, BRS, ESI, DLC, data, direction, timestamps, flags); offline replay never rebuilds an information-reduced Frame. Large sessions are read through the existing bounded QueryService pagination (DataSession -> bounded page -> scheduler -> sink -> next page), never loading a whole DataSession into memory. A minimal lifecycle is established: IDLE / RUNNING / COMPLETED / FAILED (an explicit STOPPED/CANCELLED may be added with stated semantics), with PAUSED / LOOPING / TRIGGER_WAIT left to later phases. The failure model covers an invalid project, an unknown session, a FAILED/incomplete session policy, a query failure, corrupted persisted data, a sink failure, a scheduler failure and cancellation, leaving no orphan replay task and never disguising a partial replay as COMPLETED.",
+  "scope": "the new runtime/canx/replay/** domain package, its tests, and the V0.4-08 acceptance document.",
+  "non_goals": [
+    "Any real CAN TX path, redirecting through a device adapter, or Safety Kernel authorization/ARM implementation",
+    "Replay speed/pause/resume/step/loop/range (V0.4-09), channel mapping/trigger/TX preparation (V0.4-10) or a Replay Desktop Workspace (V0.4-11)",
+    "Modifying runtime/canx/query/**, runtime/canx/recorder/**, runtime/canx/api/**, runtime/canx/devices/**, runtime/canx/safety/** or apps/desktop/**",
+    "Loading a whole DataSession into memory"
+  ],
+  "base_sha": "127ee2ff3ba0600afc3c7826e879981ef0a64867",
+  "branch": "agent/V0.4-08-offline-replay-core",
+  "worktree": ".worktrees/v0.4-08-replay",
+  "execution_mode": "isolated-worktree",
+  "owner": "sub-c",
+  "allowed_paths": [
+    "runtime/canx/replay/**",
+    "tests/unit/replay/**",
+    "tests/integration/test_offline_replay.py",
+    "tests/performance/test_replay_bounded_memory.py",
+    "docs/acceptance/v0.4-08-offline-replay-core.md"
+  ],
+  "forbidden_paths": [
+    "runtime/canx/query/**",
+    "runtime/canx/recorder/**",
+    "runtime/canx/api/**",
+    "runtime/canx/devices/**",
+    "runtime/canx/safety/**",
+    "runtime/canx/domain/**",
+    "runtime/canx/data/**",
+    "runtime/canx/dbc/**",
+    "apps/**",
+    ".agent/**",
+    ".github/**",
+    "SPEC.md",
+    "AGENTS.md",
+    "PRD.md",
+    "pyproject.toml",
+    "package.json"
+  ],
+  "dependencies": [],
+  "shared_contracts": [
+    {
+      "path": "runtime/canx/query/service.py"
+    },
+    {
+      "path": "runtime/canx/query/model.py"
+    },
+    {
+      "path": "runtime/canx/domain/frame.py"
+    },
+    {
+      "path": "runtime/canx/data/model.py"
+    }
+  ],
+  "acceptance_criteria": [
+    "Replay is offline only: no CanAdapter.send, no python-can TX, no hardware TX, no ARM state, no Safety Kernel authorization implementation, no real bus replay",
+    "Relative timing is computed from Frame.normalized_timestamp; speed defaults to 1.0",
+    "An injectable ReplayClock (monotonic / sleep_until / sleep) is used with a real monotonic clock in production and a fake clock in tests; deterministic tests do not depend on wall-clock sleeps",
+    "Identical DataSession + configuration + clock behaviour produces identical frame order, relative schedule, replay event order and terminal state",
+    "The canonical Frame is preserved in full (sequence, channel_id, arbitration_id, is_extended, is_fd, BRS, ESI, DLC, data, direction, timestamps, flags)",
+    "Large sessions are read through bounded QueryService pagination; replay memory stays bounded",
+    "Lifecycle IDLE / RUNNING / COMPLETED / FAILED is established, no orphan replay task survives a failure or cancellation, and a partial replay is never reported as COMPLETED",
+    "A negative test proves the replay code has no adapter.send() call and no real CAN TX execution dependency"
+  ],
+  "required_tests": [
+    "runtime-pytest",
+    "runtime-ruff",
+    "runtime-mypy",
+    "replay-fake-clock-suite"
+  ],
+  "handoff_requirements": [
+    "RED evidence first for each new behaviour",
+    "Exact commands and results for the targeted replay tests, the deterministic fake-clock suite, pytest -q, ruff and mypy",
+    "The negative test proving no adapter.send() call and no real CAN TX execution dependency",
+    "State explicitly that runtime/canx/query/**, runtime/canx/api/**, runtime/canx/safety/** and runtime/canx/devices/** are byte-identical to base_sha, and that no file outside allowed_paths was touched"
+  ],
+  "risk_class": "HIGH",
+  "status": "READY",
+  "revision": 1
+}
