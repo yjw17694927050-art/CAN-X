@@ -1051,3 +1051,128 @@ The protected integration then merged PR #7 into `main` as merge commit
 packaged-runtime smoke tests. AGENT-01 is therefore `Final Acceptance: PASS`,
 `Status: CLOSED` in the external record, while AGENT-02, V0.3-12 and CD-01 remain
 not started.
+
+---
+
+## 20. Execution modes — isolated worktree and native shared
+
+> Added by **V0.3-12-FIX-1**, after the first real AGENT-02 pilot measured its
+> own execution model. The decision record is `docs/ADR/0003-native-agent-harness-orchestration.md`;
+> this section is the protocol half.
+
+§1 states the frozen principle: **parallelism is earned by isolation.** What the
+pilot added is that "isolation" has two shapes, and the governance layer has to
+be able to *name which one it is looking at* instead of assuming one.
+
+```text
+isolated-worktree     the AGENT-01 model (default)
+                      one Sub-Agent, one branch, one registered worktree;
+                      the contract freezes branch + worktree and the delivery is
+                      resolved through that worktree
+
+native-shared         the host Harness's default
+                      the worker executes inside the Main Agent's single worktree;
+                      no task branch and no task worktree exist, and the delivery
+                      is a real commit range on the integration branch
+```
+
+### 20.1 The contract
+
+```text
+execution_mode      "isolated-worktree" | "native-shared"     default: isolated-worktree
+branch / worktree   required for isolated; MUST be absent (null) for native-shared
+integration_paths   native-shared only; default []
+```
+
+`validate_task` refuses a native-shared task that declares a branch or a
+worktree, and refuses an isolated task that declares `integration_paths`. The
+rule is not stylistic: a declared branch Git cannot resolve is exactly the
+defect that made the pilot's first three handoffs fail with
+`agent.git_state_error` before the delivery was ever inspected.
+
+`integration_paths` names Main-Agent-owned paths that sit inside a worker's
+delivery commit — in a shared worktree the Main Agent's cross-boundary
+integration test shares the worker's commit. It is refused when it can reach a
+protected, public-truth or safety path, or when it overlaps the task's own
+`forbidden_paths`; and `classify_pair` classifies two tasks using each one's
+full **ownership surface**, so a delivery that reaches another task's surface is
+visible instead of reading as C0.
+
+### 20.2 What `base_sha` means
+
+```text
+isolated       the integration head the task branched from (§9.2, unchanged)
+native-shared  the integration head immediately before this delivery landed,
+               so base..head is exactly this task's own commits
+```
+
+`base_sha` is not a frozen field: a task re-issued with different execution
+coordinates bumps `revision`. The base a contract carried at dispatch is
+preserved in git history, and the handoff still may not invent a base —
+`handoff.base_sha == task.base_sha` is unchanged in both modes.
+
+### 20.3 The stale-base rule, per mode
+
+`check_base` answers "is this delivery based on the current integration head?".
+The predicate differs because the question does:
+
+```text
+isolated       handoff.base_sha == integration_head          (equality)
+               a worker branch must be rebased before it merges
+
+native-shared  base_sha is an ancestor of the integration head
+               AND head_sha is an ancestor of the integration head
+               (proved from Git, `git merge-base --is-ancestor`)
+```
+
+The native-shared form is not weaker: the delivery is *already* on the
+integration branch, so what has to be proved is that its commits are in the
+head's history — which ancestry proves and equality cannot express. The refusal
+code is `agent.base_stale` in both modes. `verify_repository_evidence` is where
+the ancestry is checked, and it is reached only through
+`collect_repository_evidence`, so a verdict without a repository remains
+`agent.integration_context_incomplete`.
+
+### 20.4 What the mode does not change
+
+```text
+ownership              allowed_paths + forbidden_paths, decided on
+                       history_touched_paths over base..head (§4.3, §7.2)
+protected / public-truth / safety     classified identically (§4.2)
+handoff schema and required tests     identical (§7.1, §7.3)
+self-reported compliance              still not evidence (§4.3)
+conflicts, capacity, lifecycle        identical (§6, §8)
+integration authority                 still the Main Agent's (§9); no evidence= parameter
+acceptance boundary                  still external (§11)
+```
+
+The Harness decides *how* a worker executes. CAN-X decides *what* it may do and
+*whether the result is true*. Moving the execution surface does not move that
+line.
+
+### 20.5 A commit no task claims
+
+In native-shared mode only the Main Agent commits. A commit on the integration
+branch that no task's range covers is therefore Main-Agent work, governed by the
+Main Agent's own obligations, not by a worker contract. The gate's duty is to
+prove no *worker* reached outside its surface, and it discharges that over each
+task's own delivery range.
+
+### 20.6 Tooling map additions
+
+```text
+tools/agent/contracts.py    ExecutionMode · TaskContract.execution_mode ·
+                            TaskContract.integration_paths ·
+                            TaskContract.ownership_surface()
+tools/agent/validation.py   _validate_execution_coordinates · ownership_surface()
+                            · mode-aware validate_handoff / check_base /
+                            verify_repository_evidence
+tools/agent/evidence.py     SOURCE_NATIVE_SHARED · _collect_native_shared ·
+                            integration_head_sha / base_on_integration_head /
+                            head_on_integration_head
+tools/agent/conflicts.py    classify_pair over the full ownership surface
+.agent/schemas/task.schema.json   execution_mode · integration_paths; branch and
+                            worktree become mode-conditional
+tests/unit/agent_tools/test_native_shared_execution.py
+tests/integration/test_agent_native_shared_evidence.py
+```

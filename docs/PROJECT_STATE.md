@@ -513,9 +513,22 @@ Architecture in force — native orchestration boundary:
                     Git evidence · stale-base protection · Quality Gate · protected integration ·
                     independent acceptance boundary
 
-Immediate next engineering task — AGENT-02, real native-harness pilot (1 Main Agent + 2 workers via /team)
-  Status: NOT STARTED · foundation integrated and CLOSED (above) · pilot DESIGNED only · `/team` NOT used
-  Read first when it starts: docs/ADR/0003-native-agent-harness-orchestration.md,
+Immediate next engineering task — none. AGENT-02's real native-harness pilot has been EXECUTED.
+  Status: **EXECUTED · SELF-VERIFIED · AWAITING INDEPENDENT ACCEPTANCE**. The pilot's own
+  governance closure — the native execution mode, the three real handoffs and their
+  integration verdicts, and the concurrency evidence — is addressed by **V0.3-12-FIX-1** on
+  the same branch. It ran **1 Main Agent + 3 native Tianshu
+  workers** — the host's default worker concurrency, NOT the `1 + 2` this plan originally
+  designed, and the Harness concurrency configuration was not modified. The executed-run record
+  is `docs/engineering/AGENT_02_PILOT_PLAN.md` §15; the evidence is
+  `docs/acceptance/v0.3-12-desktop-project-open-foundation.md`.
+  Dispatch used the harness's **native worker delegation**; the literal `/team` slash command was
+  not invoked from the pilot session. Recorded as it happened.
+  **Historical, not current:** the two `Earlier CLOSED` entries above that say
+  `REAL PILOT NOT STARTED` / `pilot DESIGNED only` / `/team NOT used` describe the state at
+  `AGENT-02-PREP-01` and `AGENT-02-NATIVE-HARNESS-PIVOT` close, before this pilot ran. They are
+  retained as history and must not be read as the present state.
+  Read first for any AGENT-02 follow-up: docs/ADR/0003-native-agent-harness-orchestration.md,
   docs/engineering/MULTI_AGENT_PROTOCOL.md, docs/ADR/0002-parallel-development-serial-integration.md,
   docs/engineering/INTEGRATION_POLICY.md, docs/engineering/AGENT_02_READINESS.md,
   docs/engineering/AGENT_02_PILOT_PLAN.md.
