@@ -466,3 +466,90 @@ describe("WorkspaceDecodeCoordinator", () => {
     expect(h.requests).toEqual([]);
   });
 });
+
+describe("WorkspaceDecodeCoordinator — bounded processed state", () => {
+  /**
+   * Duplicate suppression is realtime UI state, not an audit log. A marker exists only to stop a
+   * frame that is *still eligible to appear on screen* from being decoded a second time, and a set
+   * that grows for the whole duration of a capture is a leak of exactly the shape the frame worker
+   * already avoids — the worker is bounded, so what tracks it must be bounded too.
+   *
+   * `processedCount` is a diagnostic on the coordinator and nothing else: no UI reads it, and no
+   * behaviour depends on its exact value, only on its bound.
+   */
+  function windowOf(from: number, to: number): RuntimeFrame[] {
+    return Array.from({ length: to - from + 1 }, (_, index) => frame(from + index, "can0"));
+  }
+
+  it("forgets a marker as soon as its frame leaves the viewport", async () => {
+    const h = harness();
+    openProject(h.session, "/p");
+    h.session.bindChannel("can0", "assetA");
+
+    const first = windowOf(1, 10);
+    h.realtime.publish(snapshot(first));
+    await settle();
+    h.answer(0, decodedResult("s1", first));
+    await settle();
+
+    expect(h.coordinator.processedCount).toBe(10);
+
+    // The window slides to 6..15: sequences 1..5 can no longer be decoded, so remembering them
+    // answers a question nobody can ask again.
+    h.realtime.publish(snapshot(windowOf(6, 15)));
+    await settle();
+
+    expect(h.coordinator.processedCount).toBeLessThanOrEqual(5);
+    h.stop();
+  });
+
+  it("stays bounded by one viewport however long the stream runs", async () => {
+    const h = harness();
+    openProject(h.session, "/p");
+    h.session.bindChannel("can0", "assetA");
+
+    const WINDOW = 100;
+    const STRIDE = 50;
+    const STEPS = 40;
+    const UNIQUE = STEPS * STRIDE + WINDOW;
+
+    for (let step = 0; step < STEPS; step += 1) {
+      const from = step * STRIDE + 1;
+      h.realtime.publish(snapshot(windowOf(from, from + WINDOW - 1)));
+      await settle();
+
+      const latest = h.requests.length - 1;
+      const request = h.requests[latest];
+      if (request !== undefined) {
+        h.answer(latest, decodedResult("s1", request.frames));
+        await settle();
+      }
+    }
+
+    // UNIQUE distinct sequences have passed through the workspace; the tracking must fit in the
+    // viewport that is on screen now, not in everything that has ever been seen.
+    expect(h.coordinator.processedCount).toBeLessThanOrEqual(WINDOW);
+    expect(h.coordinator.processedCount).toBeLessThan(UNIQUE);
+    h.stop();
+  });
+
+  it("still suppresses duplicates while the viewport does not move", async () => {
+    const h = harness();
+    openProject(h.session, "/p");
+    h.session.bindChannel("can0", "assetA");
+    const frames = windowOf(1, 100);
+
+    h.realtime.publish(snapshot(frames));
+    await settle();
+    h.answer(0, decodedResult("s1", frames));
+    await settle();
+
+    h.realtime.publish(snapshot(frames));
+    await settle();
+    h.realtime.publish(snapshot(frames));
+    await settle();
+
+    expect(h.requests).toHaveLength(1);
+    h.stop();
+  });
+});

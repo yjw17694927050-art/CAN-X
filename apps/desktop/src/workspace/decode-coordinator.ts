@@ -57,6 +57,7 @@ import {
   type DecodeFrameBatchInput,
   type DecodedFrameOutcome,
 } from "../runtime/dbc-decode-client";
+import type { RuntimeFrame } from "../runtime/frame-schema";
 import type { RealtimeStreamState } from "../runtime/realtime-stream";
 import { MAX_BATCH_FRAMES, partitionDecodeRuns } from "./decode-partition";
 import type { DecodeOutcome, DecodedFrameEntry, DecodedRealtimeStore } from "./decoded-realtime";
@@ -127,6 +128,16 @@ export class WorkspaceDecodeCoordinator {
   constructor(deps: WorkspaceDecodeDeps) {
     this.#deps = deps;
     this.#maxBatchFrames = deps.maxBatchFrames ?? MAX_BATCH_FRAMES;
+  }
+
+  /**
+   * How many sequences are currently suppressed from being decoded again.
+   *
+   * Diagnostics, not policy: no behaviour reads it and no UI shows it. It exists so the *bound* on
+   * duplicate-suppression state can be asserted directly instead of inferred from timing.
+   */
+  get processedCount(): number {
+    return this.#processed.size;
   }
 
   /**
@@ -203,6 +214,13 @@ export class WorkspaceDecodeCoordinator {
     const state = this.#deps.realtime.getState();
     const viewport = state.snapshot;
     if (viewport === null || viewport.streamId === null) return;
+
+    // Duplicate suppression is bounded by construction. A marker only ever means "this sequence
+    // has already been answered", and that is worth remembering only while the sequence can still
+    // be handed to the Runtime again — so markers whose frames have fallen out of the viewport are
+    // dropped before the set is consulted. Keeping them would make this state grow with the length
+    // of the capture, which is the same defect as an unbounded frame buffer, one layer up.
+    this.#processed = retainVisibleSequences(this.#processed, viewport.frames);
 
     const pending = viewport.frames.filter((frame) => !this.#processed.has(frame.sequence));
     if (pending.length === 0) return;
@@ -300,4 +318,37 @@ function failureCode(cause: unknown): string {
   if (cause instanceof RuntimeDbcTransportError) return TRANSPORT_FAILURE_CODE;
   if (cause instanceof RuntimeDbcContractError) return CONTRACT_FAILURE_CODE;
   return UNKNOWN_FAILURE_CODE;
+}
+
+/**
+ * The processed markers that survive one viewport.
+ *
+ * A marker is a promise that a sequence has already been answered, and it is only meaningful while
+ * that sequence can still be submitted again. Once a frame has fallen out of the bounded viewport it
+ * can no longer be requested, so its marker answers a question nobody can ask — dropping it is what
+ * keeps this state bounded by the viewport rather than by the number of frames the capture has ever
+ * carried.
+ *
+ * ```text
+ *   viewport A            1 .. 20000      processed ⊇ 1..20000
+ *   viewport B        10001 .. 30000      processed becomes 10001..20000, never 1..30000
+ * ```
+ *
+ * Pure and exported for that reason: the bound is an invariant worth asserting on its own, without
+ * a coordinator, a socket or a decode call in the way.
+ */
+export function retainVisibleSequences(
+  processed: ReadonlySet<bigint>,
+  frames: readonly RuntimeFrame[],
+): Set<bigint> {
+  if (processed.size === 0) return new Set<bigint>();
+
+  const visible = new Set<bigint>();
+  for (const frame of frames) visible.add(frame.sequence);
+
+  const retained = new Set<bigint>();
+  for (const sequence of processed) {
+    if (visible.has(sequence)) retained.add(sequence);
+  }
+  return retained;
 }
