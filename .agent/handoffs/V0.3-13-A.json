@@ -17,13 +17,13 @@
   "tests": [
     {
       "name": "frontend-focused-test",
-      "command": "vitest run <this task's spec files>",
-      "result": "13 passed"
+      "command": "vitest run src/components/project/ProjectControls.test.tsx -> 13 passed",
+      "result": "passed"
     },
     {
       "name": "frontend-test",
-      "command": "pnpm test",
-      "result": "passed — 22 files / 317 tests"
+      "command": "pnpm test -> 22 files / 317 tests passed",
+      "result": "passed"
     },
     {
       "name": "frontend-typecheck",
@@ -33,6 +33,11 @@
     {
       "name": "frontend-lint",
       "command": "pnpm lint",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-build",
+      "command": "pnpm build",
       "result": "passed"
     }
   ],

@@ -19,13 +19,13 @@
   "tests": [
     {
       "name": "frontend-focused-test",
-      "command": "vitest run <this task's spec files>",
-      "result": "21 passed (2 files)"
+      "command": "vitest run src/components/dbc/DbcBindingControl.test.tsx src/components/dbc/observed-channels.test.ts -> 21 passed (2 files)",
+      "result": "passed"
     },
     {
       "name": "frontend-test",
-      "command": "pnpm test",
-      "result": "passed — 22 files / 317 tests"
+      "command": "pnpm test -> 22 files / 317 tests passed",
+      "result": "passed"
     },
     {
       "name": "frontend-typecheck",
@@ -35,6 +35,11 @@
     {
       "name": "frontend-lint",
       "command": "pnpm lint",
+      "result": "passed"
+    },
+    {
+      "name": "frontend-build",
+      "command": "pnpm build",
       "result": "passed"
     }
   ],
