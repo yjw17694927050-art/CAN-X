@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../../i18n/config";
 import type { RuntimeFrame } from "../../runtime/frame-schema";
@@ -20,16 +20,78 @@ import { LivePlotPanel } from "./LivePlotPanel";
  */
 const chartMock = vi.hoisted(() => {
   const options: Record<string, unknown>[] = [];
+  const resizes: unknown[] = [];
+  const counts = { inits: 0 };
   return {
+    counts,
     options,
-    init: () => ({
-      dispose: () => undefined,
-      setOption: (option: Record<string, unknown>) => {
-        options.push(option);
-      },
-    }),
+    resizes,
+    init: () => {
+      counts.inits += 1;
+      return {
+        dispose: () => undefined,
+        resize: () => {
+          resizes.push(undefined);
+        },
+        setOption: (option: Record<string, unknown>) => {
+          options.push(option);
+        },
+      };
+    },
   };
 });
+
+/**
+ * A `ResizeObserver` the test drives, rather than one that fires on `observe`.
+ *
+ * The stub `src/test/setup.ts` installs notifies immediately and synchronously, which is
+ * what a real observer never does. A resize test needs the notification to arrive on the
+ * test's command, so this one records its targets and delivers nothing until `notify()`.
+ */
+class RecordingResizeObserver implements ResizeObserver {
+  static readonly instances: RecordingResizeObserver[] = [];
+
+  readonly #callback: ResizeObserverCallback;
+  #targets: Element[] = [];
+  disconnects = 0;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.#callback = callback;
+    RecordingResizeObserver.instances.push(this);
+  }
+
+  disconnect(): void {
+    this.disconnects += 1;
+    this.#targets = [];
+  }
+
+  observe(target: Element): void {
+    this.#targets.push(target);
+  }
+
+  unobserve(): void {}
+
+  /** Deliver one notification per still-observed target, as a layout change would. */
+  notify(): void {
+    for (const target of this.#targets) {
+      const entry: ResizeObserverEntry = {
+        borderBoxSize: [],
+        contentBoxSize: [],
+        contentRect: new DOMRect(0, 0, 800, 320),
+        devicePixelContentBoxSize: [],
+        target,
+      };
+      this.#callback([entry], this);
+    }
+  }
+}
+
+/** The one observer the plot attached, or a failure that says it attached none. */
+function onlyObserver(): RecordingResizeObserver {
+  const observer = RecordingResizeObserver.instances[0];
+  if (observer === undefined) throw new Error("the plot attached no ResizeObserver");
+  return observer;
+}
 
 vi.mock("echarts/core", () => ({ init: chartMock.init, use: () => undefined }));
 vi.mock("echarts/charts", () => ({ LineChart: {} }));
@@ -149,7 +211,16 @@ function yAxisName(): unknown {
 }
 
 beforeEach(() => {
+  chartMock.counts.inits = 0;
   chartMock.options.length = 0;
+  chartMock.resizes.length = 0;
+  RecordingResizeObserver.instances.length = 0;
+  // The plot's own observer, notified on the test's command rather than on `observe`.
+  vi.stubGlobal("ResizeObserver", RecordingResizeObserver);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("LivePlotPanel — no signal selected", () => {
@@ -233,5 +304,89 @@ describe("LivePlotPanel — a selection with samples", () => {
     await waitFor(() => {
       expect(yAxisName()).toBe("EngineSpeed");
     });
+  });
+});
+
+describe("LivePlotPanel — a panel that changes size", () => {
+  /** A selection with one decoded sample, which is the only state that builds a chart. */
+  function renderChart(): ReturnType<typeof renderPlot> {
+    const view = renderPlot(selectionSession());
+    act(() => {
+      view.decoded.applyBatch({
+        assetId: ASSET_A,
+        entries: [decodedEntry(0, 617, 1_234)],
+        streamId: "s1",
+      });
+    });
+    return view;
+  }
+
+  it("attaches exactly one observer to the chart element and resizes on every notification", async () => {
+    renderChart();
+
+    // Nothing has been initialised until the four echarts modules have been fetched.
+    await waitFor(() => {
+      expect(RecordingResizeObserver.instances).toHaveLength(1);
+    });
+    expect(chartMock.counts.inits).toBe(1);
+    expect(chartMock.resizes).toHaveLength(0);
+
+    const observer = onlyObserver();
+
+    act(() => {
+      observer.notify();
+    });
+    expect(chartMock.resizes).toHaveLength(1);
+
+    // Repeated notifications are the normal case — a drag delivers one per frame — and each
+    // one is a `resize()`, never another observer.
+    act(() => {
+      observer.notify();
+      observer.notify();
+    });
+    expect(chartMock.resizes).toHaveLength(3);
+    expect(RecordingResizeObserver.instances).toHaveLength(1);
+  });
+
+  it("disconnects the observer and disposes the chart on unmount, leaving no leak", async () => {
+    const { unmount } = renderChart();
+
+    await waitFor(() => {
+      expect(RecordingResizeObserver.instances).toHaveLength(1);
+    });
+    const observer = onlyObserver();
+    expect(observer.disconnects).toBe(0);
+
+    unmount();
+
+    expect(observer.disconnects).toBe(1);
+    // A notification already queued when the chart was disposed must not reach it, and must
+    // certainly not bring it back.
+    expect(() => observer.notify()).not.toThrow();
+    expect(chartMock.resizes).toHaveLength(0);
+  });
+
+  it("attaches no observer and builds no chart when it unmounts before the modules load", async () => {
+    const session = selectionSession();
+    const { decoded, unmount } = renderPlot(session);
+    act(() => {
+      decoded.applyBatch({
+        assetId: ASSET_A,
+        entries: [decodedEntry(0, 617, 1_234)],
+        streamId: "s1",
+      });
+    });
+
+    // The four echarts modules are still being fetched: there is no chart yet, and therefore
+    // nothing for an observer to observe and nothing to leak. Without the race guard the
+    // import continuation would `init` a chart — and attach an observer — after unmount.
+    unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(chartMock.counts.inits).toBe(0);
+    expect(chartMock.resizes).toHaveLength(0);
+    expect(RecordingResizeObserver.instances).toHaveLength(0);
   });
 });
