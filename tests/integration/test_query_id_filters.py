@@ -105,10 +105,10 @@ SOURCE_FRAMES: tuple[Frame, ...] = tuple(frame(sequence) for sequence in range(T
 def _contiguous_batches(frames: tuple[Frame, ...], size: int) -> list[tuple[Frame, ...]]:
     """Split frames into batches that are contiguous *and* at most ``size`` long.
 
-    A ``FrameBatch`` requires contiguous sequences inside one batch, while the
-    combination fixture deliberately leaves gaps between witnesses. The segment
-    writer accepts a strictly increasing sequence across batches, so a jump only
-    has to end the current batch.
+    A ``FrameBatch`` requires contiguous sequences inside one batch, and the
+    session writer now requires each following batch to continue the previous
+    sequence exactly. The fixtures feed a contiguous sequence space, so a batch
+    only has to end when it reaches ``size``.
     """
     batches: list[tuple[Frame, ...]] = []
     current: list[Frame] = []
@@ -576,22 +576,27 @@ def test_the_summary_of_an_id_filtered_session_reports_its_bounds(tmp_path: Path
 #: first two violates exactly one axis of :data:`COMBINED`, so the frame that
 #: appears when an axis is relaxed proves that the axis was being applied.
 COMBINATION_SOURCE: tuple[tuple[int, int, str, Direction, bool], ...] = (
-    (10, 0x120, "can1", Direction.RX, True),
-    (20, 0x12A, "can1", Direction.RX, True),
-    (30, 0x12F, "can1", Direction.RX, True),  # only outside the range
-    (40, 0x110, "can1", Direction.RX, True),  # only outside the masked group
-    (50, 0x121, "can0", Direction.RX, True),  # only the wrong channel
-    (60, 0x121, "can1", Direction.TX, True),  # only the wrong direction
-    (70, 0x121, "can1", Direction.RX, False),  # only a classic frame
-    (99, 0x121, "can1", Direction.RX, True),  # only outside the sequence window
+    (0, 0x120, "can1", Direction.RX, True),
+    (1, 0x12A, "can1", Direction.RX, True),
+    (2, 0x12F, "can1", Direction.RX, True),  # only outside the range
+    (3, 0x110, "can1", Direction.RX, True),  # only outside the masked group
+    (4, 0x121, "can0", Direction.RX, True),  # only the wrong channel
+    (5, 0x121, "can1", Direction.TX, True),  # only the wrong direction
+    (6, 0x121, "can1", Direction.RX, False),  # only a classic frame
+    (7, 0x121, "can1", Direction.RX, True),  # only outside the sequence window
 )
 
+#: The sequence space is contiguous on purpose: the session writer refuses a
+#: batch that does not continue the previous sequence exactly, so the witnesses
+#: can no longer be spaced apart. They are consecutive instead, and the sequence
+#: window ends just before the last one.
+#:
 #: The range ends *inside* the masked group on purpose. With a range that fully
 #: contains it (``0x100..0x1FF``) the mask would already imply the range, and the
 #: range axis could not be shown to still be applied.
 COMBINED: dict[str, object] = {
     "sequence_start": 0,
-    "sequence_end": 90,
+    "sequence_end": 6,
     "channel_ids": ("can1",),
     "directions": (Direction.RX,),
     "arbitration_id_start": 0x100,
@@ -603,12 +608,12 @@ COMBINED: dict[str, object] = {
 
 #: An axis whose relaxation must add exactly this frame.
 WITNESSES: dict[str, int] = {
-    "arbitration_id_range": 30,
-    "arbitration_id_mask": 40,
-    "channel_ids": 50,
-    "directions": 60,
-    "is_fd": 70,
-    "sequence_end": 99,
+    "arbitration_id_range": 2,
+    "arbitration_id_mask": 3,
+    "channel_ids": 4,
+    "directions": 5,
+    "is_fd": 6,
+    "sequence_end": 7,
 }
 
 
@@ -669,7 +674,7 @@ def test_a_full_combination_filter_applies_every_axis(tmp_path: Path) -> None:
         }
 
     assert combined == _selected(COMBINATION_FRAMES, **COMBINED)
-    assert combined == [10, 20]
+    assert combined == [0, 1]
     for axis, witness in WITNESSES.items():
         assert set(relaxed[axis]) == {*combined, witness}, axis
     # The lower sequence bound excludes nothing in this fixture, so relaxing it
@@ -681,6 +686,6 @@ def test_the_combination_fixture_is_exactly_the_intended_one() -> None:
     """A guard on the witness design: each extra frame violates only its axis."""
     combined = _selected(COMBINATION_FRAMES, **COMBINED)
 
-    assert combined == [10, 20]
-    for frame_sequence in (*WITNESSES.values(), 30, 40, 50, 60, 70, 99):
+    assert combined == [0, 1]
+    for frame_sequence in sorted(WITNESSES.values()):
         assert frame_sequence not in combined

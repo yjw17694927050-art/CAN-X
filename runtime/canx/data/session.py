@@ -35,8 +35,9 @@ from canx.data.model import (
     DataSegment,
     DataSession,
     DataSessionState,
+    SegmentHeader,
 )
-from canx.data.parquet import TEMPORARY_SUFFIX, segment_filename
+from canx.data.parquet import TEMPORARY_SUFFIX, segment_filename, validate_segment_header
 from canx.data.parquet import read_segment as read_segment_file
 from canx.data.parquet import write_segment as write_segment_file
 from canx.domain.batch import FrameBatch
@@ -82,6 +83,74 @@ def resolve_within_root(project_root: Path, relative_path: str) -> Path:
             details={"relative_path": relative_path, "project_root": str(root)},
         )
     return candidate
+
+
+def require_registered_segment(
+    path: Path,
+    *,
+    session: DataSession,
+    segment: DataSegment,
+) -> SegmentHeader:
+    """Verify that one segment file agrees with everything its row claims.
+
+    This is the single definition of "a registered segment matches its file", and
+    every reader calls it: :meth:`DataSessionService.read_segment` and the query
+    service's candidate validation. Containment is deliberately the caller's —
+    :func:`resolve_within_root` is shared for the same reason — so this gate owns
+    the remaining claims:
+
+    * the registered ``relative_path`` is exactly the canonical path of the
+      segment's index, so a row can never point at another file's bytes;
+    * the footer's session, stream, index and column layout are the expected ones;
+    * the file's real row count equals the registered ``frame_count``;
+    * the file's real byte size equals the registered ``byte_size``.
+
+    It reports and never repairs: a file that disagrees is left exactly as it is.
+
+    Raises:
+        ParquetReadError: If the file is missing or its footer is not readable.
+        DataIntegrityError: If any registered claim disagrees with the file.
+    """
+    canonical = segment_relative_path(session.session_id, segment.segment_index)
+    if segment.relative_path != canonical:
+        raise DataIntegrityError(
+            "The registered segment path is not the canonical path of its index.",
+            code="data.integrity.registered_path_mismatch",
+            details={
+                "session_id": session.session_id,
+                "segment_index": segment.segment_index,
+                "registered_relative_path": segment.relative_path,
+                "canonical_relative_path": canonical,
+            },
+        )
+    header = validate_segment_header(
+        path,
+        expected_session_id=session.session_id,
+        expected_stream_id=session.stream_id,
+        expected_segment_index=segment.segment_index,
+    )
+    if header.row_count != segment.frame_count:
+        raise DataIntegrityError(
+            "The segment file row count does not match its registered metadata.",
+            code="data.integrity.frame_count_mismatch",
+            details={
+                "relative_path": segment.relative_path,
+                "registered_frame_count": segment.frame_count,
+                "actual_frame_count": header.row_count,
+            },
+        )
+    byte_size = path.stat().st_size
+    if byte_size != segment.byte_size:
+        raise DataIntegrityError(
+            "The segment file size does not match its registered metadata.",
+            code="data.integrity.byte_size_mismatch",
+            details={
+                "relative_path": segment.relative_path,
+                "registered_byte_size": segment.byte_size,
+                "actual_byte_size": byte_size,
+            },
+        )
+    return header
 
 
 class DataSessionWriter:
@@ -315,32 +384,64 @@ class DataSessionWriter:
             )
 
     def _require_contiguous_sequence(self, batch: FrameBatch) -> None:
+        """Refuse a batch that does not continue this session's sequence exactly.
+
+        The rule is one step: once frames have been appended, the next batch must
+        start at ``previous_last_sequence + 1``. The *first* batch of a session is
+        exempt on purpose — a session may legally start at any sequence — and only
+        that batch is exempt.
+
+        A gap and a regression are the same defect here — the batch does not
+        continue the session's sequence — so they share one typed code and are
+        told apart by the details, which carry both the observed and the expected
+        next sequence. This mirrors, without depending on, the recorder's own
+        ``recorder.sequence_gap`` gate: the writer has to be correct alone.
+        """
         if self._last_appended_sequence is None:
             return
-        if batch.first_sequence <= self._last_appended_sequence:
-            raise DataIntegrityError(
-                "The batch does not continue this session's sequence.",
-                code="data.integrity.sequence_regression",
-                details={
-                    "session_id": self._session.session_id,
-                    "previous_last_sequence": self._last_appended_sequence,
-                    "batch_first_sequence": batch.first_sequence,
-                },
-            )
+        expected_first_sequence = self._last_appended_sequence + 1
+        if batch.first_sequence == expected_first_sequence:
+            return
+        raise DataIntegrityError(
+            "The batch does not continue this session's sequence.",
+            code="data.integrity.sequence_regression",
+            details={
+                "session_id": self._session.session_id,
+                "previous_last_sequence": self._last_appended_sequence,
+                "expected_first_sequence": expected_first_sequence,
+                "batch_first_sequence": batch.first_sequence,
+            },
+        )
 
     def _require_ordered_timestamps(self, batch: FrameBatch) -> None:
-        first = batch.frames[0].normalized_timestamp
-        last = batch.frames[-1].normalized_timestamp
-        if last < first:
-            raise DataIntegrityError(
-                "The batch timestamps are not in order.",
-                code="data.integrity.timestamp_regression",
-                details={
-                    "session_id": self._session.session_id,
-                    "first_timestamp": first,
-                    "last_timestamp": last,
-                },
-            )
+        """Refuse timestamps that would descend when read in sequence order.
+
+        Every adjacent pair is compared, not just the batch's two ends: a batch
+        whose middle frame steps back is the same defect as one whose last frame
+        does, and the old end-only comparison let ``1.0, 3.0, 2.0, 4.0`` through.
+
+        Equality stays legal — the domain permits two frames on one clock tick —
+        so the test is a strict descent, inside the batch and across the batch
+        boundary alike.
+        """
+        frames = batch.frames
+        for position in range(1, len(frames)):
+            previous = frames[position - 1].normalized_timestamp
+            current = frames[position].normalized_timestamp
+            if current < previous:
+                raise DataIntegrityError(
+                    "The batch timestamps are not in order.",
+                    code="data.integrity.timestamp_regression",
+                    details={
+                        "session_id": self._session.session_id,
+                        "position": position,
+                        "previous_timestamp": previous,
+                        "current_timestamp": current,
+                        "first_timestamp": frames[0].normalized_timestamp,
+                        "last_timestamp": frames[-1].normalized_timestamp,
+                    },
+                )
+        first = frames[0].normalized_timestamp
         if self._last_appended_timestamp is not None and first < self._last_appended_timestamp:
             raise DataIntegrityError(
                 "The batch starts before the last committed frame in this session.",
@@ -602,6 +703,7 @@ class DataSessionService:
                     "relative_path": segment.relative_path,
                 },
             )
+        require_registered_segment(path, session=session, segment=segment)
         frames = read_segment_file(
             path,
             expected_session_id=session.session_id,

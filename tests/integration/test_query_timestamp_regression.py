@@ -14,10 +14,19 @@ again if that pruning is ever reintroduced. Sequence and cursor pruning, which
 rest on genuinely ordered metadata, must stay active.
 """
 
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
-from canx.data.session import DataSessionService
-from canx.domain.batch import FrameBatch
+from canx.data import repository
+from canx.data.model import DataSegment
+from canx.data.parquet import write_segment
+from canx.data.session import (
+    DataSessionService,
+    resolve_within_root,
+    segment_relative_path,
+)
 from canx.domain.frame import Direction, Frame, TimestampQuality
 from canx.project.service import ProjectHandle, ProjectService
 from canx.query.model import FrameFilter, FrameQuery
@@ -52,17 +61,64 @@ def frame(sequence: int, normalized_timestamp: float) -> Frame:
 
 
 def _session(handle: ProjectHandle, contents: list[tuple[int, float]]) -> str:
-    """Persist one session; a new segment starts every ``FRAMES_PER_SEGMENT``."""
+    """Persist one session the way the earlier, more permissive writer did.
+
+    The session writer now refuses a batch whose timestamps descend anywhere, so
+    a segment like ``[0, 100, 1]`` can no longer be produced through it. Such a
+    segment can still exist in a project written by that earlier version — which
+    is exactly the data this module defends — so the frames are committed with the
+    same Parquet writer and registered with the same repository call, bypassing
+    only the newer writer admission check.
+    """
     service = DataSessionService(handle.root, max_frames_per_segment=FRAMES_PER_SEGMENT)
     writer = service.start(stream_id=STREAM_ID)
-    writer.append(
-        FrameBatch.create(
+    session = writer.session
+    frames = [frame(sequence, timestamp) for sequence, timestamp in contents]
+    for index, start in enumerate(range(0, len(frames), FRAMES_PER_SEGMENT)):
+        chunk = tuple(frames[start : start + FRAMES_PER_SEGMENT])
+        relative_path = segment_relative_path(session.session_id, index)
+        byte_size = write_segment(
+            resolve_within_root(handle.root, relative_path),
+            session_id=session.session_id,
             stream_id=STREAM_ID,
-            frames=[frame(sequence, timestamp) for sequence, timestamp in contents],
+            segment_index=index,
+            frames=chunk,
         )
-    )
+        at = datetime.now(UTC)
+        segment = DataSegment(
+            segment_id=str(uuid4()),
+            session_id=session.session_id,
+            segment_index=index,
+            relative_path=relative_path,
+            frame_count=len(chunk),
+            first_sequence=chunk[0].sequence,
+            last_sequence=chunk[-1].sequence,
+            first_timestamp=chunk[0].normalized_timestamp,
+            last_timestamp=chunk[-1].normalized_timestamp,
+            byte_size=byte_size,
+            created_at=at,
+        )
+        updated = replace(
+            session,
+            frame_count=session.frame_count + len(chunk),
+            segment_count=index + 1,
+            first_sequence=(
+                chunk[0].sequence if session.first_sequence is None else session.first_sequence
+            ),
+            last_sequence=chunk[-1].sequence,
+            first_timestamp=(
+                chunk[0].normalized_timestamp
+                if session.first_timestamp is None
+                else session.first_timestamp
+            ),
+            last_timestamp=chunk[-1].normalized_timestamp,
+            updated_at=at,
+        )
+        with repository.data_connection(handle.root) as connection:
+            repository.register_segment(connection, segment=segment, session=updated)
+        session = updated
     writer.finalize()
-    return writer.session_id
+    return session.session_id
 
 
 def _project(tmp_path: Path) -> ProjectHandle:
